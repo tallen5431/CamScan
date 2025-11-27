@@ -3,7 +3,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, List, Optional
 
 # External helpers (already in your project)
-from detect_squares import detect_dark_squares, detect_dark_squares_robust
+from detect_squares import detect_dark_squares, detect_dark_squares_robust, MIN_AREA_DEFAULT
 from edge_finder import find_main_edges
 
 # ----------------------------
@@ -37,7 +37,8 @@ def _iou(a, b) -> float:
     union = aw*ah + bw*bh - inter
     return inter/union if union > 0 else 0.0
 
-def _dedup_rects(rects: List[Tuple[int,int,int,int]], iou_thresh: float=0.45):
+def _dedup_rects(rects: List[Tuple[int,int,int,int]], iou_thresh: float=0.6):
+    """Remove duplicate detections using IoU threshold (increased from 0.45 to 0.6)."""
     out: List[Tuple[int,int,int,int]] = []
     for r in rects:
         if all(_iou(r, s) < iou_thresh for s in out):
@@ -102,6 +103,8 @@ def calibrate_image(img_bgr: np.ndarray,
     Detect near-square dark regions -> refine with edge_finder -> compute mm/px.
     Returns (calibration_dict, overlay_image_bgr).
     """
+    start_time = time.time()
+
     if img_bgr is None or not hasattr(img_bgr, "shape"):
         raise ValueError("calibrate_image: expected a BGR ndarray")
 
@@ -112,22 +115,61 @@ def calibrate_image(img_bgr: np.ndarray,
     edge_len_mm = float(edge_mm) if edge_mm is not None else float(EDGE_MM_DEFAULT)
     print(f"[Calibration] Using edge length: {edge_len_mm} mm  (module default={EDGE_MM_DEFAULT})")
 
-    # 1) Enhanced multi-threshold detection with pattern verification
+    # 1) Enhanced multi-threshold detection with fallback strategies
     rects: List[Tuple[int,int,int,int]] = []
-    
+
     if use_robust_detection:
-        # Use the enhanced robust detection method
-        print(f"[Calibration] Using robust multi-scale detection with nested pattern check")
+        # Strategy 1: Try robust detection with nested pattern validation (4 white squares)
+        print(f"[Calibration] Strategy 1: Robust multi-scale detection with nested pattern check")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
-            check_nested_pattern=True,
-            min_nested_squares=0,  # Disabled by default for compatibility
+            check_nested_pattern=True,  # Enabled - requires nested white squares
+            min_nested_squares=3,  # Require at least 3 of 4 white squares visible
             use_multi_scale=True,
             scale_factors=(1.0, 0.8, 0.6)
         )
         for (_score, x, y, w, h, _mean) in dets:
             rects.append((x, y, w, h))
+
+        # Strategy 2: If nothing found, try with relaxed pattern requirement
+        if len(rects) == 0:
+            print(f"[Calibration] Strategy 2: Relaxed pattern requirement (min 2 squares)")
+            dets = detect_dark_squares_robust(
+                img_bgr,
+                edge_mm=edge_len_mm,
+                check_nested_pattern=True,
+                min_nested_squares=2,  # More relaxed - accept 2 of 4 squares
+                min_area=200,
+                use_multi_scale=True,
+                scale_factors=(1.0, 0.8, 0.6, 0.5)  # Add even smaller scale
+            )
+            for (_score, x, y, w, h, _mean) in dets:
+                rects.append((x, y, w, h))
+
+        # Strategy 3: If still nothing, try with higher contrast enhancement
+        if len(rects) == 0:
+            print(f"[Calibration] Strategy 3: High contrast enhancement + relaxed pattern")
+            dets = detect_dark_squares_robust(
+                img_bgr,
+                edge_mm=edge_len_mm,
+                check_nested_pattern=True,
+                min_nested_squares=2,
+                min_area=200,
+                clahe_clip=4.0,  # More aggressive contrast (default is 2.0)
+                use_multi_scale=True,
+                scale_factors=(1.0, 0.8, 0.6)
+            )
+            for (_score, x, y, w, h, _mean) in dets:
+                rects.append((x, y, w, h))
+
+        # Strategy 4: Last resort - try legacy multi-threshold approach
+        if len(rects) == 0:
+            print(f"[Calibration] Strategy 4: Legacy multi-threshold approach")
+            for t in thresholds:
+                dets = detect_dark_squares(img_bgr, brightness_thresh=t, min_area=200)
+                for (_score, x, y, w, h, _mean) in dets:
+                    rects.append((x, y, w, h))
     else:
         # Original multi-threshold approach
         for t in thresholds:
@@ -135,15 +177,28 @@ def calibrate_image(img_bgr: np.ndarray,
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
     
-    rects = _dedup_rects(rects, iou_thresh=0.45)
+    # Store pre-dedup count for logging
+    pre_dedup_count = len(rects)
+    rects = _dedup_rects(rects, iou_thresh=0.6)
     rects = sorted(rects, key=lambda r: r[2]*r[3], reverse=True)
-    
-    print(f"[Calibration] Found {len(rects)} candidate marker regions")
-    
+
+    # Enhanced debug logging
+    print(f"[Calibration] Detection summary:")
+    print(f"  - Image size: {W}x{H} ({W*H:,} pixels)")
+    print(f"  - Min area threshold: {MIN_AREA_DEFAULT} px² ({MIN_AREA_DEFAULT/(W*H)*100:.3f}%)")
+    print(f"  - Candidates before dedup: {pre_dedup_count}")
+    print(f"  - Candidates after dedup: {len(rects)}")
+    if len(rects) > 0:
+        for i, (x, y, w, h) in enumerate(rects[:5], 1):
+            print(f"  - Candidate #{i}: pos=({x},{y}) size={w}x{h} area={w*h:,}px² ({w*h/(W*H)*100:.2f}%)")
+    else:
+        print(f"  ⚠️  No candidates found - try lowering min_area or adjusting lighting")
+
 
     markers: List[Dict[str, Any]] = []
+    refinement_failures = 0
 
-    for (x, y, w, h) in rects:
+    for idx, (x, y, w, h) in enumerate(rects, 1):
         # Crop + optional downscale
         crop, ox, oy = _crop_region(img_bgr, x, y, w, h, PADDING_PX)
         crop_ds = (cv2.resize(
@@ -158,6 +213,8 @@ def calibrate_image(img_bgr: np.ndarray,
             crop_ds, MAX_EDGES, warp=True
         )
         if not corners_local:
+            refinement_failures += 1
+            print(f"  ⚠️  Candidate #{idx} failed corner refinement")
             continue
 
         # Map corners back to full image coords
@@ -186,7 +243,15 @@ def calibrate_image(img_bgr: np.ndarray,
             "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
         })
 
-    print(f"[Calibration] Successfully calibrated {len(markers)} marker(s)")
+    elapsed = time.time() - start_time
+    print(f"[Calibration] Processing complete:")
+    print(f"  - Successfully calibrated: {len(markers)} marker(s)")
+    print(f"  - Failed corner refinement: {refinement_failures}")
+    print(f"  - Total processing time: {elapsed:.3f}s")
+    if len(markers) > 0:
+        print(f"  - Time per marker: {elapsed/len(markers):.3f}s")
+    if len(markers) == 0 and len(rects) > 0:
+        print(f"  ⚠️  All candidates failed corner refinement - check image quality and marker clarity")
     # Global averages
     mm_per_px_vals = [m["mm_per_px"] for m in markers] or [0.0]
     mm_per_px_avg = float(np.mean(mm_per_px_vals))

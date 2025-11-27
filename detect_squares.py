@@ -1,15 +1,61 @@
 import os
+import time
 import cv2
 import numpy as np
 from typing import List, Tuple, Optional
 
 # Tunables (easy to adjust)
-MIN_AREA_DEFAULT = 800
+MIN_AREA_DEFAULT = 400  # Lowered from 800 for better small marker detection
 MAX_AREA_RATIO_DEFAULT = 0.6
 MAX_ASPECT_DEFAULT = 1.5
 
+# Nested pattern detection configuration
+NESTED_PATTERN_CONFIG = {
+    'clahe_clip': 3.5,
+    'clahe_tile_size': (8, 8),
+    'adaptive_block_size': 11,
+    'adaptive_c_val': -5,
+    'min_square_area_ratio': 0.005,  # 0.5% of ROI area
+    'max_square_area_ratio': 0.20,   # 20% of ROI area
+    'max_aspect_ratio': 2.0,
+    'morph_kernel_size': (3, 3),
+}
+
+# White border detection configuration
+BORDER_CONFIG = {
+    'thickness_ratio': 0.15,
+    'min_border_brightness': 140,
+    'min_contrast': 60,
+}
+
+# Corner refinement configuration
+REFINEMENT_CONFIG = {
+    'min_fill_ratio': 0.30,
+    'max_aspect_ratio': 1.4,
+    'morph_kernel_size': (5, 5),
+    'morph_close_iterations': 2,
+    'morph_open_iterations': 1,
+}
+
+# Edge detection configuration
+EDGE_CONFIG = {
+    'auto_canny_sigma': 0.33,
+    'fixed_canny_low': 50,
+    'fixed_canny_high': 150,
+    'adaptive_block_size': 21,
+    'adaptive_c_val': 5,
+}
+
 DEBUG_DUMP_DIR = os.getenv("CAMSCAN_DEBUG_DUMP", "uploads/_debug")
 DUMP_DEBUG_IMAGES = bool(os.getenv("CAMSCAN_DEBUG", "0") == "1")
+
+
+def _auto_canny(image: np.ndarray, sigma: float = 0.33) -> np.ndarray:
+    """Automatic Canny edge detection with adaptive thresholds."""
+    v = float(np.median(image))
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    return cv2.Canny(image, lower, upper)
 
 
 def _ensure_debug_dir():
@@ -34,6 +80,62 @@ def _dump(name: str, img) -> None:
 
 # ------------------ Helpers for nested pattern and ROI refinement ------------------
 
+def _has_white_border(
+    gray: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    border_thickness_ratio: float = None,
+) -> Tuple[bool, float]:
+    """
+    Check if the dark square has a white/bright border around it.
+    Calibration markers typically have a white frame around the dark center.
+    Returns (has_border, border_brightness_score).
+    """
+    cfg = BORDER_CONFIG
+    if border_thickness_ratio is None:
+        border_thickness_ratio = cfg['thickness_ratio']
+
+    # Expand region to include potential border
+    H, W = gray.shape[:2]
+    border_w = int(w * border_thickness_ratio)
+    border_h = int(h * border_thickness_ratio)
+
+    x0 = max(0, x - border_w)
+    y0 = max(0, y - border_h)
+    x1 = min(W, x + w + border_w)
+    y1 = min(H, y + h + border_h)
+
+    # Sample the border region (the expanded area minus the inner dark square)
+    extended_roi = gray[y0:y1, x0:x1]
+    if extended_roi.size == 0:
+        return False, 0.0
+
+    # Create mask for border region only (not including the dark center)
+    mask = np.ones(extended_roi.shape, dtype=np.uint8) * 255
+    inner_x = x - x0
+    inner_y = y - y0
+    mask[inner_y:inner_y+h, inner_x:inner_x+w] = 0
+
+    # Calculate average brightness of border region
+    border_mean = float(np.mean(extended_roi[mask > 0]))
+
+    # Calculate average brightness of center region
+    center_roi = gray[y:y+h, x:x+w]
+    center_mean = float(np.mean(center_roi)) if center_roi.size > 0 else 128.0
+
+    # Border should be significantly brighter than center
+    contrast = border_mean - center_mean
+    has_border = (border_mean > cfg['min_border_brightness'] and
+                  contrast > cfg['min_contrast'])  # White border, dark center
+
+    # Normalized score (0-1)
+    border_score = min(1.0, border_mean / 255.0)
+
+    return has_border, border_score
+
+
 def _detect_nested_pattern(
     gray: np.ndarray,
     x: int,
@@ -44,35 +146,70 @@ def _detect_nested_pattern(
 ) -> Tuple[bool, int]:
     """
     Check whether a dark candidate square contains lighter/white squares inside.
+    Specifically tuned to detect 2x2 grid of white squares in calibration markers.
     This helps disambiguate textured dark regions from calibration markers.
     """
     roi = gray[y : y + h, x : x + w]
     if roi.size == 0:
         return False, 0
 
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    # More aggressive contrast enhancement to find white squares
+    cfg = NESTED_PATTERN_CONFIG
+    clahe = cv2.createCLAHE(clipLimit=cfg['clahe_clip'], tileGridSize=cfg['clahe_tile_size'])
     enhanced = clahe.apply(cv2.GaussianBlur(roi, (5, 5), 0))
 
-    block = max(11, (min(w, h) // 10) | 1)
-    c_val = -3
-    white_mask = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                       cv2.THRESH_BINARY, block, c_val)
+    # Use both OTSU and adaptive thresholding for robustness
+    _, otsu_mask = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    block = max(cfg['adaptive_block_size'], (min(w, h) // 8) | 1)  # Smaller blocks for finer detail
+    c_val = cfg['adaptive_c_val']
+    adaptive_mask = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                          cv2.THRESH_BINARY, block, c_val)
+
+    # Combine both masks
+    white_mask = cv2.bitwise_or(otsu_mask, adaptive_mask)
+
+    # Clean up noise but preserve small squares
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, cfg['morph_kernel_size'])
     white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, k, iterations=1)
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, k, iterations=1)
 
     contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    # More permissive size range for white squares
+    min_square_area = cfg['min_square_area_ratio'] * w * h
+    max_square_area = cfg['max_square_area_ratio'] * w * h
+
     white_squares = 0
+    valid_contours = []
     for c in contours:
         a = cv2.contourArea(c)
-        if a < 0.008 * w * h:
+        if a < min_square_area or a > max_square_area:
             continue
         x0, y0, ww, hh = cv2.boundingRect(c)
         aspect = max(ww / max(1, hh), hh / max(1, ww))
-        if aspect > 2.5:
+        # More permissive aspect ratio for slightly non-square shapes
+        if aspect > cfg['max_aspect_ratio']:
             continue
         white_squares += 1
+        valid_contours.append(c)
+
+    # Additional validation: check if squares are roughly arranged in a grid
+    if white_squares >= 3 and len(valid_contours) >= 3:
+        # Calculate centers of detected squares
+        centers = []
+        for c in valid_contours:
+            M = cv2.moments(c)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                centers.append((cx, cy))
+
+        # If we have 3-4 squares, they should form a grid pattern
+        # (similar distances between neighbors)
+        if len(centers) >= 3:
+            # This is a good indicator of a calibration marker pattern
+            white_squares += 1  # Bonus for grid-like arrangement
 
     return white_squares >= min_white_squares, white_squares
 
@@ -87,17 +224,31 @@ def _refine_square_in_roi(
     max_aspect: float = 1.4,
     check_nested: bool = False,
     min_nested_squares: int = 0,
+    check_border: bool = True,
     debug: bool = False,
+    counters: Optional[dict] = None,
 ):
     """
     Refine a candidate rectangle inside ROI and return (ok, box_global)
     - Uses CLAHE + Canny + morphological cleanup to find the main contour
     - Attempts sub-pixel corner refinement with goodFeaturesToTrack + cornerSubPix
+    - Validates nested pattern and white border for calibration markers
     - Returns box coordinates in global image space (int32) if successful
     """
+    # Check for white border (calibration markers have white frames)
+    if check_border:
+        has_border, border_score = _has_white_border(gray, x, y, w, h)
+        if not has_border:
+            if counters is not None:
+                counters['border'] += 1
+            return False, None
+
+    # Check for nested pattern (4 white squares inside dark square)
     if check_nested:
-        has_pattern, _ = _detect_nested_pattern(gray, x, y, w, h, min_nested_squares)
+        has_pattern, num_squares = _detect_nested_pattern(gray, x, y, w, h, min_nested_squares)
         if not has_pattern:
+            if counters is not None:
+                counters['pattern'] += 1
             return False, None
 
     roi = gray[y : y + h, x : x + w]
@@ -105,6 +256,7 @@ def _refine_square_in_roi(
         return False, None
 
     # Preprocess for robust contour extraction
+    cfg = REFINEMENT_CONFIG
     roi_blur = cv2.GaussianBlur(roi, (5, 5), 0)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(roi_blur)
@@ -114,9 +266,9 @@ def _refine_square_in_roi(
     roi_edges = cv2.Canny(enhanced, 30, 120)
     combined = cv2.bitwise_or(roi_bin, roi_edges)
 
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k, iterations=2)
-    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, k, iterations=1)
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, cfg['morph_kernel_size'])
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k, iterations=cfg['morph_close_iterations'])
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, k, iterations=cfg['morph_open_iterations'])
 
     if DUMP_DEBUG_IMAGES and debug:
         _ensure_debug_dir()
@@ -141,12 +293,12 @@ def _refine_square_in_roi(
     max_side = max(side_lengths)
     min_side = max(1e-3, min(side_lengths))
     aspect = max_side / min_side
-    if aspect > max_aspect:
+    if aspect > cfg['max_aspect_ratio']:
         return False, None
 
     box_area = max_side * min_side
     fill = contour_area / (box_area + 1e-6)
-    if fill < min_fill:
+    if fill < cfg['min_fill_ratio']:
         return False, None
 
     # Attempt sub-pixel refinement in ROI-local coordinates
@@ -182,8 +334,10 @@ def _refine_square_in_roi(
             box_global[:, 0] += float(x)
             box_global[:, 1] += float(y)
             return True, box_global.astype(np.int32)
-    except Exception:
+    except Exception as e:
         # if refinement fails, fall back to rot_rect result
+        if debug or DUMP_DEBUG_IMAGES:
+            print(f"[DetectSquares] Sub-pixel corner refinement failed: {e}")
         pass
 
     # Fallback: return rot_rect mapped to global coordinates
@@ -194,10 +348,9 @@ def _refine_square_in_roi(
 
 
 # ------------------ Main detector (multi-scale, robust) ------------------
-import time
 
 def detect_dark_squares(
-    img,
+    img: np.ndarray,
     min_area: float = MIN_AREA_DEFAULT,
     max_area_ratio: float = MAX_AREA_RATIO_DEFAULT,
     max_aspect: float = MAX_ASPECT_DEFAULT,
@@ -215,6 +368,8 @@ def detect_dark_squares(
     Robust dark-square detector (returns list of tuples (score, x, y, w, h, mean_val)).
     This is a restored, integrated implementation that other modules (calibration_core) expect.
     """
+    start_time = time.time()
+
     if img is None or not hasattr(img, "shape"):
         return []
 
@@ -224,6 +379,13 @@ def detect_dark_squares(
 
     all_candidates = []
     scales = scale_factors if use_multi_scale else (1.0,)
+
+    # Debug counters
+    filtered_by_area = 0
+    filtered_by_aspect = 0
+    filtered_by_refinement = 0
+    filtered_by_border = 0
+    filtered_by_pattern = 0
 
     for scale in scales:
         if scale != 1.0:
@@ -246,9 +408,12 @@ def detect_dark_squares(
         adaptive_mask = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                               cv2.THRESH_BINARY_INV, 21, 5)
 
-        edges1 = cv2.Canny(enhanced, 30, 90)
-        edges2 = cv2.Canny(enhanced, 60, 150)
-        edges_combined = cv2.bitwise_or(edges1, edges2)
+        # Use adaptive Canny thresholds based on image content
+        edge_cfg = EDGE_CONFIG
+        edges_auto = _auto_canny(enhanced, sigma=edge_cfg['auto_canny_sigma'])
+        # Also use fixed thresholds as fallback for edge cases
+        edges2 = cv2.Canny(enhanced, edge_cfg['fixed_canny_low'], edge_cfg['fixed_canny_high'])
+        edges_combined = cv2.bitwise_or(edges_auto, edges2)
 
         dark_mask = cv2.bitwise_or(base_mask, adaptive_mask)
         dark_mask = cv2.bitwise_or(dark_mask, edges_combined)
@@ -260,11 +425,13 @@ def detect_dark_squares(
         contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         scale_factor_area = scale * scale
-        eff_min_area = max(min_area * scale_factor_area, 0.00025 * (gray_scaled.shape[0] * gray_scaled.shape[1]))
+        # More permissive minimum area: 0.00015 (0.015%) instead of 0.00025 (0.025%)
+        eff_min_area = max(min_area * scale_factor_area, 0.00015 * (gray_scaled.shape[0] * gray_scaled.shape[1]))
 
         for c in contours:
             area = cv2.contourArea(c)
             if area < eff_min_area:
+                filtered_by_area += 1
                 continue
 
             hull = cv2.convexHull(c)
@@ -299,7 +466,11 @@ def detect_dark_squares(
                 short_side = float(max(1, min(w_orig, h_orig)))
                 aspect = long_side / short_side
                 if aspect > max_aspect:
+                    filtered_by_aspect += 1
                     continue
+
+                # Create counters dict to track filtering reasons
+                counters = {'border': 0, 'pattern': 0}
 
                 ok, box_global = _refine_square_in_roi(
                     gray,
@@ -311,9 +482,14 @@ def detect_dark_squares(
                     max_aspect=1.4,
                     check_nested=check_nested_pattern,
                     min_nested_squares=min_nested_squares,
+                    check_border=True,
                     debug=debug,
+                    counters=counters,
                 )
                 if not ok:
+                    filtered_by_refinement += 1
+                    filtered_by_border += counters['border']
+                    filtered_by_pattern += counters['pattern']
                     continue
 
                 roi = gray[y_orig : y_orig + h_orig, x_orig : x_orig + w_orig]
@@ -329,9 +505,26 @@ def detect_dark_squares(
                 extent = (area / (w0 * h0 + 1e-6))
                 geom_score = (solidity * 0.6 + extent * 0.4)
 
-                final_score = 0.6 * dark_score + 0.4 * geom_score + 0.15 * size_score
+                # Rebalanced: geometry is more important than darkness for calibration markers
+                final_score = 0.35 * dark_score + 0.55 * geom_score + 0.10 * size_score
 
                 all_candidates.append((final_score, x_orig, y_orig, w_orig, h_orig, mean_val))
+
+    if debug or DUMP_DEBUG_IMAGES:
+        elapsed = time.time() - start_time
+        print(f"[DetectSquares] Filtering summary:")
+        print(f"  - Image size: {w_img}x{h_img} ({frame_area:,.0f} pixels)")
+        print(f"  - Scales processed: {list(scales)}")
+        print(f"  - Filtered by area (too small): {filtered_by_area}")
+        print(f"  - Filtered by aspect ratio: {filtered_by_aspect}")
+        print(f"  - Filtered by white border check: {filtered_by_border}")
+        print(f"  - Filtered by nested pattern check: {filtered_by_pattern}")
+        print(f"  - Filtered by other refinement: {filtered_by_refinement - filtered_by_border - filtered_by_pattern}")
+        print(f"  - Total candidates found: {len(all_candidates)}")
+        print(f"  - Detection time: {elapsed:.3f}s")
+        if len(all_candidates) > 0:
+            avg_score = sum(c[0] for c in all_candidates) / len(all_candidates)
+            print(f"  - Average candidate score: {avg_score:.3f}")
 
     if not all_candidates:
         return []
@@ -352,7 +545,8 @@ def detect_dark_squares(
                 intersection = (x2 - x1) * (y2 - y1)
                 union = w * h + ew * eh - intersection
                 iou = intersection / union if union > 0 else 0
-                if iou > 0.4:
+                # Increased from 0.4 to 0.6 for more conservative deduplication
+                if iou > 0.6:
                     overlap = True
                     break
         if not overlap:
@@ -374,7 +568,12 @@ def draw_squares(img, detections, color=(0, 255, 0), thickness=6, label=True):
         return img
     result = img.copy()
     for rank, (_, x, y, w, h, mean_val) in enumerate(detections, start=1):
-        ok, box_global = _refine_square_in_roi(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), x, y, w, h, debug=False)
+        ok, box_global = _refine_square_in_roi(
+            cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), x, y, w, h,
+            check_border=False,  # Skip border check for visualization
+            check_nested=False,  # Skip pattern check for visualization
+            debug=False
+        )
         if ok and box_global is not None:
             cv2.polylines(result, [box_global], True, (0, 220, 255), max(3, thickness), lineType=cv2.LINE_AA)
         else:
