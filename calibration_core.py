@@ -117,27 +117,28 @@ def calibrate_image(img_bgr: np.ndarray,
     rects: List[Tuple[int,int,int,int]] = []
 
     if use_robust_detection:
-        # Strategy 1: Try robust detection with default parameters
-        print(f"[Calibration] Strategy 1: Robust multi-scale detection")
+        # Strategy 1: Try robust detection with nested pattern validation (4 white squares)
+        print(f"[Calibration] Strategy 1: Robust multi-scale detection with nested pattern check")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
-            check_nested_pattern=False,  # Disabled - can enable if markers have nested white squares
-            min_nested_squares=0,
+            check_nested_pattern=True,  # Enabled - requires nested white squares
+            min_nested_squares=3,  # Require at least 3 of 4 white squares visible
             use_multi_scale=True,
             scale_factors=(1.0, 0.8, 0.6)
         )
         for (_score, x, y, w, h, _mean) in dets:
             rects.append((x, y, w, h))
 
-        # Strategy 2: If nothing found, try with relaxed area constraint
+        # Strategy 2: If nothing found, try with relaxed pattern requirement
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 2: Relaxed area constraints (min_area=200)")
+            print(f"[Calibration] Strategy 2: Relaxed pattern requirement (min 2 squares)")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                min_area=200,  # Half of default
-                max_aspect=1.8,  # More permissive aspect ratio
+                check_nested_pattern=True,
+                min_nested_squares=2,  # More relaxed - accept 2 of 4 squares
+                min_area=200,
                 use_multi_scale=True,
                 scale_factors=(1.0, 0.8, 0.6, 0.5)  # Add even smaller scale
             )
@@ -146,10 +147,12 @@ def calibrate_image(img_bgr: np.ndarray,
 
         # Strategy 3: If still nothing, try with higher contrast enhancement
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 3: High contrast enhancement")
+            print(f"[Calibration] Strategy 3: High contrast enhancement + relaxed pattern")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
+                check_nested_pattern=True,
+                min_nested_squares=2,
                 min_area=200,
                 clahe_clip=4.0,  # More aggressive contrast (default is 2.0)
                 use_multi_scale=True,
