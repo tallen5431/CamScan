@@ -85,7 +85,7 @@ def find_main_edges(
     max_edges: int = 10,
     warp: bool = False,
     warp_size: int = 512,
-    min_area: float = 1500.0,
+    min_area: float = 800.0,  # Lowered from 1500 for better detection
     debug: bool = False,
     use_enhanced_preprocessing: bool = True,
 ):

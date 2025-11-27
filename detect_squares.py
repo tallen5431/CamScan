@@ -4,12 +4,20 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 # Tunables (easy to adjust)
-MIN_AREA_DEFAULT = 800
+MIN_AREA_DEFAULT = 400  # Lowered from 800 for better small marker detection
 MAX_AREA_RATIO_DEFAULT = 0.6
 MAX_ASPECT_DEFAULT = 1.5
 
 DEBUG_DUMP_DIR = os.getenv("CAMSCAN_DEBUG_DUMP", "uploads/_debug")
 DUMP_DEBUG_IMAGES = bool(os.getenv("CAMSCAN_DEBUG", "0") == "1")
+
+
+def _auto_canny(image: np.ndarray, sigma: float = 0.33) -> np.ndarray:
+    """Automatic Canny edge detection with adaptive thresholds."""
+    v = float(np.median(image))
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    return cv2.Canny(image, lower, upper)
 
 
 def _ensure_debug_dir():
@@ -225,6 +233,11 @@ def detect_dark_squares(
     all_candidates = []
     scales = scale_factors if use_multi_scale else (1.0,)
 
+    # Debug counters
+    filtered_by_area = 0
+    filtered_by_aspect = 0
+    filtered_by_refinement = 0
+
     for scale in scales:
         if scale != 1.0:
             scaled_w = max(2, int(w_img * scale))
@@ -246,9 +259,11 @@ def detect_dark_squares(
         adaptive_mask = cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                               cv2.THRESH_BINARY_INV, 21, 5)
 
-        edges1 = cv2.Canny(enhanced, 30, 90)
-        edges2 = cv2.Canny(enhanced, 60, 150)
-        edges_combined = cv2.bitwise_or(edges1, edges2)
+        # Use adaptive Canny thresholds based on image content
+        edges_auto = _auto_canny(enhanced, sigma=0.33)
+        # Also use fixed thresholds as fallback for edge cases
+        edges2 = cv2.Canny(enhanced, 50, 150)
+        edges_combined = cv2.bitwise_or(edges_auto, edges2)
 
         dark_mask = cv2.bitwise_or(base_mask, adaptive_mask)
         dark_mask = cv2.bitwise_or(dark_mask, edges_combined)
@@ -260,11 +275,13 @@ def detect_dark_squares(
         contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         scale_factor_area = scale * scale
-        eff_min_area = max(min_area * scale_factor_area, 0.00025 * (gray_scaled.shape[0] * gray_scaled.shape[1]))
+        # More permissive minimum area: 0.00015 (0.015%) instead of 0.00025 (0.025%)
+        eff_min_area = max(min_area * scale_factor_area, 0.00015 * (gray_scaled.shape[0] * gray_scaled.shape[1]))
 
         for c in contours:
             area = cv2.contourArea(c)
             if area < eff_min_area:
+                filtered_by_area += 1
                 continue
 
             hull = cv2.convexHull(c)
@@ -299,6 +316,7 @@ def detect_dark_squares(
                 short_side = float(max(1, min(w_orig, h_orig)))
                 aspect = long_side / short_side
                 if aspect > max_aspect:
+                    filtered_by_aspect += 1
                     continue
 
                 ok, box_global = _refine_square_in_roi(
@@ -314,6 +332,7 @@ def detect_dark_squares(
                     debug=debug,
                 )
                 if not ok:
+                    filtered_by_refinement += 1
                     continue
 
                 roi = gray[y_orig : y_orig + h_orig, x_orig : x_orig + w_orig]
@@ -329,9 +348,17 @@ def detect_dark_squares(
                 extent = (area / (w0 * h0 + 1e-6))
                 geom_score = (solidity * 0.6 + extent * 0.4)
 
-                final_score = 0.6 * dark_score + 0.4 * geom_score + 0.15 * size_score
+                # Rebalanced: geometry is more important than darkness for calibration markers
+                final_score = 0.35 * dark_score + 0.55 * geom_score + 0.10 * size_score
 
                 all_candidates.append((final_score, x_orig, y_orig, w_orig, h_orig, mean_val))
+
+    if debug or DUMP_DEBUG_IMAGES:
+        print(f"[DetectSquares] Filtering summary:")
+        print(f"  - Filtered by area (too small): {filtered_by_area}")
+        print(f"  - Filtered by aspect ratio: {filtered_by_aspect}")
+        print(f"  - Filtered by refinement: {filtered_by_refinement}")
+        print(f"  - Total candidates found: {len(all_candidates)}")
 
     if not all_candidates:
         return []
@@ -352,7 +379,8 @@ def detect_dark_squares(
                 intersection = (x2 - x1) * (y2 - y1)
                 union = w * h + ew * eh - intersection
                 iou = intersection / union if union > 0 else 0
-                if iou > 0.4:
+                # Increased from 0.4 to 0.6 for more conservative deduplication
+                if iou > 0.6:
                     overlap = True
                     break
         if not overlap:
