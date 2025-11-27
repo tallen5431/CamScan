@@ -191,6 +191,44 @@
       font: 14px/1.2 Segoe UI, system-ui, sans-serif;
     }
 
+    .cal-panel input[type="range"]{
+      width: 100%;
+      height: 6px;
+      background: var(--cal-border);
+      border-radius: 3px;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .cal-panel input[type="range"]::-webkit-slider-thumb{
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      background: var(--cal-accent);
+      cursor: pointer;
+      border-radius: 50%;
+      border: 2px solid #000;
+    }
+
+    .cal-panel input[type="range"]::-moz-range-thumb{
+      width: 20px;
+      height: 20px;
+      background: var(--cal-accent);
+      cursor: pointer;
+      border-radius: 50%;
+      border: 2px solid #000;
+    }
+
+    .cal-panel input[type="range"]:hover::-webkit-slider-thumb{
+      background: var(--cal-accent-hover);
+    }
+
+    .cal-panel input[type="range"]:hover::-moz-range-thumb{
+      background: var(--cal-accent-hover);
+    }
+
     .cal-panel select{
       padding: 0.5rem;
       background: var(--cal-bg-medium);
@@ -411,6 +449,62 @@ window.CalibUI = (function(){
       gridLabel.appendChild(gridChk);
       gridLabel.appendChild(document.createTextNode(' Show measurement grid'));
       body.appendChild(gridLabel);
+
+      // Text size slider
+      const textSizeLabel = document.createElement('label');
+      textSizeLabel.innerHTML = '<strong>Annotation Text Size:</strong>';
+      const textSizeSlider = document.createElement('input');
+      textSizeSlider.type = 'range';
+      textSizeSlider.min = '0.5';
+      textSizeSlider.max = '3.0';
+      textSizeSlider.step = '0.1';
+      textSizeSlider.value = (overlay.opts && overlay.opts.labelScale) || 1.35;
+      textSizeSlider.style.width = '100%';
+      textSizeSlider.style.marginTop = '0.5rem';
+
+      const textSizeValue = document.createElement('span');
+      textSizeValue.textContent = `${textSizeSlider.value}x`;
+      textSizeValue.style.marginLeft = '0.5rem';
+      textSizeValue.style.fontWeight = 'bold';
+      textSizeValue.style.color = 'var(--cal-accent)';
+
+      textSizeSlider.oninput = () => {
+        overlay.opts.labelScale = parseFloat(textSizeSlider.value);
+        textSizeValue.textContent = `${textSizeSlider.value}x`;
+        if (overlay.redraw) overlay.redraw();
+      };
+
+      textSizeLabel.appendChild(textSizeSlider);
+      textSizeLabel.appendChild(textSizeValue);
+      body.appendChild(textSizeLabel);
+
+      // Line thickness slider
+      const lineThickLabel = document.createElement('label');
+      lineThickLabel.innerHTML = '<strong>Line Thickness:</strong>';
+      const lineThickSlider = document.createElement('input');
+      lineThickSlider.type = 'range';
+      lineThickSlider.min = '1';
+      lineThickSlider.max = '8';
+      lineThickSlider.step = '1';
+      lineThickSlider.value = (overlay.opts && overlay.opts.linePx) || 3;
+      lineThickSlider.style.width = '100%';
+      lineThickSlider.style.marginTop = '0.5rem';
+
+      const lineThickValue = document.createElement('span');
+      lineThickValue.textContent = `${lineThickSlider.value}px`;
+      lineThickValue.style.marginLeft = '0.5rem';
+      lineThickValue.style.fontWeight = 'bold';
+      lineThickValue.style.color = 'var(--cal-accent)';
+
+      lineThickSlider.oninput = () => {
+        overlay.opts.linePx = parseInt(lineThickSlider.value);
+        lineThickValue.textContent = `${lineThickSlider.value}px`;
+        if (overlay.redraw) overlay.redraw();
+      };
+
+      lineThickLabel.appendChild(lineThickSlider);
+      lineThickLabel.appendChild(lineThickValue);
+      body.appendChild(lineThickLabel);
     }
 
     details.append(body);
@@ -445,6 +539,25 @@ window.CalibUI = (function(){
       return b;
     };
 
+    // New Image button (goes back to upload)
+    const newImageSection = document.createElement('div');
+    newImageSection.className = 'cal-toolbar-section';
+
+    const newImage = btn('⬅️', 'New', 'Upload New Image', () => {
+      if (!overlay.ann || overlay.ann.items.length === 0 ||
+          confirm('Start over with a new image? Current annotations will be lost.')) {
+        window.location.reload();
+      }
+    });
+
+    newImageSection.appendChild(newImage);
+    top.appendChild(newImageSection);
+
+    // Divider
+    const divNew = document.createElement('div');
+    divNew.className = 'cal-toolbar-divider';
+    top.appendChild(divNew);
+
     // Mode buttons (annotation tools)
     const toolsSection = document.createElement('div');
     toolsSection.className = 'cal-toolbar-section';
@@ -475,7 +588,13 @@ window.CalibUI = (function(){
     });
     del.disabled = !(overlay.ann && overlay.ann.selectedId != null);
 
-    editSection.append(undo, del);
+    const clearAll = btn('🗑✖', 'Clear', 'Clear All Annotations', () => {
+      if (confirm('Delete all annotations? This cannot be undone.')) {
+        if (overlay.clearAll) overlay.clearAll();
+      }
+    });
+
+    editSection.append(undo, del, clearAll);
     top.appendChild(editSection);
 
     // Divider
@@ -512,11 +631,33 @@ window.CalibUI = (function(){
     downloadSection.className = 'cal-toolbar-section';
     downloadSection.style.position = 'relative';
 
+    // Quick download PNG button
+    const quickDownload = document.createElement('button');
+    quickDownload.type = 'button';
+    quickDownload.className = 'cal-icon cal-btn-download';
+    quickDownload.setAttribute('data-tooltip', 'Quick Download PNG');
+    quickDownload.innerHTML = '<span class="cal-icon-emoji">💾</span><span class="cal-icon-text">Save PNG</span>';
+    quickDownload.onclick = () => {
+      if (overlay && window.CalibExport) {
+        window.CalibExport.exportPNG(
+          overlay.img,
+          overlay.data,
+          overlay.ann,
+          overlay.opts.showGrid,
+          overlay.opts.showMarkers,
+          overlay.opts.units,
+          overlay.opts.labelScale,
+          overlay.opts.linePx
+        );
+      }
+    };
+
+    // Download options menu button
     const download = document.createElement('button');
     download.type = 'button';
-    download.className = 'cal-icon cal-btn-download';
-    download.setAttribute('data-tooltip', 'Download Annotated Image');
-    download.innerHTML = '<span class="cal-icon-emoji">💾</span><span class="cal-icon-text">Download</span>';
+    download.className = 'cal-icon';
+    download.setAttribute('data-tooltip', 'More Download Options');
+    download.innerHTML = '<span class="cal-icon-emoji">⬇️</span><span class="cal-icon-text">Options</span>';
 
     // Quick save menu
     const saveMenu = document.createElement('div');
@@ -583,7 +724,7 @@ window.CalibUI = (function(){
     };
 
     saveMenu.append(savePNG, saveJSON, saveBoth);
-    downloadSection.append(download, saveMenu);
+    downloadSection.append(quickDownload, download, saveMenu);
 
     download.onclick = () => {
       saveMenu.classList.toggle('active');
