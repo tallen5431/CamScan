@@ -153,6 +153,20 @@
       "timestamp": "2025-11-27T03:06:11.520924",
       "description": "pre-modify calibration_core.py",
       "size": 9987
+    },
+    {
+      "path": "/home/jupyter-tj/projects/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/projects/CamScan/.backups/detect_squares.py.20251127-031307-512.bak",
+      "timestamp": "2025-11-27T03:13:07.513506",
+      "description": "pre-modify detect_squares.py",
+      "size": 19403
+    },
+    {
+      "path": "/home/jupyter-tj/projects/CamScan/edge_finder.py",
+      "backup_path": "/home/jupyter-tj/projects/CamScan/.backups/edge_finder.py.20251127-031307-528.bak",
+      "timestamp": "2025-11-27T03:13:07.529147",
+      "description": "pre-modify edge_finder.py",
+      "size": 8945
     }
   ]
 }
