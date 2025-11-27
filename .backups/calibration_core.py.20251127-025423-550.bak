@@ -1,0 +1,280 @@
+import os, cv2, json, time, tempfile
+import numpy as np
+from typing import Dict, Any, Tuple, List, Optional
+
+# External helpers (already in your project)
+from detect_squares import detect_dark_squares, detect_dark_squares_robust
+from edge_finder import find_main_edges
+
+# ----------------------------
+# Tunables / Defaults
+# ----------------------------
+EDGE_MM_DEFAULT: float = 30.0   # default marker edge in millimeters
+PADDING_PX: int = 80            # crop padding around candidate square
+DOWNSCALE_FACTOR: float = 1.0   # speed-up for edge finder (1.0 = off)
+MAX_EDGES: int = 10             # contours to analyze inside edge_finder
+LINE_THICKNESS: int = 3         # overlay poly thickness
+
+# Artifacts policy
+SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs
+
+# Cleanup policy
+DELETE_ALL_OTHER_UPLOADS: bool = False  # keep previous uploads; clean up with separate job
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+
+
+# ----------------------------
+# Small helpers
+# ----------------------------
+def _iou(a, b) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    x1, y1 = max(ax, bx), max(ay, by)
+    x2, y2 = min(ax+aw, bx+bw), min(ay+ah, by+bh)
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    inter = (x2-x1)*(y2-y1)
+    union = aw*ah + bw*bh - inter
+    return inter/union if union > 0 else 0.0
+
+def _dedup_rects(rects: List[Tuple[int,int,int,int]], iou_thresh: float=0.45):
+    out: List[Tuple[int,int,int,int]] = []
+    for r in rects:
+        if all(_iou(r, s) < iou_thresh for s in out):
+            out.append(r)
+    return out
+
+def _crop_region(img, x, y, w, h, pad: int):
+    H, W = img.shape[:2]
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(W, x + w + pad)
+    y1 = min(H, y + h + pad)
+    return img[y0:y1, x0:x1], x0, y0
+
+def _avg_side_len(pts: List[Tuple[float,float]]) -> float:
+    if len(pts) < 4:
+        return 0.0
+    p = np.array(pts, dtype=np.float32)
+    d = 0.0
+    for i in range(4):
+        a, b = p[i], p[(i+1) % 4]
+        d += float(np.linalg.norm(a-b))
+    return d / 4.0
+
+def _delete_other_uploads(out_dir: str, keep_base: str) -> None:
+    """
+    Delete all image files in out_dir whose base name != keep_base.
+    This keeps the folder tidy and avoids serving a previous run's image.
+    """
+    if not DELETE_ALL_OTHER_UPLOADS:
+        return
+    try:
+        for name in os.listdir(out_dir):
+            p = os.path.join(out_dir, name)
+            if not os.path.isfile(p):
+                continue
+            base, ext = os.path.splitext(name)
+            if ext.lower() not in IMAGE_EXTS:
+                continue
+            if base == keep_base:
+                continue
+            try:
+                os.remove(p)
+                print(f"[Calibration] Deleted old upload: {p}")
+            except Exception as e:
+                print(f"[Calibration] ⚠️ Failed to delete {p}: {e}")
+    except FileNotFoundError:
+        pass
+
+
+# ----------------------------
+# Main entry point (used by app)
+# ----------------------------
+def calibrate_image(img_bgr: np.ndarray,
+                    edge_mm: Optional[float] = None,
+                    thresholds: Tuple[int,int,int] = (60, 80, 100),
+                    use_robust_detection: bool = True,
+                    min_nested_squares: int = 0,
+                    line_thickness: int = LINE_THICKNESS
+                    ) -> Tuple[Dict[str, Any], np.ndarray]:
+    """
+    Detect near-square dark regions -> refine with edge_finder -> compute mm/px.
+    Returns (calibration_dict, overlay_image_bgr).
+    """
+    if img_bgr is None or not hasattr(img_bgr, "shape"):
+        raise ValueError("calibrate_image: expected a BGR ndarray")
+
+    H, W = img_bgr.shape[:2]
+    overlay = img_bgr.copy()
+
+    # pick runtime edge length (argument wins over module default)
+    edge_len_mm = float(edge_mm) if edge_mm is not None else float(EDGE_MM_DEFAULT)
+    print(f"[Calibration] Using edge length: {edge_len_mm} mm  (module default={EDGE_MM_DEFAULT})")
+
+    # 1) Enhanced multi-threshold detection with pattern verification
+    rects: List[Tuple[int,int,int,int]] = []
+    
+    if use_robust_detection:
+        # Use the enhanced robust detection method
+        print(f"[Calibration] Using robust multi-scale detection with nested pattern check")
+        dets = detect_dark_squares_robust(
+            img_bgr,
+            edge_mm=edge_len_mm,
+            check_nested_pattern=True,
+            min_nested_squares=0,  # Disabled by default for compatibility
+            use_multi_scale=True,
+            scale_factors=(1.0, 0.8, 0.6)
+        )
+        for (_score, x, y, w, h, _mean) in dets:
+            rects.append((x, y, w, h))
+    else:
+        # Original multi-threshold approach
+        for t in thresholds:
+            dets = detect_dark_squares(img_bgr, brightness_thresh=t)
+            for (_score, x, y, w, h, _mean) in dets:
+                rects.append((x, y, w, h))
+    
+    rects = _dedup_rects(rects, iou_thresh=0.45)
+    rects = sorted(rects, key=lambda r: r[2]*r[3], reverse=True)
+    
+    print(f"[Calibration] Found {len(rects)} candidate marker regions")
+    
+
+    markers: List[Dict[str, Any]] = []
+
+    for (x, y, w, h) in rects:
+        # Crop + optional downscale
+        crop, ox, oy = _crop_region(img_bgr, x, y, w, h, PADDING_PX)
+        crop_ds = (cv2.resize(
+            crop,
+            (max(1, int(crop.shape[1]*DOWNSCALE_FACTOR)),
+             max(1, int(crop.shape[0]*DOWNSCALE_FACTOR))),
+            interpolation=cv2.INTER_AREA
+        ) if DOWNSCALE_FACTOR < 1.0 else crop)
+
+        # Find principal quad and corners
+        edge_vis, _n_edges, warped, corners_local = find_main_edges(
+            crop_ds, MAX_EDGES, warp=True
+        )
+        if not corners_local:
+            continue
+
+        # Map corners back to full image coords
+        denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
+        mapped: List[Tuple[int,int]] = [
+            (ox + int(cx / denom), oy + int(cy / denom))
+            for (cx, cy) in corners_local
+        ]
+
+        # Compute scale
+        px_edge = _avg_side_len(mapped)
+        if px_edge <= 0:
+            continue
+        mm_per_px = float(edge_len_mm) / float(px_edge)
+
+        # Overlay
+        cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0,255,255), line_thickness)
+        for (gx, gy) in mapped:
+            cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
+            cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
+
+        # Record
+        markers.append({
+            "edge_mm": float(edge_len_mm),
+            "mm_per_px": float(mm_per_px),
+            "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
+        })
+
+    print(f"[Calibration] Successfully calibrated {len(markers)} marker(s)")
+    # Global averages
+    mm_per_px_vals = [m["mm_per_px"] for m in markers] or [0.0]
+    mm_per_px_avg = float(np.mean(mm_per_px_vals))
+    px_per_mm_avg = (1.0 / mm_per_px_avg) if mm_per_px_avg > 0 else 0.0
+
+    cal_data: Dict[str, Any] = {
+        "image": None,  # filled in save_outputs() if original file exists
+        "image_size": {"width": int(W), "height": int(H)},
+        "marker_size_mm": float(edge_len_mm),   # <-- always the runtime value
+        "mm_per_px": mm_per_px_avg,
+        "pixels_per_mm": px_per_mm_avg,
+        "markers": markers
+    }
+
+    return cal_data, overlay
+
+
+# ----------------------------
+# Output helper (used by app)
+# ----------------------------
+
+def save_outputs(image_name: str,
+                 cal_data: Dict[str, Any],
+                 overlay_img: np.ndarray,
+                 out_dir: str) -> Tuple[str, Optional[str]]:
+    """
+    Persist artifacts required by the single-page viewer.
+
+    Returns (json_path, overlay_path or None)
+
+    - Writes ONLY the JSON (tiny), so the viewer can fetch it.
+    - Overlay JPG remains disabled by default.
+    - Keeps the current raw upload (so the browser can fetch it).
+    - Deletes ALL other images immediately to avoid "previous run" leftovers.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    base = os.path.splitext(os.path.basename(image_name))[0]
+    json_path = os.path.join(out_dir, f"{base}.calibration.json")
+    overlay_path = os.path.join(out_dir, f"{base}_overlay.jpg")
+
+    # Include the original image filename if it still exists
+    orig_any = None
+    for ext in IMAGE_EXTS:
+        p = os.path.join(out_dir, base + ext)
+        if os.path.exists(p):
+            orig_any = os.path.basename(p)
+            break
+
+    # Prepare JSON (ensure correct top-level fields)
+    cal = dict(cal_data)
+    # Always enforce runtime marker size (do not keep stale values)
+    if "marker_size_mm" not in cal or cal["marker_size_mm"] is None:
+        # If upstream forgot, fall back to default
+        cal["marker_size_mm"] = float(EDGE_MM_DEFAULT)
+    else:
+        cal["marker_size_mm"] = float(cal["marker_size_mm"])
+
+    cal["image"] = orig_any  # viewer can load the current file, or ignore if None
+
+    # Write JSON atomically
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f"{base}.calibration.", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cal, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, json_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+    # Optionally save overlay
+    if SAVE_OVERLAY_IMAGE and overlay_img is not None:
+        try:
+            fd2, tmp_over = tempfile.mkstemp(dir=out_dir, prefix=f".{base}_overlay.", suffix=".jpg")
+            os.close(fd2)
+            cv2.imwrite(tmp_over, overlay_img)
+            os.replace(tmp_over, overlay_path)
+        except Exception:
+            overlay_path = None
+    else:
+        overlay_path = None
+
+    # Delete ALL other uploads except the current one
+    _delete_other_uploads(out_dir, keep_base=base)
+
+    return json_path, overlay_path
