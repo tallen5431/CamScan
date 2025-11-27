@@ -63,16 +63,64 @@ def _score_quad(quad: np.ndarray, img_shape) -> float:
     return score
 
 
-def _strong_preprocess(crop_gray: np.ndarray) -> np.ndarray:
+def _strong_preprocess(crop_gray: np.ndarray, focus_on_dark_square: bool = True) -> np.ndarray:
+    """
+    Preprocess image to find edges, with option to focus on dark square boundary.
+
+    Args:
+        crop_gray: Grayscale image
+        focus_on_dark_square: If True, focuses on finding the outer boundary of dark regions
+                             (useful for calibration markers with white squares inside)
+    """
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     eq = clahe.apply(cv2.GaussianBlur(crop_gray, (5, 5), 0))
-    sx = cv2.Sobel(eq, cv2.CV_32F, 1, 0, ksize=3)
-    sy = cv2.Sobel(eq, cv2.CV_32F, 0, 1, ksize=3)
-    sob = cv2.magnitude(sx, sy)
-    sob = np.uint8(np.clip(sob / (sob.max() + 1e-6) * 255.0, 0, 255))
-    can1 = _auto_canny(eq, sigma=0.33)
-    _, thr = cv2.threshold(sob, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    combined = cv2.bitwise_or(can1, thr)
+
+    if focus_on_dark_square:
+        # For calibration markers: find the DARK square boundary, not internal white squares
+        # Invert to make dark regions bright, then find edges
+        inverted = cv2.bitwise_not(eq)
+
+        # Threshold to isolate dark regions
+        _, dark_mask = cv2.threshold(eq, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # Find the largest dark contour
+        contours_dark, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours_dark:
+            # Get largest dark region
+            largest = max(contours_dark, key=cv2.contourArea)
+            mask = np.zeros_like(dark_mask)
+            cv2.drawContours(mask, [largest], -1, 255, thickness=cv2.FILLED)
+
+            # Get edges of this dark region
+            edges = cv2.Canny(mask, 100, 200)
+
+            # Combine with gradient edges for robustness
+            sx = cv2.Sobel(eq, cv2.CV_32F, 1, 0, ksize=3)
+            sy = cv2.Sobel(eq, cv2.CV_32F, 0, 1, ksize=3)
+            sob = cv2.magnitude(sx, sy)
+            sob = np.uint8(np.clip(sob / (sob.max() + 1e-6) * 255.0, 0, 255))
+            _, thr = cv2.threshold(sob, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            combined = cv2.bitwise_or(edges, thr)
+        else:
+            # Fallback to gradient-based detection
+            sx = cv2.Sobel(eq, cv2.CV_32F, 1, 0, ksize=3)
+            sy = cv2.Sobel(eq, cv2.CV_32F, 0, 1, ksize=3)
+            sob = cv2.magnitude(sx, sy)
+            sob = np.uint8(np.clip(sob / (sob.max() + 1e-6) * 255.0, 0, 255))
+            can1 = _auto_canny(eq, sigma=0.33)
+            _, thr = cv2.threshold(sob, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            combined = cv2.bitwise_or(can1, thr)
+    else:
+        # Original gradient-based approach
+        sx = cv2.Sobel(eq, cv2.CV_32F, 1, 0, ksize=3)
+        sy = cv2.Sobel(eq, cv2.CV_32F, 0, 1, ksize=3)
+        sob = cv2.magnitude(sx, sy)
+        sob = np.uint8(np.clip(sob / (sob.max() + 1e-6) * 255.0, 0, 255))
+        can1 = _auto_canny(eq, sigma=0.33)
+        _, thr = cv2.threshold(sob, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        combined = cv2.bitwise_or(can1, thr)
+
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k, iterations=2)
     combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, k, iterations=1)
@@ -94,7 +142,7 @@ def find_main_edges(
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     if use_enhanced_preprocessing:
         gray_b = cv2.bilateralFilter(gray, 9, 75, 75)
-        preprocess_map = _strong_preprocess(gray_b)
+        preprocess_map = _strong_preprocess(gray_b, focus_on_dark_square=True)
     else:
         preprocess_map = _auto_canny(gray)
     if debug and DEBUG:
@@ -128,33 +176,53 @@ def find_main_edges(
             except ValueError:
                 continue
             try:
-                # try sub-pixel via goodFeaturesToTrack + cornerSubPix in a local ROI
+                # Refine corners by searching NEAR the quad vertices, not globally
+                # This prevents picking up internal white square corners
+                refined = []
                 x, y, w, h = cv2.boundingRect(np.intp(ordered))
-                pad = max(6, int(min(w, h) * 0.15))
-                x0 = max(0, x - pad)
-                y0 = max(0, y - pad)
-                x1 = min(crop.shape[1], x + w + pad)
-                y1 = min(crop.shape[0], y + h + pad)
-                roi_gray = cv2.cvtColor(crop[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-                corners = cv2.goodFeaturesToTrack(roi_gray, maxCorners=8, qualityLevel=0.01, minDistance=6)
-                if corners is not None and len(corners) >= 4:
-                    corners = corners.reshape(-1, 2)
-                    corners_global = corners + np.array([x0, y0], dtype=np.float32)
-                    refined = []
-                    for p in ordered:
-                        dists = np.linalg.norm(corners_global - p, axis=1)
-                        idx = int(np.argmin(dists))
-                        refined.append(corners_global[idx])
-                    refined = np.array(refined, dtype=np.float32)
+
+                # For each quad corner, search in a small local window
+                for p in ordered:
+                    px, py = int(p[0]), int(p[1])
+                    # Small window around this corner (10% of marker size)
+                    window_size = max(10, int(min(w, h) * 0.10))
+                    wx0 = max(0, px - window_size)
+                    wy0 = max(0, py - window_size)
+                    wx1 = min(crop.shape[1], px + window_size)
+                    wy1 = min(crop.shape[0], py + window_size)
+
+                    window = cv2.cvtColor(crop[wy0:wy1, wx0:wx1], cv2.COLOR_BGR2GRAY)
+
+                    # Find corners in this small window
+                    local_corners = cv2.goodFeaturesToTrack(
+                        window,
+                        maxCorners=3,
+                        qualityLevel=0.05,
+                        minDistance=5,
+                        blockSize=3
+                    )
+
+                    if local_corners is not None and len(local_corners) > 0:
+                        # Map back to full crop coordinates
+                        local_corners = local_corners.reshape(-1, 2) + np.array([wx0, wy0], dtype=np.float32)
+                        # Pick the corner closest to original quad vertex
+                        dists = np.linalg.norm(local_corners - p, axis=1)
+                        best_idx = int(np.argmin(dists))
+                        refined.append(local_corners[best_idx])
+                    else:
+                        # No corner found, use original
+                        refined.append(p)
+
+                refined = np.array(refined, dtype=np.float32)
+
+                # Optional sub-pixel refinement
+                try:
                     initial_pts = refined.reshape(-1, 1, 2).astype(np.float32)
                     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
-                    try:
-                        cv2.cornerSubPix(roi_gray, initial_pts - np.array([x0, y0], dtype=np.float32), (5,5), (-1,-1), criteria)
-                        # map back to global
-                        refined_sub = (initial_pts.reshape(-1,2) + np.array([x0, y0], dtype=np.float32))
-                        ordered = refined_sub
-                    except Exception:
-                        pass
+                    cv2.cornerSubPix(gray, initial_pts, (5, 5), (-1, -1), criteria)
+                    ordered = initial_pts.reshape(-1, 2)
+                except Exception:
+                    ordered = refined
             except Exception:
                 pass
             score = _score_quad(ordered, crop.shape)
