@@ -103,6 +103,8 @@ def calibrate_image(img_bgr: np.ndarray,
     Detect near-square dark regions -> refine with edge_finder -> compute mm/px.
     Returns (calibration_dict, overlay_image_bgr).
     """
+    start_time = time.time()
+
     if img_bgr is None or not hasattr(img_bgr, "shape"):
         raise ValueError("calibrate_image: expected a BGR ndarray")
 
@@ -241,9 +243,13 @@ def calibrate_image(img_bgr: np.ndarray,
             "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
         })
 
+    elapsed = time.time() - start_time
     print(f"[Calibration] Processing complete:")
     print(f"  - Successfully calibrated: {len(markers)} marker(s)")
     print(f"  - Failed corner refinement: {refinement_failures}")
+    print(f"  - Total processing time: {elapsed:.3f}s")
+    if len(markers) > 0:
+        print(f"  - Time per marker: {elapsed/len(markers):.3f}s")
     if len(markers) == 0 and len(rects) > 0:
         print(f"  ⚠️  All candidates failed corner refinement - check image quality and marker clarity")
     # Global averages
