@@ -24,26 +24,73 @@
       border-bottom: 2px solid var(--cal-border);
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem 0.75rem;
+      gap: 0.3rem;
+      padding: 0.4rem 0.5rem;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
       scrollbar-width: thin;
-      flex-wrap: wrap;
+      flex-wrap: nowrap; /* Don't wrap on mobile - allow horizontal scroll */
+    }
+
+    /* Scroll hint gradient on mobile */
+    @media (max-width: 767px){
+      .cal-topbar::after{
+        content: '';
+        position: sticky;
+        right: 0;
+        width: 40px;
+        height: 100%;
+        background: linear-gradient(to left, var(--cal-bg-dark) 0%, transparent 100%);
+        pointer-events: none;
+        flex-shrink: 0;
+        margin-left: auto;
+      }
+    }
+
+    /* On desktop, allow wrapping */
+    @media (min-width: 768px){
+      .cal-topbar{
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.5rem 0.75rem;
+      }
     }
 
     .cal-toolbar-section{
       display: flex;
       align-items: center;
-      gap: 0.4rem;
-      padding: 0.25rem 0;
+      gap: 0.3rem;
+      padding: 0.2rem 0;
+      flex-shrink: 0; /* Prevent sections from shrinking */
+    }
+
+    @media (min-width: 768px){
+      .cal-toolbar-section{
+        gap: 0.4rem;
+        padding: 0.25rem 0;
+      }
     }
 
     .cal-toolbar-divider{
       width: 1px;
-      height: 32px;
+      height: 28px;
       background: var(--cal-border);
-      margin: 0 0.25rem;
+      margin: 0 0.15rem;
+      flex-shrink: 0;
+    }
+
+    @media (min-width: 768px){
+      .cal-toolbar-divider{
+        height: 32px;
+        margin: 0 0.25rem;
+      }
+    }
+
+    /* Hide dividers on very small screens to save space */
+    @media (max-width: 480px){
+      .cal-toolbar-divider{
+        display: none;
+      }
     }
 
     .cal-icon{
@@ -51,7 +98,7 @@
       color: var(--cal-text);
       border: 1px solid var(--cal-border);
       border-radius: 8px;
-      padding: 0.5rem 0.75rem;
+      padding: 0.5rem;
       min-width: 44px;
       min-height: 44px;
       font: 14px/1.2 Segoe UI, system-ui, sans-serif;
@@ -63,6 +110,13 @@
       justify-content: center;
       gap: 0.35rem;
       position: relative;
+      flex-shrink: 0;
+    }
+
+    @media (min-width: 640px){
+      .cal-icon{
+        padding: 0.5rem 0.75rem;
+      }
     }
 
     .cal-icon:hover{
@@ -101,42 +155,68 @@
     }
 
     .cal-icon .cal-icon-emoji{
-      font-size: 16px;
+      font-size: 18px;
       line-height: 1;
+    }
+
+    @media (min-width: 640px){
+      .cal-icon .cal-icon-emoji{
+        font-size: 16px;
+      }
     }
 
     .cal-icon .cal-icon-text{
       font-size: 13px;
-      display: none;
+      display: none; /* Hidden on mobile */
     }
 
     @media (min-width: 640px){
       .cal-icon .cal-icon-text{
-        display: inline;
+        display: inline; /* Show text on larger screens */
       }
     }
 
-    /* Tooltip */
-    .cal-icon::after{
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: calc(100% + 8px);
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0, 0, 0, 0.9);
-      color: #fff;
-      padding: 0.4rem 0.6rem;
-      border-radius: 6px;
-      font-size: 12px;
-      white-space: nowrap;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease;
-      z-index: 100;
+    /* Tooltip - only on desktop with mouse */
+    @media (hover: hover) and (pointer: fine) {
+      .cal-icon::after{
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.9);
+        color: #fff;
+        padding: 0.4rem 0.6rem;
+        border-radius: 6px;
+        font-size: 12px;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+        z-index: 100;
+      }
+
+      .cal-icon:hover::after{
+        opacity: 1;
+      }
     }
 
-    .cal-icon:hover::after{
-      opacity: 1;
+    /* Scrollbar styling for toolbar */
+    .cal-topbar::-webkit-scrollbar{
+      height: 4px;
+    }
+
+    .cal-topbar::-webkit-scrollbar-track{
+      background: var(--cal-bg-dark);
+    }
+
+    .cal-topbar::-webkit-scrollbar-thumb{
+      background: var(--cal-border);
+      border-radius: 2px;
+    }
+
+    .cal-topbar::-webkit-scrollbar-thumb:hover{
+      background: #3a3a3a;
     }
 
     .cal-sheet{
