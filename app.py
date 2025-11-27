@@ -27,7 +27,7 @@ ORDERED_SCRIPTS = [
     f"{CALIB_PREFIX}/assets/calib.export.js",
     f"{CALIB_PREFIX}/assets/calib.viewport.js",
     f"{CALIB_PREFIX}/assets/calib.gestures.js",
-    f"{CALIB_PREFIX}/assets/calib.ui.js",
+    f"{CALIB_PREFIX}/assets/calib.ui.enhanced.js",
     f"{CALIB_PREFIX}/assets/calibrationOverlay.js",
 ]
 
@@ -86,6 +86,7 @@ app = Dash(
         r'.*\\.ipynb_checkpoints.*'
         r'|calib\\..*\\.js'          # let ORDERED_SCRIPTS control all calib.* JS
         r'|calibrationOverlay\\.js'  # avoid auto-loading overlay twice
+        r'|calib\\.ui\\.js$'         # use enhanced version only
     ),
     # Served under /camscan/ when behind Caddy
     requests_pathname_prefix=CALIB_PREFIX + "/",
