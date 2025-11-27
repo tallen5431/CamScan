@@ -9,19 +9,19 @@ DEBUG = bool(os.getenv("CAMSCAN_DEBUG", "0") == "1")
 EDGE_FINDER_CONFIG = {
     'min_area': 800.0,  # Lowered from 1500 for better detection
     'warp_size': 512,
-    'corner_search_window_ratio': 0.08,  # 8% of marker size
-    'corner_search_window_min': 8,       # Minimum 8 pixels
-    'corner_max_distance_ratio': 0.8,    # Max distance from expected corner
+    'corner_search_window_ratio': 0.06,  # Tighter: 6% of marker size (was 8%)
+    'corner_search_window_min': 6,       # Minimum 6 pixels (was 8)
+    'corner_max_distance_ratio': 0.6,    # Tighter: max 60% from expected (was 80%)
     'harris_block_size': 2,
     'harris_ksize': 3,
     'harris_k': 0.04,
     'good_features_max_corners': 5,
-    'good_features_quality': 0.03,
+    'good_features_quality': 0.01,       # More selective: 0.01 (was 0.03)
     'good_features_min_distance': 3,
-    'edge_sample_threshold': 30,
-    'subpix_window_size': (7, 7),
-    'subpix_max_iterations': 50,
-    'subpix_epsilon': 0.001,
+    'edge_sample_threshold': 40,         # Stronger edges required: 40 (was 30)
+    'subpix_window_size': (5, 5),        # Tighter window: 5x5 (was 7x7)
+    'subpix_max_iterations': 100,        # More iterations for precision: 100 (was 50)
+    'subpix_epsilon': 0.0001,            # Tighter convergence: 0.0001 (was 0.001)
 }
 
 
