@@ -1,0 +1,151 @@
+import cv2
+import numpy as np
+from typing import List, Tuple
+
+
+def detect_dark_squares(
+    img,
+    min_area: float = 1200.0,
+    max_area_ratio: float = 0.6,
+    ratio_tol: Tuple[float, float] = (0.85, 1.15),
+    brightness_thresh: int = 80,
+    approx_eps: float = 0.03,
+    max_results: int = 25,
+    clahe_clip: float = 2.0,
+    clahe_grid: Tuple[int, int] = (8, 8),
+    blur_ksize: int = 5,
+    morph_kernel_size: int = 5,
+    morph_iterations: int = 2,
+    dark_weight: float = 0.6,
+    shape_weight: float = 0.4,
+    debug: bool = False,
+) -> List[Tuple[float, int, int, int, int, float]]:
+    """Detect dark, nearly-square regions in a BGR image.
+
+    Returns a list of candidates sorted by descending score:
+        (score, x, y, w, h, mean_val)
+
+    This is tuned for a dark outer square (marker) against a lighter background,
+    like your 30x30 mm black square with inner white squares.
+    """
+
+    if img is None or not hasattr(img, "shape"):
+        return []
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h_img, w_img = gray.shape[:2]
+    frame_area = float(h_img * w_img)
+
+    # --- Step 1: Local contrast normalization ---
+    blur = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)
+    enhanced = clahe.apply(blur)
+
+    # --- Step 2: Dark region mask ---
+    # Invert threshold so dark objects become white in the mask.
+    _, base_mask = cv2.threshold(
+        enhanced,
+        brightness_thresh,
+        255,
+        cv2.THRESH_BINARY_INV,
+    )
+
+    # Edge reinforcement to keep structure even if threshold is imperfect.
+    edges = cv2.Canny(enhanced, 40, 120)
+    dark_mask = cv2.bitwise_or(base_mask, edges)
+
+    # Morphology to close small gaps and stabilize contour shapes.
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size))
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k, iterations=morph_iterations)
+
+    if debug:
+        cv2.imshow("gray", gray)
+        cv2.imshow("enhanced", enhanced)
+        cv2.imshow("dark_mask", dark_mask)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    # --- Step 3: Find contours ---
+    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: List[Tuple[float, int, int, int, int, float]] = []
+
+    for c in contours:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, approx_eps * peri, True)
+        area = cv2.contourArea(approx)
+
+        # Must be a convex quadrilateral within area limits
+        if len(approx) != 4 or not cv2.isContourConvex(approx):
+            continue
+        if not (min_area < area < frame_area * max_area_ratio):
+            continue
+
+        x, y, w, h = cv2.boundingRect(approx)
+        if w == 0 or h == 0:
+            continue
+        ratio = w / float(h)
+        if not (ratio_tol[0] <= ratio <= ratio_tol[1]):
+            continue
+
+        roi = gray[y : y + h, x : x + w]
+        mean_val = float(np.mean(roi))
+
+        # Darkness score (how dark the region is overall)
+        dark_score = max(0.0, 1.0 - mean_val / 255.0)
+        # Shape score (how close to a 1:1 aspect ratio)
+        shape_score = 1.0 - abs(1.0 - ratio)
+
+        final_score = dark_weight * dark_score + shape_weight * shape_score
+        candidates.append((final_score, x, y, w, h, mean_val))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[:max_results]
+
+
+def draw_squares(
+    img,
+    detections: List[Tuple[float, int, int, int, int, float]],
+    color: Tuple[int, int, int] = (0, 255, 0),
+    thickness: int = 10,
+    label: bool = True,
+):
+    """Draw detected dark squares with configurable appearance.
+
+    Args:
+        img: BGR image.
+        detections: list from detect_dark_squares().
+        color: border color (BGR tuple).
+        thickness: rectangle border thickness.
+        label: whether to draw labels (True/False).
+    """
+    if img is None or not hasattr(img, "shape"):
+        return img
+
+    result = img.copy()
+    for rank, (_, x, y, w, h, mean_val) in enumerate(detections, start=1):
+        cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)
+        if label:
+            # Slightly inset label so it sits nicely inside thick borders.
+            lx = x + 15
+            ly = y + 45
+            cv2.putText(
+                result,
+                f"S{rank}",
+                (lx, ly),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 0),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                result,
+                f"S{rank}",
+                (lx, ly),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+    return result

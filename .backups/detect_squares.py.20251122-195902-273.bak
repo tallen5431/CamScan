@@ -1,0 +1,308 @@
+import cv2
+import numpy as np
+from typing import List, Tuple
+
+
+def _refine_square_in_roi(
+    gray: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    min_fill: float = 0.35,
+    max_aspect: float = 1.3,
+    debug: bool = False,
+):
+    """
+    Second-pass check inside a candidate ROI.
+
+    Uses edges + minAreaRect on the largest contour in the ROI to verify
+    that it looks like a solid square-ish region.
+
+    Returns:
+        (ok, box_global)
+        ok: bool
+        box_global: (4, 2) int32 array of rotated rectangle points in *global*
+                    image coordinates, or None if not valid.
+    """
+    roi = gray[y : y + h, x : x + w]
+    if roi.size == 0:
+        return False, None
+
+    # Local pre-processing inside ROI
+    roi_blur = cv2.GaussianBlur(roi, (5, 5), 0)
+    _, roi_bin = cv2.threshold(
+        roi_blur,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+    )
+
+    # Edges help stabilize shape even with inner white squares
+    roi_edges = cv2.Canny(roi_bin, 50, 150)
+
+    contours, _ = cv2.findContours(
+        roi_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return False, None
+
+    # Use largest contour in ROI
+    c = max(contours, key=cv2.contourArea)
+    hull = cv2.convexHull(c)
+    contour_area = cv2.contourArea(hull)
+    if contour_area <= 0:
+        return False, None
+
+    rot_rect = cv2.minAreaRect(hull)
+    box = cv2.boxPoints(rot_rect)  # (4, 2) float32
+    box = box.astype(np.float32)
+
+    # Side lengths and aspect of rotated box
+    side_lengths = [
+        float(np.linalg.norm(box[i] - box[(i + 1) % 4])) for i in range(4)
+    ]
+    max_side = max(side_lengths)
+    min_side = max(1e-3, min(side_lengths))
+    aspect = max_side / min_side  # >= 1
+
+    # Reject clearly non-square shapes
+    if aspect > max_aspect:
+        return False, None
+
+    # Fill ratio: contour area vs rotated box area
+    box_area = max_side * min_side
+    fill = contour_area / (box_area + 1e-6)
+    if fill < min_fill:
+        return False, None
+
+    # Convert box coordinates from ROI space to global image space
+    box_global = box.copy()
+    box_global[:, 0] += float(x)
+    box_global[:, 1] += float(y)
+    box_global = box_global.astype(np.int32)
+
+    if debug:
+        dbg = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+        cv2.drawContours(dbg, [box.astype(np.int32)], -1, (0, 255, 0), 2)
+        cv2.imshow("refine_roi", dbg)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    return True, box_global
+
+
+def detect_dark_squares(
+    img,
+    min_area: float = 1000.0,
+    max_area_ratio: float = 0.6,
+    max_aspect: float = 1.6,
+    brightness_thresh: int = 80,
+    approx_eps: float = 0.03,
+    max_results: int = 25,
+    clahe_clip: float = 2.0,
+    clahe_grid: Tuple[int, int] = (8, 8),
+    blur_ksize: int = 5,
+    morph_kernel_size: int = 5,
+    morph_iterations: int = 2,
+    dark_weight: float = 0.6,
+    shape_weight: float = 0.4,
+    debug: bool = False,
+) -> List[Tuple[float, int, int, int, int, float]]:
+    """Detect dark, nearly-square regions in a BGR image.
+
+    Two-pass approach:
+      1) Global: find dark-ish, roughly square candidates over entire frame.
+      2) Per-candidate: re-check each ROI with a more detailed square test.
+
+    Returns a list of candidates sorted by descending score:
+        (score, x, y, w, h, mean_val)
+
+    Tuned for a dark outer square marker against a lighter background,
+    e.g. your black calibration square with inner white squares.
+    """
+    if img is None or not hasattr(img, "shape"):
+        return []
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h_img, w_img = gray.shape[:2]
+    frame_area = float(h_img * w_img)
+
+    # --- Step 1: Local contrast normalization ---
+    blur = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)
+    enhanced = clahe.apply(blur)
+
+    # --- Step 2: Dark region mask (global pass) ---
+    _, base_mask = cv2.threshold(
+        enhanced,
+        brightness_thresh,
+        255,
+        cv2.THRESH_BINARY_INV,
+    )
+
+    # If mask is almost empty or almost full, fall back to Otsu
+    white_ratio = cv2.countNonZero(base_mask) / float(base_mask.size)
+    if white_ratio < 0.01 or white_ratio > 0.9:
+        _, base_mask = cv2.threshold(
+            enhanced,
+            0,
+            255,
+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+        )
+
+    edges = cv2.Canny(enhanced, 40, 120)
+    dark_mask = cv2.bitwise_or(base_mask, edges)
+
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size))
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k, iterations=morph_iterations)
+
+    if debug:
+        cv2.imshow("gray", gray)
+        cv2.imshow("enhanced", enhanced)
+        cv2.imshow("dark_mask", dark_mask)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    # --- Step 3: Find contours (candidate generation) ---
+    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: List[Tuple[float, int, int, int, int, float]] = []
+
+    # Effective min area scales with image size so we handle different FOVs
+    eff_min_area = max(min_area, 0.0003 * frame_area)  # ~0.03% of frame
+
+    for c in contours:
+        if cv2.contourArea(c) < eff_min_area:
+            continue
+
+        hull = cv2.convexHull(c)
+        area = cv2.contourArea(hull)
+        if not (eff_min_area < area < frame_area * max_area_ratio):
+            continue
+
+        peri = cv2.arcLength(hull, True)
+        approx = cv2.approxPolyDP(hull, approx_eps * peri, True)
+
+        candidate_quads = []
+
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            candidate_quads.append(approx.reshape(4, 2).astype(np.float32))
+        else:
+            rect = cv2.minAreaRect(hull)
+            box = cv2.boxPoints(rect)
+            candidate_quads.append(box.astype(np.float32))
+
+        for quad in candidate_quads:
+            x, y, w, h = cv2.boundingRect(np.intp(quad))
+            if w <= 0 or h <= 0:
+                continue
+
+            # Rough aspect filter (global pass)
+            long_side = float(max(w, h))
+            short_side = float(max(1, min(w, h)))
+            aspect = long_side / short_side
+            if aspect > max_aspect:
+                continue
+
+            # Skip obvious frame-border blobs
+            border_tol = 4
+            if (
+                x <= border_tol
+                or y <= border_tol
+                or x + w >= w_img - border_tol
+                or y + h >= h_img - border_tol
+            ):
+                continue
+
+            # --- Step 4: Per-candidate refinement (second pass) ---
+            ok, _ = _refine_square_in_roi(
+                gray,
+                x,
+                y,
+                w,
+                h,
+                min_fill=0.35,
+                max_aspect=1.3,
+                debug=False,
+            )
+            if not ok:
+                continue
+
+            roi = gray[y : y + h, x : x + w]
+            mean_val = float(np.mean(roi))
+
+            # Darkness score: darker patches score higher
+            dark_score = max(0.0, 1.0 - mean_val / 255.0)
+            # Shape score (global): 1.0 for perfect square, decays as aspect grows
+            shape_score = max(0.0, 1.0 - (aspect - 1.0))
+
+            final_score = dark_weight * dark_score + shape_weight * shape_score
+            candidates.append((final_score, x, y, w, h, mean_val))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[:max_results]
+
+
+def draw_squares(
+    img,
+    detections: List[Tuple[float, int, int, int, int, float]],
+    color: Tuple[int, int, int] = (0, 255, 0),
+    thickness: int = 10,
+    label: bool = True,
+):
+    """
+    Draw detected dark squares with a rotated outline that follows edges.
+
+    We re-run the refinement on each ROI to get a rotated min-area rectangle,
+    then draw that box on the full image. This hugs the marker edges much more
+    closely than a simple axis-aligned bounding box.
+    """
+    if img is None or not hasattr(img, "shape"):
+        return img
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    result = img.copy()
+
+    for rank, (_, x, y, w, h, mean_val) in enumerate(detections, start=1):
+        ok, box_global = _refine_square_in_roi(
+            gray,
+            x,
+            y,
+            w,
+            h,
+            min_fill=0.35,
+            max_aspect=1.3,
+            debug=False,
+        )
+
+        if ok and box_global is not None:
+            cv2.drawContours(result, [box_global], -1, color, thickness)
+        else:
+            # Fallback: simple rectangle if refinement fails
+            cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)
+
+        if label:
+            lx = x + 15
+            ly = y + 45
+            cv2.putText(
+                result,
+                f"S{rank}",
+                (lx, ly),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 0),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                result,
+                f"S{rank}",
+                (lx, ly),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+    return result

@@ -1,0 +1,116 @@
+{
+  "entries": [
+    {
+      "path": "/home/jupyter-tj/CamScan/app.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/app.py.20251117-203635-804.bak",
+      "timestamp": "2025-11-17T20:36:35.805139",
+      "description": "pre-modify app.py",
+      "size": 7631
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/calibration_core.py.20251117-203635-818.bak",
+      "timestamp": "2025-11-17T20:36:35.818785",
+      "description": "pre-modify calibration_core.py",
+      "size": 9175
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/calibration_core.py.20251118-160524-626.bak",
+      "timestamp": "2025-11-18T16:05:24.627690",
+      "description": "pre-modify calibration_core.py",
+      "size": 8916
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/calibration_core.py.20251118-160524-640.bak",
+      "timestamp": "2025-11-18T16:05:24.640876",
+      "description": "pre-modify calibration_core.py",
+      "size": 8916
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/detect_squares.py.20251122-165808-318.bak",
+      "timestamp": "2025-11-22T16:58:08.322797",
+      "description": "pre-modify detect_squares.py",
+      "size": 4981
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/detect_squares.py.20251122-172217-025.bak",
+      "timestamp": "2025-11-22T17:22:17.026100",
+      "description": "pre-modify detect_squares.py",
+      "size": 4882
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/detect_squares.py.20251122-195902-273.bak",
+      "timestamp": "2025-11-22T19:59:02.273384",
+      "description": "pre-modify detect_squares.py",
+      "size": 9396
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/calibration_core.py.20251122-195902-286.bak",
+      "timestamp": "2025-11-22T19:59:02.287429",
+      "description": "pre-modify calibration_core.py",
+      "size": 8916
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/edge_finder.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/edge_finder.py.20251122-195902-296.bak",
+      "timestamp": "2025-11-22T19:59:02.296931",
+      "description": "pre-modify edge_finder.py",
+      "size": 7063
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/detect_squares.py.20251122-200908-806.bak",
+      "timestamp": "2025-11-22T20:09:08.807388",
+      "description": "pre-modify detect_squares.py",
+      "size": 19401
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/detect_squares.py.20251122-200908-818.bak",
+      "timestamp": "2025-11-22T20:09:08.818916",
+      "description": "pre-modify detect_squares.py",
+      "size": 19402
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/calibration_core.py.20251122-200908-825.bak",
+      "timestamp": "2025-11-22T20:09:08.825446",
+      "description": "pre-modify calibration_core.py",
+      "size": 9824
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/detect_squares.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/detect_squares.py.20251122-201315-078.bak",
+      "timestamp": "2025-11-22T20:13:15.079515",
+      "description": "pre-modify detect_squares.py",
+      "size": 19403
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/calibration_core.py.20251122-201315-091.bak",
+      "timestamp": "2025-11-22T20:13:15.091940",
+      "description": "pre-modify calibration_core.py",
+      "size": 9808
+    },
+    {
+      "path": "/home/jupyter-tj/CamScan/edge_finder.py",
+      "backup_path": "/home/jupyter-tj/CamScan/.backups/edge_finder.py.20251122-201315-100.bak",
+      "timestamp": "2025-11-22T20:13:15.101330",
+      "description": "pre-modify edge_finder.py",
+      "size": 8945
+    },
+    {
+      "path": "/home/jupyter-tj/projects/CamScan/app.py",
+      "backup_path": "/home/jupyter-tj/projects/CamScan/.backups/app.py.20251126-204704-045.bak",
+      "timestamp": "2025-11-26T20:47:04.048882",
+      "description": "pre-modify app.py",
+      "size": 8109
+    }
+  ]
+}

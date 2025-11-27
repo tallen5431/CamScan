@@ -1,0 +1,937 @@
+[
+  {
+    "timestamp": "2025-10-13T19:42:20.398641",
+    "patch_name": "Modify assets/calib.ui.topbar.js",
+    "description": "Applied 1 edits",
+    "files_modified": [
+      "assets/calib.ui.topbar.js"
+    ],
+    "summary": {
+      "total": 1,
+      "ok": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": {
+      "schema": "codesmith.patch.v1",
+      "timestamp": "2025-10-13T19:42:05.213986",
+      "root_path": null,
+      "file_hashes": {},
+      "file_hashes_eol": {},
+      "edits": [
+        {
+          "operation": "modify",
+          "path": "assets/calib.ui.topbar.js",
+          "content": "window.CalibUITopbar = (function(){\n  function create(rootEl, overlay, panelAPI){\n    const bar = document.createElement('div');\n    bar.className = 'cal-bottombar';\n\n    const btn = (icon, title, fn)=>{\n      const b=document.createElement('button');\n      b.className='cal-btn';\n      b.textContent=icon; b.title=title; b.onclick=fn;\n      b.addEventListener('touchstart', ()=>b.classList.add('active'), {passive:true});\n      b.addEventListener('touchend', ()=>b.classList.remove('active'), {passive:true});\n      return b;\n    };\n\n    // primary tools\n    const modes=[ ['pan','🖐','Pan'], ['segment','📏','Measure'], ['note','🏷','Note'] ];\n    const modeBtns=modes.map(([val,icon,tip])=> btn(icon, tip, ()=>setMode(val)));\n\n    const exportBtn = btn('💾','Export', ()=>overlay.savePNG?.() || overlay.saveJSON?.());\n    const moreBtn = btn('⋯','More', ()=>panelAPI.toggle());\n\n    bar.append(...modeBtns, exportBtn, moreBtn);\n    rootEl.appendChild(bar);\n\n    function reflect(){ modeBtns.forEach((b,i)=> b.setAttribute('aria-pressed', String(overlay.opts.mode===modes[i][0])) ); }\n    function setMode(m){ overlay.setMode(m); reflect(); }\n    reflect();\n\n    // Auto-hide on idle (3s)\n    let hideTimer;\n    function showBar(){ bar.classList.add('visible'); clearTimeout(hideTimer); hideTimer=setTimeout(()=>bar.classList.remove('visible'),3000); }\n    ['pointermove','touchstart','keydown'].forEach(ev=>document.addEventListener(ev, showBar,{passive:true}));\n    showBar();\n\n    // Inject minimal CSS for dark bottom bar\n    const css=`\n      .cal-bottombar{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-around;align-items:center;z-index:50;background:rgba(18,18,18,0.92);backdrop-filter:blur(6px);padding:6px 0;border-top:1px solid #333;opacity:0;transform:translateY(100%);transition:opacity .25s ease,transform .25s ease;}\n      .cal-bottombar.visible{opacity:1;transform:translateY(0);}\n      .cal-bottombar .cal-btn{flex:1;font-size:24px;color:#fff;background:none;border:none;outline:none;min-width:48px;min-height:48px;border-radius:12px;}\n      .cal-bottombar .cal-btn.active{background:rgba(255,255,255,0.1);}\n      @media (hover:hover){.cal-bottombar .cal-btn:hover{background:rgba(255,255,255,0.08);}}\n    `;\n    const style=document.createElement('style'); style.textContent=css; document.head.appendChild(style);\n\n    return {root:bar, reflectMode:reflect};\n  }\n  return {create};\n})();"
+        }
+      ],
+      "normalize_defaults": {},
+      "allow_large_default": false,
+      "transactional": true,
+      "instructions": null
+    },
+    "error_message": null
+  },
+  {
+    "timestamp": "2025-10-19T19:06:26.048388",
+    "patch_name": "Patch 2025-10-19 19:06",
+    "description": "",
+    "files_modified": [
+      "assets/calib.ui.topbar.js"
+    ],
+    "summary": {
+      "total": 1,
+      "ok": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null
+  },
+  {
+    "timestamp": "2025-10-28T16:56:41.891343",
+    "patch_name": "Patch 2025-10-28 16:56",
+    "description": "",
+    "files_modified": [
+      "assets/calib.config.js",
+      "assets/calib.ui.js",
+      "assets/calib.gestures.js",
+      "assets/calib.annotations.js",
+      "assets/calib.draw.js"
+    ],
+    "summary": {
+      "total": 6,
+      "ok": 5,
+      "skipped": 1,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.config.js",
+        "diff": "--- a/assets/calib.config.js+++ b/assets/calib.config.js@@ -0,0 +1,11 @@+// Central configuration for CalibOverlay mobile behavior\n+window.CalibConfig = {\n+  defaults: {\n+    labelScale: 1.5,\n+    linePx: 3,\n+    hitTolPx: 24,\n+    snapPx: 15,\n+    maxZoom: 20,\n+    minZoom: 0.2\n+  }\n+};",
+        "status": "ok",
+        "message": "created"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -1,25 +1,41 @@-// CalibUI composer — builds topbar + panel and wires the \"More\" button.\n+// CalibUI — improved mobile layout & swipeable sheet\n (function ensureCss(){\n-  // Reuse your existing compact CSS (already injected in earlier version)\n+  const ID=\"cal-ui-compact-css-v2\";\n+  if(document.getElementById(ID)) return;\n+  const st=document.createElement('style'); st.id=ID;\n+  st.textContent=`\n+    :root{ --cal-topbar-h:44px; }\n+    @media (min-width:900px){ :root{ --cal-topbar-h:48px; } }\n+    .cal-topbar{ position:sticky; top:0; z-index:10; height:var(--cal-topbar-h);\n+      background:#0e0e0e;border-bottom:1px solid #222;display:flex;align-items:center;gap:.4rem;\n+      padding:0 .5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none; }\n+    .cal-topbar::-webkit-scrollbar{ display:none; }\n+    .cal-icon{ background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:10px;padding:.35rem .6rem;min-width:40px; }\n+    .cal-icon[aria-pressed=\"true\"]{ background:#2b2b2b;color:#fff; }\n+    .cal-sheet{ position:fixed;left:0;right:0;bottom:0;z-index:11;touch-action:pan-y pinch-zoom; }\n+    .cal-sheet>details>summary{background:#111;color:#ddd;padding:.6rem;border-top:1px solid #222;text-align:center;}\n+  `;\n+  document.head.appendChild(st);\n })();\n \n-window.CalibUI = (function(){\n-  function build(rootEl, overlay){\n-    // Clear any old .cal-tools blocks (legacy)\n-    let old = rootEl.querySelector('.cal-tools'); if(old) old.remove();\n+window.CalibUI=(function(){\n+  function build(rootEl,overlay){\n+    const old=rootEl.querySelector('.cal-tools');if(old)old.remove();\n \n-    // Build the bottom sheet first so topbar can bind its \"More\" button\n-    const panelAPI = window.CalibUIPanel.create(rootEl, overlay);\n+    const sheetWrap=document.createElement('div');sheetWrap.className='cal-sheet';\n+    const details=document.createElement('details');const sum=document.createElement('summary');sum.textContent='More ▾';details.append(sum);\n+    const body=document.createElement('div');body.className='cal-panel';details.append(body);sheetWrap.append(details);\n+    rootEl.append(sheetWrap);\n \n-    // Build the top bar and pass panel toggle API\n-    const topbarAPI = window.CalibUITopbar.create(rootEl, overlay, panelAPI);\n+    const top=document.createElement('div');top.className='cal-topbar';\n+    const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n+    const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick=()=>{overlay.setMode(t);details.open=false;reflect();};return b;};\n+    const modeBtns=modes.map(([m,i])=>btn(i,()=>overlay.setMode(m),overlay.opts.mode===m));\n+    top.append(...modeBtns);\n+    const more=document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n+    rootEl.prepend(top);\n \n-    // Full-height fit tie-ins (same as before)\n-    const fitCanvas = ()=>{ overlay.vp.fit(overlay.canvas, overlay.img); (overlay.requestDraw||overlay.redraw).call(overlay); };\n-    const ro = new ResizeObserver(fitCanvas); ro.observe(rootEl);\n-    window.addEventListener('resize', fitCanvas, {passive:true});\n-    window.addEventListener('orientationchange', fitCanvas, {passive:true});\n-    panelAPI.details.addEventListener('toggle', fitCanvas, {passive:true});\n+    sheetWrap.addEventListener('touchstart',e=>{if(e.touches.length===1&&!e.target.closest('input,select,textarea'))details.open=!details.open;},{passive:true});\n+    const reflect=()=>modeBtns.forEach((b,i)=>b.setAttribute('aria-pressed',String(overlay.opts.mode===modes[i][0])));\n   }\n-  return { build };\n-})();\n+  return{build};})();",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.gestures.js",
+        "diff": "--- a/assets/calib.gestures.js+++ b/assets/calib.gestures.js@@ -1,137 +1,30 @@-// Gestures: wheel (anchored), pinch, pan; overlay decides when left-drag pans\n-window.CalibGestures = (function(){\n-  function attach(canvas, viewport, {\n-    onTransform=()=>{}, onHover=()=>{}, onClick=()=>{},\n-    onDown=()=>{}, onDrag=()=>{}, onUp=()=>{},\n-    canPanStart=(ev)=> (ev.shiftKey || ev.button===1 || ev.button===2)\n-  }={}){\n-    canvas.style.touchAction = 'none';\n-    canvas.addEventListener('contextmenu', e=>e.preventDefault());\n+// CalibGestures — smoother pinch/zoom, inertia pan\n+window.CalibGestures=(function(){\n+  function attach(canvas,viewport,{onTransform=()=>{},onHover=()=>{},onClick=()=>{}}={}){\n+    canvas.style.touchAction='none';\n+    canvas.addEventListener('contextmenu',e=>e.preventDefault());\n+    const G={ids:new Set(),pts:new Map(),active:false,startDist:0,startK:1,anchor:[0,0],pan:null,clickArmed:false,down:null,lastMove:0};\n+    const toCanvas=e=>viewport.eventToCanvasXY(e);\n \n-    const G = {\n-      ids:new Set(), pts:new Map(),\n-      active:false, startDist:0, startK:1, anchorImg:[0,0],\n-      pan:null, clickArmed:false, downPos:null, dragging:false,\n-      lastWheel:0\n-    };\n+    function onWheel(e){e.preventDefault();const dy=Math.max(-250,Math.min(250,e.deltaY));const factor=Math.exp(-dy*0.0006);const a=viewport.screenToImage(e,canvas);viewport.setZoomAround(viewport.k*factor,a);onTransform();}\n \n-    const toCanvas = (e) => viewport.eventToCanvasXY(e);\n+    function onPointerDown(e){canvas.setPointerCapture?.(e.pointerId);G.ids.add(e.pointerId);G.pts.set(e.pointerId,toCanvas(e));G.down=toCanvas(e);G.clickArmed=(e.button===0);\n+      if(G.ids.size===2){const ids=[...G.ids];const p1=G.pts.get(ids[0]),p2=G.pts.get(ids[1]);G.active=true;G.startDist=Math.hypot(p2[0]-p1[0],p2[1]-p1[1]);G.startK=viewport.k;const mid=[(p1[0]+p2[0])/2,(p1[1]+p2[1])/2];G.anchor=viewport.canvasToImage(mid[0],mid[1]);G.clickArmed=false;}\n+      if(e.shiftKey||e.button===1||e.button===2){const[cx,cy]=toCanvas(e);G.pan={cx,cy};G.clickArmed=false;}}\n \n-    function onWheel(e){\n-      e.preventDefault();\n-      const now = performance.now();\n-      if (now - G.lastWheel < 8) return;\n-      G.lastWheel = now;\n+    function onPointerMove(e){if(G.ids.has(e.pointerId))G.pts.set(e.pointerId,toCanvas(e));if(G.active&&G.ids.size>=2){const ids=[...G.ids];const p1=G.pts.get(ids[0]),p2=G.pts.get(ids[1]);if(p1&&p2&&G.startDist>0){const f=Math.hypot(p2[0]-p1[0],p2[1]-p1[1])/G.startDist;viewport.setZoomAround(G.startK*f,G.anchor);onTransform();}return;}\n+      if(G.pan){const[cx,cy]=toCanvas(e);viewport.panByCanvasDelta(cx-G.pan.cx,cy-G.pan.cy);G.pan={cx,cy};G.lastMove=Date.now();onTransform();return;}\n+      const[cx,cy]=toCanvas(e);onHover(viewport.canvasToImage(cx,cy));}\n \n-      const dy = Math.max(-200, Math.min(200, e.deltaY));\n-      const factor = Math.exp(-dy * 0.0012);\n-      const anchor = viewport.screenToImage(e, canvas);\n-      viewport.setZoomAround(viewport.k * factor, anchor);\n-      onTransform();\n-    }\n+    function onPointerUp(e){canvas.releasePointerCapture?.(e.pointerId);G.ids.delete(e.pointerId);G.pts.delete(e.pointerId);if(G.ids.size<2)G.active=false;const[cx,cy]=toCanvas(e);\n+      if(G.pan&&Date.now()-G.lastMove<80){requestAnimationFrame(()=>viewport.panByCanvasDelta(5,0));}\n+      if(G.clickArmed&&G.down){const moved=Math.hypot(cx-G.down[0],cy-G.down[1]);if(moved<6)onClick(viewport.canvasToImage(cx,cy));}\n+      G.pan=null;G.clickArmed=false;G.down=null;}\n \n-    function onPointerDown(e){\n-      canvas.setPointerCapture?.(e.pointerId);\n-      G.ids.add(e.pointerId);\n-      G.pts.set(e.pointerId, toCanvas(e));\n-      G.downPos = toCanvas(e);\n-      G.dragging = false;\n-      G.clickArmed = (e.button===0);\n-\n-      // two-finger pinch\n-      if (G.ids.size === 2){\n-        const [a,b] = [...G.ids];\n-        const p1=G.pts.get(a), p2=G.pts.get(b);\n-        G.active = true;\n-        G.startDist = Math.hypot(p2[0]-p1[0], p2[1]-p1[1]);\n-        G.startK = viewport.k;\n-        const mid=[(p1[0]+p2[0])/2,(p1[1]+p2[1])/2];\n-        G.anchorImg = viewport.canvasToImage(mid[0], mid[1]);\n-        G.clickArmed = false;\n-      }\n-\n-      // pan (overlay can force left-drag pan)\n-      if (canPanStart(e)){\n-        const [cx,cy] = toCanvas(e);\n-        G.pan = { cx, cy };\n-        G.clickArmed=false;\n-      }\n-\n-      const [cx,cy] = toCanvas(e);\n-      onDown( viewport.canvasToImage(cx,cy), e );\n-    }\n-\n-    function onPointerMove(e){\n-      if (G.ids.has(e.pointerId)) G.pts.set(e.pointerId, toCanvas(e));\n-\n-      // pinch\n-      if (G.active && G.ids.size >= 2){\n-        const [a,b]=[...G.ids]; const p1=G.pts.get(a), p2=G.pts.get(b);\n-        if (p1 && p2 && G.startDist > 0){\n-          const factor = Math.hypot(p2[0]-p1[0], p2[1]-p1[1]) / G.startDist;\n-          viewport.setZoomAround(G.startK * factor, G.anchorImg);\n-          const mid=[(p1[0]+p2[0])/2,(p1[1]+p2[1])/2];\n-          G.anchorImg = viewport.canvasToImage(mid[0], mid[1]);\n-          onTransform();\n-        }\n-        return;\n-      }\n-\n-      // pan\n-      if (G.pan){\n-        const [cx,cy] = toCanvas(e);\n-        viewport.panByCanvasDelta(cx - G.pan.cx, cy - G.pan.cy);\n-        G.pan = { cx, cy };\n-        onTransform();\n-        return;\n-      }\n-\n-      // drag threshold\n-      const [cx,cy] = toCanvas(e);\n-      if (G.clickArmed && G.downPos){\n-        const moved = Math.hypot(cx-G.downPos[0], cy-G.downPos[1]);\n-        if (moved >= 6){\n-          G.dragging = true;\n-          onDrag( viewport.canvasToImage(cx,cy), e );\n-          return;\n-        }\n-      }\n-      onHover( viewport.canvasToImage(cx,cy) );\n-    }\n-\n-    function onPointerUp(e){\n-      canvas.releasePointerCapture?.(e.pointerId);\n-      G.ids.delete(e.pointerId);\n-      G.pts.delete(e.pointerId);\n-      if (G.ids.size < 2) G.active = false;\n-      if (G.pan) G.pan = null;\n-\n-      const [cx,cy] = toCanvas(e);\n-      if (G.dragging){\n-        onUp( viewport.canvasToImage(cx,cy), e );\n-      }else if (G.clickArmed && G.downPos){\n-        const moved = Math.hypot(cx-G.downPos[0], cy-G.downPos[1]);\n-        if (moved < 6) onClick( viewport.canvasToImage(cx,cy) );\n-      }\n-\n-      G.clickArmed=false;\n-      G.downPos=null;\n-      G.dragging=false;\n-    }\n-\n-    canvas.addEventListener('wheel', onWheel, { passive:false });\n-    canvas.addEventListener('pointerdown', onPointerDown, { passive:true });\n-    canvas.addEventListener('pointermove', onPointerMove, { passive:true });\n-    canvas.addEventListener('pointerup', onPointerUp, { passive:true });\n-    canvas.addEventListener('pointercancel', onPointerUp, { passive:true });\n-\n-    return { detach(){\n-      canvas.removeEventListener('wheel', onWheel);\n-      canvas.removeEventListener('pointerdown', onPointerDown);\n-      canvas.removeEventListener('pointermove', onPointerMove);\n-      canvas.removeEventListener('pointerup', onPointerUp);\n-      canvas.removeEventListener('pointercancel', onPointerUp);\n-    }};\n-  }\n-  return { attach };\n-})();\n+    canvas.addEventListener('wheel',onWheel,{passive:false});\n+    canvas.addEventListener('pointerdown',onPointerDown,{passive:true});\n+    canvas.addEventListener('pointermove',onPointerMove,{passive:true});\n+    canvas.addEventListener('pointerup',onPointerUp,{passive:true});\n+    canvas.addEventListener('pointercancel',onPointerUp,{passive:true});\n+    return{detach(){['wheel','pointerdown','pointermove','pointerup','pointercancel'].forEach(t=>canvas.removeEventListener(t,onWheel));}};}\n+  return{attach};})();",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.annotations.js",
+        "diff": "--- a/assets/calib.annotations.js+++ b/assets/calib.annotations.js@@ -3,7 +3,7 @@   const { distPtLine } = window.CalibGeom;\n   let _id=1; const next=()=>_id++;\n \n-  function createStore(){ return { items:[], selectedId:null, hitTolPx:18 }; }\n+  function createStore(){ return { items:[], selectedId:null, hitTolPx:24 }; }\n   function addSegment(s,a,b,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'segment',a:[...a],b:[...b],mm_per_px,units,markerId}); s.selectedId=id; }\n   function addNote(s,p,text){ const id=next(); s.items.push({id,type:'note',p:[...p],text:String(text||'')}); s.selectedId=id; }\n   function addPolyline(s,pts,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'polyline',pts:pts.map(p=>[...p]),mm_per_px,units,markerId}); s.selectedId=id; }\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.draw.js",
+        "diff": "--- a/assets/calib.draw.js+++ b/assets/calib.draw.js@@ -15,7 +15,7 @@ \n   function drawMarkers(ctx, canvas, data, linePx){\n     if(!data || !Array.isArray(data.markers)) return;\n-    const dotR = px(canvas, 8);\n+    const dotR = px(canvas, 10);\n     ctx.lineWidth = px(canvas, linePx);\n     for(const m of data.markers){\n       if(!m.corners || m.corners.length<4) continue;\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-28T21:37:54.317345",
+    "patch_name": "Patch 2025-10-28 21:37",
+    "description": "",
+    "files_modified": [],
+    "summary": {
+      "total": 1,
+      "ok": 0,
+      "skipped": 1,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null
+  },
+  {
+    "timestamp": "2025-10-28T21:38:38.501555",
+    "patch_name": "Patch 2025-10-28 21:38",
+    "description": "",
+    "files_modified": [
+      "assets/calib.ui.js",
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -29,7 +29,7 @@ \n     const top=document.createElement('div');top.className='cal-topbar';\n     const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n-    const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick=()=>{overlay.setMode(t);details.open=false;reflect();};return b;};\n+    const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick = () => { fn(); details.open = false; reflect(); };return b;};\n     const modeBtns=modes.map(([m,i])=>btn(i,()=>overlay.setMode(m),overlay.opts.mode===m));\n     top.append(...modeBtns);\n     const more=document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -30,7 +30,7 @@     const top=document.createElement('div');top.className='cal-topbar';\n     const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n     const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick = () => { fn(); details.open = false; reflect(); };return b;};\n-    const modeBtns=modes.map(([m,i])=>btn(i,()=>overlay.setMode(m),overlay.opts.mode===m));\n+    const modeBtns = modes.map(([m,i]) => btn(i, () => overlay.setMode(m),()=>overlay.setMode(m),overlay.opts.mode===m));\n     top.append(...modeBtns);\n     const more=document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n     rootEl.prepend(top);\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-28T21:53:42.197983",
+    "patch_name": "Patch 2025-10-28 21:53",
+    "description": "",
+    "files_modified": [
+      "assets/calibrationOverlay.js",
+      "assets/calib.ui.panel.js",
+      "assets/calib.ui.panel.js",
+      "assets/calib.ui.js",
+      "assets/calib.ui.js",
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 11,
+      "ok": 6,
+      "skipped": 5,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -90,6 +90,14 @@       resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this.requestDraw(); }\n       undo(){ if(this.selectedPoints.length) this.selectedPoints.pop(); else if(this.ann.selectedId!=null) this.ann.items=this.ann.items.filter(a=>a.id!==this.ann.selectedId); this.hover=null; this.requestDraw(); }\n       clearAll(){ this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }\n+\n+      deleteSelected(){\n+        if(this.ann && this.ann.selectedId!=null){\n+          this.ann.items = this.ann.items.filter(a => a.id !== this.ann.selectedId);\n+          this.ann.selectedId = null;\n+          this.requestDraw();\n+        }\n+      }\n \n       _wire(){\n         const hitVisible = it => this.opts.showAnn && this.ann.items.includes(it) || true;\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.panel.js",
+        "diff": "--- a/assets/calib.ui.panel.js+++ b/assets/calib.ui.panel.js@@ -106,6 +106,12 @@     const savePNG   = btn('Save PNG', ()=>overlay.savePNG());\n     const saveJSON  = btn('Save JSON', ()=>overlay.saveJSON());\n \n+    // reflect selection state into delete button\n+    const reflectSel = ()=>{ delBtn.disabled = !(overlay.ann && overlay.ann.selectedId != null); };\n+    const _origRedraw = overlay.redraw.bind(overlay);\n+    overlay.redraw = ()=>{ _origRedraw(); reflectSel(); };\n+    reflectSel();\n+\n     ops.append(\n       row(noteInput, finishBtn, undoBtn, clearBtn),\n       row(lbl('Export visible only', expOnly), savePNG, saveJSON)\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.panel.js",
+        "diff": "--- a/assets/calib.ui.panel.js+++ b/assets/calib.ui.panel.js@@ -113,7 +113,7 @@     reflectSel();\n \n     ops.append(\n-      row(noteInput, finishBtn, undoBtn, clearBtn),\n+      row(noteInput, finishBtn, undoBtn, delBtn, clearBtn),\n       row(lbl('Export visible only', expOnly), savePNG, saveJSON)\n     );\n \n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -10,7 +10,7 @@       background:#0e0e0e;border-bottom:1px solid #222;display:flex;align-items:center;gap:.4rem;\n       padding:0 .5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none; }\n     .cal-topbar::-webkit-scrollbar{ display:none; }\n-    .cal-icon{ background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:10px;padding:.35rem .6rem;min-width:40px; }\n+    .cal-icon{ background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:10px;padding:.35rem .6rem;min-width:44px; }\n     .cal-icon[aria-pressed=\"true\"]{ background:#2b2b2b;color:#fff; }\n     .cal-sheet{ position:fixed;left:0;right:0;bottom:0;z-index:11;touch-action:pan-y pinch-zoom; }\n     .cal-sheet>details>summary{background:#111;color:#ddd;padding:.6rem;border-top:1px solid #222;text-align:center;}\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -31,8 +31,8 @@     const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n     const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick = () => { fn(); details.open = false; reflect(); };return b;};\n     const modeBtns = modes.map(([m,i]) => btn(i, () => overlay.setMode(m),()=>overlay.setMode(m),overlay.opts.mode===m));\n-    top.append(...modeBtns);\n-    const more=document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n+    top.append(...modeBtns, undo, del);\n+    const more = document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n     rootEl.prepend(top);\n \n     sheetWrap.addEventListener('touchstart',e=>{if(e.touches.length===1&&!e.target.closest('input,select,textarea'))details.open=!details.open;},{passive:true});\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -35,6 +35,11 @@     const more = document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n     rootEl.prepend(top);\n \n+    // keep UI state in sync with overlay\n+    const _origRedraw = overlay.redraw.bind(overlay);\n+    overlay.redraw = ()=>{ _origRedraw(); reflect(); };\n+    reflect();\n+\n     sheetWrap.addEventListener('touchstart',e=>{if(e.touches.length===1&&!e.target.closest('input,select,textarea'))details.open=!details.open;},{passive:true});\n     const reflect=()=>modeBtns.forEach((b,i)=>b.setAttribute('aria-pressed',String(overlay.opts.mode===modes[i][0])));\n   }\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-28T21:56:19.975692",
+    "patch_name": "Patch 2025-10-28 21:56",
+    "description": "",
+    "files_modified": [
+      "assets/calib.ui.js",
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 4,
+      "ok": 2,
+      "skipped": 2,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -30,7 +30,7 @@     const top=document.createElement('div');top.className='cal-topbar';\n     const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n     const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick = () => { fn(); details.open = false; reflect(); };return b;};\n-    const modeBtns = modes.map(([m,i]) => btn(i, () => overlay.setMode(m),()=>overlay.setMode(m),overlay.opts.mode===m));\n+    const modeBtns = modes.map(([m,i]) => btn(i, () => overlay.setMode(m), overlay.opts.mode===m));\n     top.append(...modeBtns, undo, del);\n     const more = document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n     rootEl.prepend(top);\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -30,7 +30,15 @@     const top=document.createElement('div');top.className='cal-topbar';\n     const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n     const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick = () => { fn(); details.open = false; reflect(); };return b;};\n-    const modeBtns = modes.map(([m,i]) => btn(i, () => overlay.setMode(m), overlay.opts.mode===m));\n+    $1\n+    // define extra actions used by the compact bar\n+    const undo = btn('↶', () => overlay.undo());\n+    const del  = (function(){ const b = btn('🗑', () => overlay.deleteSelected()); b.disabled = !(overlay.ann && overlay.ann.selectedId != null); return b; })();\n+    // reflect pressed tool + selection state\n+    const reflect = () => {\n+      modeBtns.forEach((b,i)=> b.setAttribute('aria-pressed', String(overlay.opts.mode===modes[i][0])));\n+      del.disabled = !(overlay.ann && overlay.ann.selectedId != null);\n+    };\n     top.append(...modeBtns, undo, del);\n     const more = document.createElement('button');more.className='cal-icon';more.textContent='⋮';more.onclick=()=>details.open=!details.open;top.append(more);\n     rootEl.prepend(top);\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-10-28T22:09:58.157417",
+    "patch_name": "Patch 2025-10-28 22:09",
+    "description": "",
+    "files_modified": [
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 1,
+      "ok": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -30,7 +30,7 @@     const top=document.createElement('div');top.className='cal-topbar';\n     const modes=[['pan','🖐'],['select','⌖'],['segment','📏'],['rectangle','▭'],['angle','∠'],['note','🏷']];\n     const btn=(t,fn,pressed)=>{const b=document.createElement('button');b.className='cal-icon';b.textContent=t;if(pressed)b.setAttribute('aria-pressed','true');b.onclick = () => { fn(); details.open = false; reflect(); };return b;};\n-    $1\n+    const modeBtns = modes.map(([m,i]) => btn(i, () => overlay.setMode(m), overlay.opts.mode===m));\n     // define extra actions used by the compact bar\n     const undo = btn('↶', () => overlay.undo());\n     const del  = (function(){ const b = btn('🗑', () => overlay.deleteSelected()); b.disabled = !(overlay.ann && overlay.ann.selectedId != null); return b; })();\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:14:36.236957",
+    "patch_name": "Patch 2025-11-15 17:14",
+    "description": "",
+    "files_modified": [
+      "assets/calib.gestures.js",
+      "app.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 2,
+      "skipped": 1,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.gestures.js",
+        "diff": "--- a/assets/calib.gestures.js+++ b/assets/calib.gestures.js@@ -1,30 +1,212 @@-// CalibGestures — smoother pinch/zoom, inertia pan\n-window.CalibGestures=(function(){\n-  function attach(canvas,viewport,{onTransform=()=>{},onHover=()=>{},onClick=()=>{}}={}){\n-    canvas.style.touchAction='none';\n-    canvas.addEventListener('contextmenu',e=>e.preventDefault());\n-    const G={ids:new Set(),pts:new Map(),active:false,startDist:0,startK:1,anchor:[0,0],pan:null,clickArmed:false,down:null,lastMove:0};\n-    const toCanvas=e=>viewport.eventToCanvasXY(e);\n-\n-    function onWheel(e){e.preventDefault();const dy=Math.max(-250,Math.min(250,e.deltaY));const factor=Math.exp(-dy*0.0006);const a=viewport.screenToImage(e,canvas);viewport.setZoomAround(viewport.k*factor,a);onTransform();}\n-\n-    function onPointerDown(e){canvas.setPointerCapture?.(e.pointerId);G.ids.add(e.pointerId);G.pts.set(e.pointerId,toCanvas(e));G.down=toCanvas(e);G.clickArmed=(e.button===0);\n-      if(G.ids.size===2){const ids=[...G.ids];const p1=G.pts.get(ids[0]),p2=G.pts.get(ids[1]);G.active=true;G.startDist=Math.hypot(p2[0]-p1[0],p2[1]-p1[1]);G.startK=viewport.k;const mid=[(p1[0]+p2[0])/2,(p1[1]+p2[1])/2];G.anchor=viewport.canvasToImage(mid[0],mid[1]);G.clickArmed=false;}\n-      if(e.shiftKey||e.button===1||e.button===2){const[cx,cy]=toCanvas(e);G.pan={cx,cy};G.clickArmed=false;}}\n-\n-    function onPointerMove(e){if(G.ids.has(e.pointerId))G.pts.set(e.pointerId,toCanvas(e));if(G.active&&G.ids.size>=2){const ids=[...G.ids];const p1=G.pts.get(ids[0]),p2=G.pts.get(ids[1]);if(p1&&p2&&G.startDist>0){const f=Math.hypot(p2[0]-p1[0],p2[1]-p1[1])/G.startDist;viewport.setZoomAround(G.startK*f,G.anchor);onTransform();}return;}\n-      if(G.pan){const[cx,cy]=toCanvas(e);viewport.panByCanvasDelta(cx-G.pan.cx,cy-G.pan.cy);G.pan={cx,cy};G.lastMove=Date.now();onTransform();return;}\n-      const[cx,cy]=toCanvas(e);onHover(viewport.canvasToImage(cx,cy));}\n-\n-    function onPointerUp(e){canvas.releasePointerCapture?.(e.pointerId);G.ids.delete(e.pointerId);G.pts.delete(e.pointerId);if(G.ids.size<2)G.active=false;const[cx,cy]=toCanvas(e);\n-      if(G.pan&&Date.now()-G.lastMove<80){requestAnimationFrame(()=>viewport.panByCanvasDelta(5,0));}\n-      if(G.clickArmed&&G.down){const moved=Math.hypot(cx-G.down[0],cy-G.down[1]);if(moved<6)onClick(viewport.canvasToImage(cx,cy));}\n-      G.pan=null;G.clickArmed=false;G.down=null;}\n-\n-    canvas.addEventListener('wheel',onWheel,{passive:false});\n-    canvas.addEventListener('pointerdown',onPointerDown,{passive:true});\n-    canvas.addEventListener('pointermove',onPointerMove,{passive:true});\n-    canvas.addEventListener('pointerup',onPointerUp,{passive:true});\n-    canvas.addEventListener('pointercancel',onPointerUp,{passive:true});\n-    return{detach(){['wheel','pointerdown','pointermove','pointerup','pointercancel'].forEach(t=>canvas.removeEventListener(t,onWheel));}};}\n-  return{attach};})();+// CalibGestures — pointer + wheel gestures with drag callbacks\n+window.CalibGestures = (function () {\n+  function attach(canvas, viewport, opts) {\n+    opts = opts || {};\n+    const canPanStart = opts.canPanStart;\n+    const onTransform = opts.onTransform || function () {};\n+    const onHover = opts.onHover || function () {};\n+    const onClick = opts.onClick || function () {};\n+    const onDown = opts.onDown || function () {};\n+    const onDrag = opts.onDrag || function () {};\n+    const onUp = opts.onUp || function () {};\n+\n+    canvas.style.touchAction = \"none\";\n+    canvas.addEventListener(\"contextmenu\", function (e) { e.preventDefault(); });\n+\n+    // Pointer bookkeeping\n+    const pointers = new Map(); // id -> {cx, cy}\n+    let primaryId = null;\n+    let dragId = null;\n+    let isPanning = false;\n+    let pinch = null; // {startDist, startK, anchor}\n+\n+    const CLICK_EPS = 6;\n+    let downInfo = null; // {id, cx, cy, imgX, imgY, time}\n+\n+    function toCanvasXY(e) {\n+      if (viewport && typeof viewport.eventToCanvasXY === \"function\") {\n+        return viewport.eventToCanvasXY(e);\n+      }\n+      const r = canvas.getBoundingClientRect();\n+      const cx = e.clientX - r.left;\n+      const cy = e.clientY - r.top;\n+      return [cx, cy];\n+    }\n+\n+    function toImageXY(cx, cy) {\n+      if (viewport && typeof viewport.canvasToImage === \"function\") {\n+        return viewport.canvasToImage(cx, cy);\n+      }\n+      return [cx, cy];\n+    }\n+\n+    function handleWheel(e) {\n+      e.preventDefault();\n+      const [cx, cy] = toCanvasXY(e);\n+      const anchor = toImageXY(cx, cy);\n+      // dy sign: wheel down -> zoom out\n+      const dy = e.deltaY || 0;\n+      const factor = dy < 0 ? 1.1 : 1 / 1.1;\n+      const k = viewport.k != null ? viewport.k : 1;\n+      if (typeof viewport.setZoomAround === \"function\") {\n+        viewport.setZoomAround(k * factor, anchor);\n+        onTransform();\n+      }\n+    }\n+\n+    function handlePointerDown(e) {\n+      canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);\n+      const [cx, cy] = toCanvasXY(e);\n+      pointers.set(e.pointerId, { cx: cx, cy: cy });\n+\n+      const img = toImageXY(cx, cy);\n+      onDown(img, e);\n+\n+      // Track primary pointer for click / drag\n+      if (primaryId === null) {\n+        primaryId = e.pointerId;\n+        dragId = e.pointerId;\n+        downInfo = { id: e.pointerId, cx: cx, cy: cy, imgX: img[0], imgY: img[1], time: Date.now() };\n+      }\n+\n+      // Check for pinch start\n+      if (pointers.size === 2) {\n+        const ids = Array.from(pointers.keys());\n+        const p1 = pointers.get(ids[0]);\n+        const p2 = pointers.get(ids[1]);\n+        const midCx = (p1.cx + p2.cx) / 2;\n+        const midCy = (p1.cy + p2.cy) / 2;\n+        const dx = p1.cx - p2.cx;\n+        const dy = p1.cy - p2.cy;\n+        const dist = Math.hypot(dx, dy);\n+        const anchor = toImageXY(midCx, midCy);\n+        pinch = {\n+          startDist: dist || 1,\n+          startK: viewport.k != null ? viewport.k : 1,\n+          anchor: anchor\n+        };\n+        isPanning = false;\n+        dragId = null;\n+        downInfo = null;\n+        return;\n+      }\n+\n+      // Single-pointer pan?\n+      if (pointers.size === 1) {\n+        if (!canPanStart || canPanStart(e)) {\n+          isPanning = true;\n+        } else {\n+          isPanning = false;\n+        }\n+      }\n+    }\n+\n+    function handlePointerMove(e) {\n+      if (!pointers.has(e.pointerId)) {\n+        // hover without capture\n+        const [cx, cy] = toCanvasXY(e);\n+        const img = toImageXY(cx, cy);\n+        onHover(img, e);\n+        return;\n+      }\n+\n+      const [cx, cy] = toCanvasXY(e);\n+      const prev = pointers.get(e.pointerId) || { cx: cx, cy: cy };\n+      pointers.set(e.pointerId, { cx: cx, cy: cy });\n+\n+      // Pinch zoom\n+      if (pinch && pointers.size >= 2) {\n+        const ids = Array.from(pointers.keys());\n+        const p1 = pointers.get(ids[0]);\n+        const p2 = pointers.get(ids[1]);\n+        const dx = p1.cx - p2.cx;\n+        const dy = p1.cy - p2.cy;\n+        const dist = Math.hypot(dx, dy) || 1;\n+        const f = dist / pinch.startDist;\n+        const newK = pinch.startK * f;\n+        if (typeof viewport.setZoomAround === \"function\") {\n+          viewport.setZoomAround(newK, pinch.anchor);\n+          onTransform();\n+        }\n+        return;\n+      }\n+\n+      // Pan\n+      if (isPanning && primaryId === e.pointerId && typeof viewport.panByCanvasDelta === \"function\") {\n+        const dx = cx - prev.cx;\n+        const dy = cy - prev.cy;\n+        viewport.panByCanvasDelta(dx, dy);\n+        onTransform();\n+        return;\n+      }\n+\n+      // Drag / hover\n+      const img = toImageXY(cx, cy);\n+      if (dragId === e.pointerId) {\n+        onDrag(img, e);\n+      } else {\n+        onHover(img, e);\n+      }\n+    }\n+\n+    function handlePointerUp(e) {\n+      const hadPointer = pointers.has(e.pointerId);\n+      let cx, cy;\n+      if (hadPointer) {\n+        const info = pointers.get(e.pointerId);\n+        cx = info.cx;\n+        cy = info.cy;\n+        pointers.delete(e.pointerId);\n+      } else {\n+        const pt = toCanvasXY(e);\n+        cx = pt[0];\n+        cy = pt[1];\n+      }\n+      canvas.releasePointerCapture && canvas.releasePointerCapture(e.pointerId);\n+\n+      const img = toImageXY(cx, cy);\n+      onUp(img, e);\n+\n+      // Click detection (before we clear primary/drag)\n+      if (downInfo && e.pointerId === downInfo.id) {\n+        const moved = Math.hypot(cx - downInfo.cx, cy - downInfo.cy);\n+        if (moved < CLICK_EPS) {\n+          onClick([downInfo.imgX, downInfo.imgY], e);\n+        }\n+        downInfo = null;\n+      }\n+\n+      // End pinch if we lost a finger\n+      if (pinch && pointers.size < 2) {\n+        pinch = null;\n+      }\n+\n+      // End pan if primary lifted\n+      if (primaryId === e.pointerId) {\n+        primaryId = null;\n+        isPanning = false;\n+      }\n+      if (dragId === e.pointerId) {\n+        dragId = null;\n+      }\n+    }\n+\n+    canvas.addEventListener(\"wheel\", handleWheel, { passive: false });\n+    canvas.addEventListener(\"pointerdown\", handlePointerDown, { passive: true });\n+    canvas.addEventListener(\"pointermove\", handlePointerMove, { passive: true });\n+    canvas.addEventListener(\"pointerup\", handlePointerUp, { passive: true });\n+    canvas.addEventListener(\"pointercancel\", handlePointerUp, { passive: true });\n+\n+    return {\n+      detach: function () {\n+        canvas.removeEventListener(\"wheel\", handleWheel);\n+        canvas.removeEventListener(\"pointerdown\", handlePointerDown);\n+        canvas.removeEventListener(\"pointermove\", handlePointerMove);\n+        canvas.removeEventListener(\"pointerup\", handlePointerUp);\n+        canvas.removeEventListener(\"pointercancel\", handlePointerUp);\n+      }\n+    };\n+  }\n+\n+  return { attach: attach };\n+})();\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -143,6 +143,7 @@     ),\n     html.Div(id=\"status\", style={\"margin\":\"8px 0\"}),\n     html.Div(id=\"viewer\", style={\"position\":\"relative\"}),\n+    html.Div(id=\"cal-kpi\", className=\"cal-kpi\"),\n     html.Div(\"\", style={\"height\":\"12px\"})\n ], style={\"maxWidth\":\"1000px\",\"margin\":\"0 auto\",\"fontFamily\":\"Segoe UI, sans-serif\"})\n \n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:27:09.991248",
+    "patch_name": "Patch 2025-11-15 17:27",
+    "description": "Wire up the bottom-sheet 'More' panel with simple advanced controls (units, snap, export, notes), and increase viewer max height to give the viewport more space.",
+    "files_modified": [
+      "app.py",
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -72,7 +72,7 @@       /* Scrollable wrapper for the viewer so tall images don't block the page */\n       .cal-wrap{\n         position: relative;\n-        max-height: 82vh;           /* keep some room for status / footer */\n+        max-height: 92vh;           /* keep some room for status / footer */\n         overflow: auto;\n         -webkit-overflow-scrolling: touch; /* iOS momentum scroll */\n       }\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -127,6 +127,95 @@ \n     const body = document.createElement('div');\n     body.className = 'cal-panel';\n+\n+    // Fill the bottom sheet with a few advanced controls so \"More\" does something useful\n+    if (overlay) {\n+      const Units = window.CalibUnits;\n+      body.style.display = 'flex';\n+      body.style.flexDirection = 'column';\n+      body.style.gap = '.4rem';\n+\n+      // Units selector\n+      if (Units && Units.defs) {\n+        const row = document.createElement('div');\n+        const lbl = document.createElement('label');\n+        lbl.textContent = 'Units: ';\n+        const sel = document.createElement('select');\n+        Object.keys(Units.defs).forEach(k => {\n+          const opt = document.createElement('option');\n+          opt.value = k;\n+          opt.textContent = Units.defs[k].label || k;\n+          sel.appendChild(opt);\n+        });\n+        sel.value = (overlay.opts && overlay.opts.units) || 'mm';\n+        sel.onchange = () => {\n+          overlay.opts.units = sel.value;\n+          if (overlay.redraw) overlay.redraw();\n+        };\n+        lbl.appendChild(sel);\n+        row.appendChild(lbl);\n+        body.appendChild(row);\n+      }\n+\n+      // Snap behaviour\n+      const snapRow = document.createElement('div');\n+      const snapLabel = document.createElement('label');\n+      const snapChk = document.createElement('input');\n+      snapChk.type = 'checkbox';\n+      snapChk.checked = !!(overlay.opts && overlay.opts.snap);\n+      snapChk.onchange = () => {\n+        overlay.opts.snap = snapChk.checked;\n+        if (overlay.updateKPI) overlay.updateKPI();\n+      };\n+      snapLabel.appendChild(snapChk);\n+      snapLabel.appendChild(document.createTextNode(' Snap to marker corners'));\n+      snapRow.appendChild(snapLabel);\n+      body.appendChild(snapRow);\n+\n+      // Note text\n+      const noteRow = document.createElement('div');\n+      const noteInput = document.createElement('input');\n+      noteInput.type = 'text';\n+      noteInput.placeholder = 'Default note text…';\n+      noteInput.value = overlay.noteText || '';\n+      noteInput.oninput = () => {\n+        overlay.noteText = noteInput.value;\n+      };\n+      noteRow.appendChild(noteInput);\n+      body.appendChild(noteRow);\n+\n+      // Export options\n+      const expRow = document.createElement('div');\n+      expRow.style.display = 'flex';\n+      expRow.style.flexWrap = 'wrap';\n+      expRow.style.gap = '.35rem';\n+\n+      const expOnlyLabel = document.createElement('label');\n+      const expOnlyChk = document.createElement('input');\n+      expOnlyChk.type = 'checkbox';\n+      expOnlyChk.checked = !!(overlay.opts && overlay.opts.exportVisibleOnly);\n+      expOnlyChk.onchange = () => {\n+        overlay.opts.exportVisibleOnly = expOnlyChk.checked;\n+      };\n+      expOnlyLabel.appendChild(expOnlyChk);\n+      expOnlyLabel.appendChild(document.createTextNode(' Export visible only'));\n+      expRow.appendChild(expOnlyLabel);\n+\n+      const pngBtn = document.createElement('button');\n+      pngBtn.type = 'button';\n+      pngBtn.textContent = 'Save PNG';\n+      pngBtn.onclick = () => { if (overlay.savePNG) overlay.savePNG(); };\n+      expRow.appendChild(pngBtn);\n+\n+      const jsonBtn = document.createElement('button');\n+      jsonBtn.type = 'button';\n+      jsonBtn.textContent = 'Save JSON';\n+      jsonBtn.onclick = () => { if (overlay.saveJSON) overlay.saveJSON(); };\n+      expRow.appendChild(jsonBtn);\n+\n+      body.appendChild(expRow);\n+    }\n+\n     details.append(body);\n \n     sheetWrap.append(details);\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:35:52.083209",
+    "patch_name": "Patch 2025-11-15 17:35",
+    "description": "",
+    "files_modified": [
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 1,
+      "skipped": 1,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -222,12 +222,6 @@     wrap.append(sheetWrap);\n \n     // Toggle sheet on tap (but not when interacting with inputs)\n-    sheetWrap.addEventListener('touchstart', e => {\n-      if (e.touches.length === 1 && !e.target.closest('input,select,textarea,button')) {\n-        details.open = !details.open;\n-      }\n-    }, { passive:true });\n-\n     // --------- Top bar ----------\n     const top = document.createElement('div');\n     top.className = 'cal-topbar';\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:37:50.954226",
+    "patch_name": "Patch 2025-11-15 17:37",
+    "description": "CamScan UI: make More panel safe to tap by removing inline save buttons, and give the image more vertical space.",
+    "files_modified": [
+      "app.py",
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -72,7 +72,7 @@       /* Scrollable wrapper for the viewer so tall images don't block the page */\n       .cal-wrap{\n         position: relative;\n-        max-height: 92vh;           /* keep some room for status / footer */\n+        max-height: 98vh;           /* give the image more vertical space */\n         overflow: auto;\n         -webkit-overflow-scrolling: touch; /* iOS momentum scroll */\n       }\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -198,20 +198,10 @@         overlay.opts.exportVisibleOnly = expOnlyChk.checked;\n       };\n       expOnlyLabel.appendChild(expOnlyChk);\n-      expOnlyLabel.appendChild(document.createTextNode(' Export visible only'));\n+      expOnlyLabel.appendChild(\n+        document.createTextNode(' Export visible only (use toolbar save for PNG/JSON)')\n+      );\n       expRow.appendChild(expOnlyLabel);\n-\n-      const pngBtn = document.createElement('button');\n-      pngBtn.type = 'button';\n-      pngBtn.textContent = 'Save PNG';\n-      pngBtn.onclick = () => { if (overlay.savePNG) overlay.savePNG(); };\n-      expRow.appendChild(pngBtn);\n-\n-      const jsonBtn = document.createElement('button');\n-      jsonBtn.type = 'button';\n-      jsonBtn.textContent = 'Save JSON';\n-      jsonBtn.onclick = () => { if (overlay.saveJSON) overlay.saveJSON(); };\n-      expRow.appendChild(jsonBtn);\n \n       body.appendChild(expRow);\n     }\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:43:22.996361",
+    "patch_name": "Patch 2025-11-15 17:43",
+    "description": "CamScan UI: hide header/uploader once an image is loaded and let the viewer use the full dynamic viewport height.",
+    "files_modified": [
+      "app.py"
+    ],
+    "summary": {
+      "total": 4,
+      "ok": 1,
+      "skipped": 3,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -199,7 +199,8 @@         f\"✅ Processed '{filename}' — {len(cal.get('markers',[]))} marker(s). \"\n         f\"Marker size: {marker_mm} mm. Tap/click to annotate.\"\n     )\n-    return status, viewer\n+    # Hide the header/uploader once we have an image so the viewer gets maximum vertical space\n+    return status, viewer, {\"display\": \"none\"}\n \n @server.route(\"/uploads/<path:fname>\")\n def downloads(fname):\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:45:06.980254",
+    "patch_name": "Patch 2025-11-15 17:45",
+    "description": "Wrap header/uploader in top-panel, hide it after upload, and use dynamic viewport height for cal-wrap.",
+    "files_modified": [
+      "app.py",
+      "app.py",
+      "app.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 3,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -72,7 +72,7 @@       /* Scrollable wrapper for the viewer so tall images don't block the page */\n       .cal-wrap{\n         position: relative;\n-        max-height: 150vh;           /* give the image more vertical space */\n+        max-height: 100dvh;         /* use full dynamic viewport height on mobile */\n         overflow: auto;\n         -webkit-overflow-scrolling: touch; /* iOS momentum scroll */\n       }\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -129,19 +129,21 @@     return img\n \n app.layout = html.Div([\n-    html.H2(\"📸 CamScan — Calibration Exporter\"),\n-    dcc.Upload(\n-        id=\"uploader\",\n-        children=html.Div([\"Tap \", html.B(\"to snap a photo\"), \" or drop an image\"]),\n-        multiple=False,\n-        style={\n-            \"width\":\"100%\",\"height\":\"120px\",\"lineHeight\":\"120px\",\"borderWidth\":\"2px\",\n-            \"borderStyle\":\"dashed\",\"borderRadius\":\"8px\",\"textAlign\":\"center\",\"margin\":\"10px 0\"\n-        },\n-        accept=\"image/*\",  # important for iOS to allow camera\n-        # Note: Dash doesn't expose `capture`, so we set it via app.index_string above.\n-    ),\n-    html.Div(id=\"status\", style={\"margin\":\"8px 0\"}),\n+    html.Div([\n+        html.H2(\"📸 CamScan — Calibration Exporter\"),\n+        dcc.Upload(\n+            id=\"uploader\",\n+            children=html.Div([\"Tap \", html.B(\"to snap a photo\"), \" or drop an image\"]),\n+            multiple=False,\n+            style={\n+                \"width\":\"100%\",\"height\":\"120px\",\"lineHeight\":\"120px\",\"borderWidth\":\"2px\",\n+                \"borderStyle\":\"dashed\",\"borderRadius\":\"8px\",\"textAlign\":\"center\",\"margin\":\"10px 0\"\n+            },\n+            accept=\"image/*\",  # important for iOS to allow camera\n+            # Note: Dash doesn't expose `capture`, so we set it via app.index_string above.\n+        ),\n+        html.Div(id=\"status\", style={\"margin\":\"8px 0\"}),\n+    ], id=\"top-panel\"),\n     html.Div(id=\"viewer\", style={\"position\":\"relative\"}),\n     html.Div(id=\"cal-kpi\", className=\"cal-kpi\"),\n     html.Div(\"\", style={\"height\":\"12px\"})\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -152,13 +152,14 @@ @app.callback(\n     Output(\"status\",\"children\"),\n     Output(\"viewer\",\"children\"),\n+    Output(\"top-panel\",\"style\"),\n     Input(\"uploader\",\"contents\"),\n     State(\"uploader\",\"filename\"),\n     prevent_initial_call=True\n )\n def on_upload(contents, filename):\n     if not contents:\n-        return \"⚠️ No file.\", no_update\n+        return \"⚠️ No file.\", no_update, no_update\n \n     os.makedirs(UPLOAD_DIR, exist_ok=True)\n     stem = os.path.splitext(filename or \"image\")[0]\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T17:56:11.002048",
+    "patch_name": "Patch 2025-11-15 17:56",
+    "description": "Add a Fit Height mode so the user can have the image fill the screen vertically on mobile.",
+    "files_modified": [
+      "assets/calib.viewport.js",
+      "assets/calibrationOverlay.js"
+    ],
+    "summary": {
+      "total": 4,
+      "ok": 2,
+      "skipped": 2,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.viewport.js",
+        "diff": "--- a/assets/calib.viewport.js+++ b/assets/calib.viewport.js@@ -98,6 +98,16 @@         this.panX = (canvas.width  - this._imgW * this.k) * 0.5;\n         this.panY = (canvas.height - this._imgH * this.k) * 0.5;\n       },\n+      // Fit so image height matches canvas height (may crop left/right)\n+      fitHeight(canvasEl, img){\n+        if (img){ this._imgW = img.width; this._imgH = img.height; }\n+        this._updateBackingStore();\n+        const ky = canvas.height / this._imgH;\n+        this.k = Math.max(0.0001, ky);\n+        // center horizontally, full height\n+        this.panX = (canvas.width - this._imgW * this.k) * 0.5;\n+        this.panY = 0;\n+      },\n       reset(){\n         this.k = 1; this.panX = 0; this.panY = 0;\n       }\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -87,6 +87,7 @@       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }\n       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }\n       fitToContainer(){ this.vp.fit(this.canvas, this.img); this.requestDraw(); }\n+      fitToHeight(){ this.vp.fitHeight(this.canvas, this.img); this.requestDraw(); }\n       resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this.requestDraw(); }\n       undo(){ if(this.selectedPoints.length) this.selectedPoints.pop(); else if(this.ann.selectedId!=null) this.ann.items=this.ann.items.filter(a=>a.id!==this.ann.selectedId); this.hover=null; this.requestDraw(); }\n       clearAll(){ this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T18:43:11.487519",
+    "patch_name": "Patch 2025-11-15 18:43",
+    "description": "Add a Fit Height button to the toolbar that calls overlay.fitToHeight().",
+    "files_modified": [
+      "assets/calib.ui.js",
+      "assets/calib.ui.js"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -265,6 +265,9 @@     const fit = btn('⤢', () => {\n       if (overlay.fitToContainer) overlay.fitToContainer();\n     });\n+    const fitH = btn('⇕', () => {\n+      if (overlay.fitToHeight) overlay.fitToHeight();\n+    });\n \n     const toggleToolsBtn = btn('🗕', () => setCollapsed(!collapsed));\n \n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -292,6 +292,7 @@       zoomOut,\n       zoomIn,\n       fit,\n+      fitH,\n       toggleToolsBtn,\n       more\n     );\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T18:58:10.364448",
+    "patch_name": "Patch 2025-11-15 18:58",
+    "description": "CamScan: clean JS asset loading and slightly optimize viewport container for mobile.",
+    "files_modified": [
+      "app.py",
+      "app.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 2,
+      "skipped": 1,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -46,8 +46,8 @@     external_scripts=ORDERED_SCRIPTS,  # guaranteed JS order\n     assets_ignore=(\n         r'.*\\.ipynb_checkpoints.*'\n-        r'|calib\\.(units|geometry|draw|annotations|export)\\.js'\n-        r'|calibrationOverlay\\.js'\n+        r'|calib\\..*\\.js'          # let ORDERED_SCRIPTS control all calib.* JS\n+        r'|calibrationOverlay\\.js'  # avoid auto-loading overlay twice\n     ),\n )\n app.title = \"CamScan — Calibration Exporter\"\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -72,7 +72,7 @@       /* Scrollable wrapper for the viewer so tall images don't block the page */\n       .cal-wrap{\n         position: relative;\n-        max-height: 100dvh;         /* use full dynamic viewport height on mobile */\n+        height: 100dvh;             /* fill dynamic viewport height on mobile */\n         overflow: auto;\n         -webkit-overflow-scrolling: touch; /* iOS momentum scroll */\n       }\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T19:03:13.278748",
+    "patch_name": "Patch 2025-11-15 19:03",
+    "description": "CamScan: make canvas fill its container and auto-fit by height on portrait mobile.",
+    "files_modified": [
+      "assets/calib.ui.js",
+      "assets/calibrationOverlay.js"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 2,
+      "skipped": 1,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calib.ui.js",
+        "diff": "--- a/assets/calib.ui.js+++ b/assets/calib.ui.js@@ -58,13 +58,13 @@ \n     /* Make image get the space */\n     .cal-view{\n-      max-height:100dvh;\n+      height:100dvh;\n       position:relative;\n     }\n     .cal-view canvas{\n       display:block;\n       width:100%;\n-      height:auto;\n+      height:100%;\n     }\n \n     /* Focus mode: hide chrome, show floating Tools button */\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -88,7 +88,14 @@       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }\n       fitToContainer(){ this.vp.fit(this.canvas, this.img); this.requestDraw(); }\n       fitToHeight(){ this.vp.fitHeight(this.canvas, this.img); this.requestDraw(); }\n-      resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this.requestDraw(); }\n+      resetView(){\n+        this.vp.reset();\n+        this.vp.fit(this.canvas, this.img);\n+        if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {\n+          this.vp.fitHeight(this.canvas, this.img);\n+        }\n+        this.requestDraw();\n+      }\n       undo(){ if(this.selectedPoints.length) this.selectedPoints.pop(); else if(this.ann.selectedId!=null) this.ann.items=this.ann.items.filter(a=>a.id!==this.ann.selectedId); this.hover=null; this.requestDraw(); }\n       clearAll(){ this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }\n \n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T19:05:36.563049",
+    "patch_name": "Patch 2025-11-15 19:05",
+    "description": "Make the annotation canvas truly fill the viewport on mobile and clean up old UI wiring.",
+    "files_modified": [
+      "assets/calibrationOverlay.js",
+      "assets/calibrationOverlay.js",
+      "app.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 3,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -16,11 +16,7 @@     const st=document.createElement('style'); st.id=ID;\n     st.textContent = `\n       .cal-view{max-width:1000px;margin:0 auto}\n-      .cal-view canvas{display:block; width:100%; height:auto; touch-action:none}\n-      .cal-tools{position:sticky;top:0;z-index:10;background:#111;border-bottom:1px solid #2a2a2a}\n-      .cal-tools summary{cursor:pointer;padding:8px 12px;color:#eee}\n-      .cal-tools .body{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center;padding:6px 8px 10px}\n-      .cal-inline{display:inline-flex;align-items:center;gap:.35rem}\n+      .cal-view canvas{display:block; width:100%; height:100%; touch-action:none}\n       .cal-kpi{margin:6px 0 10px;color:#ddd;text-align:center}\n     `;\n     document.head.appendChild(st);\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -55,6 +55,10 @@           await this._loadJSON();\n           (this.data.markers||[]).forEach((m,i)=>{ if(m.id==null) m.id=i+1; });\n           this.vp.fit(this.canvas, this.img);\n+          // On phones in portrait, auto-fit by height so the image fills the screen\n+          if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {\n+            this.vp.fitHeight(this.canvas, this.img);\n+          }\n           this._wire();\n           UI.build(wrap, this);\n           this.redraw();\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -19,9 +19,6 @@     \"/assets/calib.export.js\",\n     \"/assets/calib.viewport.js\",\n     \"/assets/calib.gestures.js\",\n-    # New split UI files:\n-    \"/assets/calib.ui.panel.js\",\n-    \"/assets/calib.ui.topbar.js\",\n     \"/assets/calib.ui.js\",\n     \"/assets/calibrationOverlay.js\",\n ]\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-15T19:16:47.140734",
+    "patch_name": "Patch 2025-11-15 19:16",
+    "description": "Force cal-view/canvas height to viewport and refit (including fitHeight on portrait) so the image fills the screen vertically.",
+    "files_modified": [
+      "assets/calibrationOverlay.js",
+      "assets/calibrationOverlay.js"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -54,6 +54,15 @@         this.img.onload = async()=>{\n           await this._loadJSON();\n           (this.data.markers||[]).forEach((m,i)=>{ if(m.id==null) m.id=i+1; });\n+\n+          // Force the view and canvas height to match the current viewport\n+          const vh = window.innerHeight || document.documentElement.clientHeight || 600;\n+          if (wrap) {\n+            wrap.style.height = vh + 'px';\n+          }\n+          this.canvas.style.height = vh + 'px';\n+\n+          // Baseline fit to container\n           this.vp.fit(this.canvas, this.img);\n           // On phones in portrait, auto-fit by height so the image fills the screen\n           if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "assets/calibrationOverlay.js",
+        "diff": "--- a/assets/calibrationOverlay.js+++ b/assets/calibrationOverlay.js@@ -189,7 +189,18 @@         });\n         window.addEventListener('keyup', (e)=>{ if(e.key===' ') this._spacePan=false; });\n \n-        const onResize = ()=>{ this.vp.fit(this.canvas, this.img); this.requestDraw(); };\n+        const onResize = ()=>{\n+          const view = this.canvas.closest('.cal-view');\n+          const vh = window.innerHeight || document.documentElement.clientHeight || 600;\n+          if (view) view.style.height = vh + 'px';\n+          this.canvas.style.height = vh + 'px';\n+\n+          this.vp.fit(this.canvas, this.img);\n+          if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {\n+            this.vp.fitHeight(this.canvas, this.img);\n+          }\n+          this.requestDraw();\n+        };\n         window.addEventListener('resize', onResize, {passive:true});\n         window.addEventListener('orientationchange', onResize, {passive:true});\n       }\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-16T20:48:38.858097",
+    "patch_name": "Patch 2025-11-16 20:48",
+    "description": "Use url_for for upload URLs (so JSON/image paths respect any proxy/prefix) and disable aggressive upload cleanup (keep previous uploads).",
+    "files_modified": [
+      "app.py",
+      "app.py",
+      "calibration_core.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 3,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -1,6 +1,6 @@ # CamScan — Calibration Exporter (single-page viewer)\n import os, base64, uuid, time\n-from flask import Flask, send_from_directory\n+from flask import Flask, send_from_directory, url_for\n from dash import Dash, html, dcc, Input, Output, State, no_update\n import cv2, numpy as np\n \n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -177,9 +177,9 @@ \n     ts = int(time.time() * 1000)\n     img_url_data = contents\n-    img_url_file = f\"/uploads/{out_name}?v={ts}\"\n+    img_url_file = url_for(\"downloads\", fname=out_name, v=ts)\n     base, _ext = os.path.splitext(out_name)\n-    json_url = f\"/uploads/{base}.calibration.json?v={ts}\"\n+    json_url = url_for(\"downloads\", fname=f\"{base}.calibration.json\", v=ts)\n \n     viewer = html.Div([\n         html.Div([\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -19,7 +19,7 @@ SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs\n \n # Cleanup policy\n-DELETE_ALL_OTHER_UPLOADS: bool = True   # delete ALL other images, keep only current\n+DELETE_ALL_OTHER_UPLOADS: bool = False  # keep previous uploads; clean up with separate job\n IMAGE_EXTS = (\".jpg\", \".jpeg\", \".png\", \".bmp\", \".tif\", \".tiff\", \".webp\")\n \n \n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-17T20:36:35.822654",
+    "patch_name": "Patch 2025-11-17 20:36",
+    "description": "",
+    "files_modified": [
+      "app.py",
+      "calibration_core.py"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -209,7 +209,7 @@     - Writes ONLY the JSON (tiny), so the viewer can fetch it.\n     - Overlay JPG remains disabled by default.\n     - Keeps the current raw upload (so the browser can fetch it).\n-    - Deletes ALL other images immediately to avoid “previous run” leftovers.\n+    - Deletes ALL other images immediately to avoid \"previous run\" leftovers.\n     \"\"\"\n     os.makedirs(out_dir, exist_ok=True)\n \n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-18T16:05:24.645366",
+    "patch_name": "Patch 2025-11-18 16:05",
+    "description": "Improve square contour extraction for calibration by overhauling edge_finder.find_main_edges and slightly widening the crop around detected squares.",
+    "files_modified": [
+      "calibration_core.py",
+      "calibration_core.py"
+    ],
+    "summary": {
+      "total": 2,
+      "ok": 2,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -10,7 +10,7 @@ # Tunables / Defaults\n # ----------------------------\n EDGE_MM_DEFAULT: float = 30.0   # default marker edge in millimeters\n-PADDING_PX: int = 50            # crop padding around candidate square\n+PADDING_PX: int = 80            # crop padding around candidate square\n DOWNSCALE_FACTOR: float = 0.8   # speed-up for edge finder (1.0 = off)\n MAX_EDGES: int = 10             # contours to analyze inside edge_finder\n LINE_THICKNESS: int = 3         # overlay poly thickness\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -11,7 +11,7 @@ # ----------------------------\n EDGE_MM_DEFAULT: float = 30.0   # default marker edge in millimeters\n PADDING_PX: int = 80            # crop padding around candidate square\n-DOWNSCALE_FACTOR: float = 0.8   # speed-up for edge finder (1.0 = off)\n+DOWNSCALE_FACTOR: float = 1.0   # speed-up for edge finder (1.0 = off)\n MAX_EDGES: int = 10             # contours to analyze inside edge_finder\n LINE_THICKNESS: int = 3         # overlay poly thickness\n \n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-22T16:58:08.327177",
+    "patch_name": "Patch 2025-11-22 16:58",
+    "description": "Tighten dark square detection for CamScan 30mm marker. Replaces detect_squares.py with a more robust detector that works well with the new 30x30mm black square marker with inner white squares.",
+    "files_modified": [
+      "detect_squares.py"
+    ],
+    "summary": {
+      "total": 1,
+      "ok": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "detect_squares.py",
+        "diff": "--- a/detect_squares.py+++ b/detect_squares.py@@ -1,102 +1,73 @@ import cv2\n import numpy as np\n+from typing import List, Tuple\n \n \n def detect_dark_squares(\n     img,\n-    min_area=5000,\n-    max_area_ratio=0.6,\n-    ratio_tol=(0.7, 1.3),\n-    brightness_thresh=100,\n-    approx_eps=0.04,\n-    max_results=20,\n-    clahe_clip=2.0,\n-    clahe_grid=(8, 8),\n-    blur_ksize=5,\n-    morph_kernel_size=5,\n-    morph_iterations=2,\n-    dark_weight=0.7,\n-    shape_weight=0.3,\n-    adaptive_mode=False,\n-    debug=False\n-):\n+    min_area: float = 1200.0,\n+    max_area_ratio: float = 0.6,\n+    ratio_tol: Tuple[float, float] = (0.85, 1.15),\n+    brightness_thresh: int = 80,\n+    approx_eps: float = 0.03,\n+    max_results: int = 25,\n+    clahe_clip: float = 2.0,\n+    clahe_grid: Tuple[int, int] = (8, 8),\n+    blur_ksize: int = 5,\n+    morph_kernel_size: int = 5,\n+    morph_iterations: int = 2,\n+    dark_weight: float = 0.6,\n+    shape_weight: float = 0.4,\n+    debug: bool = False,\n+) -> List[Tuple[float, int, int, int, int, float]]:\n+    \"\"\"Detect dark, nearly-square regions in a BGR image.\n+\n+    Returns a list of candidates sorted by descending score:\n+        (score, x, y, w, h, mean_val)\n+\n+    This is tuned for a dark outer square (marker) against a lighter background,\n+    like your 30x30 mm black square with inner white squares.\n     \"\"\"\n-    Detect dark, roughly square regions in an image (tunable and lighting-robust).\n \n-    Parameters\n-    ----------\n-    img : np.ndarray\n-        Input BGR image.\n-    min_area : int\n-        Minimum contour area to consider.\n-    max_area_ratio : float\n-        Maximum area relative to frame size.\n-    ratio_tol : tuple\n-        Acceptable width/height ratio range for near-squares.\n-    brightness_thresh : int\n-        Fixed threshold for dark regions (0–255) if adaptive_mode=False.\n-    approx_eps : float\n-        Polygon approximation precision factor.\n-    max_results : int\n-        Maximum number of detections to return.\n-    clahe_clip : float\n-        CLAHE contrast limit (higher = more contrast).\n-    clahe_grid : tuple\n-        CLAHE tile grid size.\n-    blur_ksize : int\n-        Gaussian blur kernel size for noise smoothing.\n-    morph_kernel_size : int\n-        Morphology kernel size for closing gaps.\n-    morph_iterations : int\n-        Morphological close iterations.\n-    dark_weight : float\n-        Weight for darkness scoring (0–1).\n-    shape_weight : float\n-        Weight for shape/squareness scoring (0–1).\n-    adaptive_mode : bool\n-        Use adaptive thresholding if True (better for variable lighting).\n-    debug : bool\n-        Show intermediate visualization windows (gray, enhanced, mask).\n-\n-    Returns\n-    -------\n-    list of tuples\n-        [(score, x, y, w, h, mean_val), ...]\n-    \"\"\"\n+    if img is None or not hasattr(img, \"shape\"):\n+        return []\n \n     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)\n     h_img, w_img = gray.shape[:2]\n-    frame_area = h_img * w_img\n+    frame_area = float(h_img * w_img)\n \n-    # --- Step 1: Preprocess for consistent lighting ---\n+    # --- Step 1: Local contrast normalization ---\n     blur = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)\n     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)\n     enhanced = clahe.apply(blur)\n \n-    # --- Step 2: Threshold dark regions ---\n-    if adaptive_mode:\n-        dark_mask = cv2.adaptiveThreshold(\n-            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\n-            cv2.THRESH_BINARY_INV, 15, 5\n-        )\n-    else:\n-        _, dark_mask = cv2.threshold(enhanced, brightness_thresh, 255, cv2.THRESH_BINARY_INV)\n+    # --- Step 2: Dark region mask ---\n+    # Invert threshold so dark objects become white in the mask.\n+    _, base_mask = cv2.threshold(\n+        enhanced,\n+        brightness_thresh,\n+        255,\n+        cv2.THRESH_BINARY_INV,\n+    )\n \n-    # --- Step 3: Morphological cleanup ---\n+    # Edge reinforcement to keep structure even if threshold is imperfect.\n+    edges = cv2.Canny(enhanced, 40, 120)\n+    dark_mask = cv2.bitwise_or(base_mask, edges)\n+\n+    # Morphology to close small gaps and stabilize contour shapes.\n     k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size))\n     dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k, iterations=morph_iterations)\n \n-    # --- Optional Debug Visualization ---\n     if debug:\n-        cv2.imshow(\"Gray\", gray)\n-        cv2.imshow(\"Enhanced\", enhanced)\n-        cv2.imshow(\"Dark Mask\", dark_mask)\n+        cv2.imshow(\"gray\", gray)\n+        cv2.imshow(\"enhanced\", enhanced)\n+        cv2.imshow(\"dark_mask\", dark_mask)\n         cv2.waitKey(0)\n         cv2.destroyAllWindows()\n \n-    # --- Step 4: Find contours ---\n+    # --- Step 3: Find contours ---\n     contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n-    candidates = []\n+    candidates: List[Tuple[float, int, int, int, int, float]] = []\n \n     for c in contours:\n         peri = cv2.arcLength(c, True)\n@@ -110,27 +81,35 @@             continue\n \n         x, y, w, h = cv2.boundingRect(approx)\n+        if w == 0 or h == 0:\n+            continue\n         ratio = w / float(h)\n         if not (ratio_tol[0] <= ratio <= ratio_tol[1]):\n             continue\n \n-        roi = gray[y:y+h, x:x+w]\n-        mean_val = np.mean(roi)\n+        roi = gray[y : y + h, x : x + w]\n+        mean_val = float(np.mean(roi))\n \n-        # Darkness score (how dark it is) and shape score (how square)\n-        dark_score = max(0, 1 - mean_val / 255.0)\n-        shape_score = 1 - abs(1 - ratio)\n+        # Darkness score (how dark the region is overall)\n+        dark_score = max(0.0, 1.0 - mean_val / 255.0)\n+        # Shape score (how close to a 1:1 aspect ratio)\n+        shape_score = 1.0 - abs(1.0 - ratio)\n+\n         final_score = dark_weight * dark_score + shape_weight * shape_score\n-\n         candidates.append((final_score, x, y, w, h, mean_val))\n \n     candidates.sort(key=lambda x: x[0], reverse=True)\n     return candidates[:max_results]\n \n \n-def draw_squares(img, detections, color=(0, 255, 0), thickness=10, label=True):\n-    \"\"\"\n-    Draw detected dark squares with configurable appearance.\n+def draw_squares(\n+    img,\n+    detections: List[Tuple[float, int, int, int, int, float]],\n+    color: Tuple[int, int, int] = (0, 255, 0),\n+    thickness: int = 10,\n+    label: bool = True,\n+):\n+    \"\"\"Draw detected dark squares with configurable appearance.\n \n     Args:\n         img: BGR image.\n@@ -139,12 +118,34 @@         thickness: rectangle border thickness.\n         label: whether to draw labels (True/False).\n     \"\"\"\n+    if img is None or not hasattr(img, \"shape\"):\n+        return img\n+\n     result = img.copy()\n     for rank, (_, x, y, w, h, mean_val) in enumerate(detections, start=1):\n         cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)\n         if label:\n-            cv2.putText(result, f\"S{rank}\", (x + 15, y + 45),\n-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3, cv2.LINE_AA)\n-            cv2.putText(result, f\"S{rank}\", (x + 15, y + 45),\n-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)\n+            # Slightly inset label so it sits nicely inside thick borders.\n+            lx = x + 15\n+            ly = y + 45\n+            cv2.putText(\n+                result,\n+                f\"S{rank}\",\n+                (lx, ly),\n+                cv2.FONT_HERSHEY_SIMPLEX,\n+                1.0,\n+                (0, 0, 0),\n+                3,\n+                cv2.LINE_AA,\n+            )\n+            cv2.putText(\n+                result,\n+                f\"S{rank}\",\n+                (lx, ly),\n+                cv2.FONT_HERSHEY_SIMPLEX,\n+                1.0,\n+                (255, 255, 255),\n+                2,\n+                cv2.LINE_AA,\n+            )\n     return result\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-22T17:22:17.033302",
+    "patch_name": "Patch 2025-11-22 17:22",
+    "description": "",
+    "files_modified": [
+      "detect_squares.py"
+    ],
+    "summary": {
+      "total": 1,
+      "ok": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "detect_squares.py",
+        "diff": "--- a/detect_squares.py+++ b/detect_squares.py@@ -5,9 +5,9 @@ \n def detect_dark_squares(\n     img,\n-    min_area: float = 1200.0,\n+    min_area: float = 1000.0,\n     max_area_ratio: float = 0.6,\n-    ratio_tol: Tuple[float, float] = (0.85, 1.15),\n+    max_aspect: float = 1.6,\n     brightness_thresh: int = 80,\n     approx_eps: float = 0.03,\n     max_results: int = 25,\n@@ -25,10 +25,9 @@     Returns a list of candidates sorted by descending score:\n         (score, x, y, w, h, mean_val)\n \n-    This is tuned for a dark outer square (marker) against a lighter background,\n-    like your 30x30 mm black square with inner white squares.\n+    Tuned for a dark outer square (marker) against a lighter background,\n+    e.g. your black calibration square with inner white squares.\n     \"\"\"\n-\n     if img is None or not hasattr(img, \"shape\"):\n         return []\n \n@@ -42,7 +41,6 @@     enhanced = clahe.apply(blur)\n \n     # --- Step 2: Dark region mask ---\n-    # Invert threshold so dark objects become white in the mask.\n     _, base_mask = cv2.threshold(\n         enhanced,\n         brightness_thresh,\n@@ -50,11 +48,18 @@         cv2.THRESH_BINARY_INV,\n     )\n \n-    # Edge reinforcement to keep structure even if threshold is imperfect.\n+    white_ratio = cv2.countNonZero(base_mask) / float(base_mask.size)\n+    if white_ratio < 0.01 or white_ratio > 0.9:\n+        _, base_mask = cv2.threshold(\n+            enhanced,\n+            0,\n+            255,\n+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,\n+        )\n+\n     edges = cv2.Canny(enhanced, 40, 120)\n     dark_mask = cv2.bitwise_or(base_mask, edges)\n \n-    # Morphology to close small gaps and stabilize contour shapes.\n     k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size))\n     dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k, iterations=morph_iterations)\n \n@@ -65,38 +70,61 @@         cv2.waitKey(0)\n         cv2.destroyAllWindows()\n \n-    # --- Step 3: Find contours ---\n     contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n     candidates: List[Tuple[float, int, int, int, int, float]] = []\n \n+    eff_min_area = max(min_area, 0.0003 * frame_area)\n+\n     for c in contours:\n-        peri = cv2.arcLength(c, True)\n-        approx = cv2.approxPolyDP(c, approx_eps * peri, True)\n-        area = cv2.contourArea(approx)\n-\n-        # Must be a convex quadrilateral within area limits\n-        if len(approx) != 4 or not cv2.isContourConvex(approx):\n-            continue\n-        if not (min_area < area < frame_area * max_area_ratio):\n+        if cv2.contourArea(c) < eff_min_area:\n             continue\n \n-        x, y, w, h = cv2.boundingRect(approx)\n-        if w == 0 or h == 0:\n-            continue\n-        ratio = w / float(h)\n-        if not (ratio_tol[0] <= ratio <= ratio_tol[1]):\n+        hull = cv2.convexHull(c)\n+        area = cv2.contourArea(hull)\n+        if not (eff_min_area < area < frame_area * max_area_ratio):\n             continue\n \n-        roi = gray[y : y + h, x : x + w]\n-        mean_val = float(np.mean(roi))\n+        peri = cv2.arcLength(hull, True)\n+        approx = cv2.approxPolyDP(hull, approx_eps * peri, True)\n \n-        # Darkness score (how dark the region is overall)\n-        dark_score = max(0.0, 1.0 - mean_val / 255.0)\n-        # Shape score (how close to a 1:1 aspect ratio)\n-        shape_score = 1.0 - abs(1.0 - ratio)\n+        candidate_quads = []\n \n-        final_score = dark_weight * dark_score + shape_weight * shape_score\n-        candidates.append((final_score, x, y, w, h, mean_val))\n+        if len(approx) == 4 and cv2.isContourConvex(approx):\n+            candidate_quads.append(approx.reshape(4, 2).astype(np.float32))\n+        else:\n+            rect = cv2.minAreaRect(hull)\n+            box = cv2.boxPoints(rect)\n+            candidate_quads.append(box.astype(np.float32))\n+\n+        for quad in candidate_quads:\n+            x, y, w, h = cv2.boundingRect(np.intp(quad))\n+            if w <= 0 or h <= 0:\n+                continue\n+\n+            long_side = float(max(w, h))\n+            short_side = float(max(1, min(w, h)))\n+            aspect = long_side / short_side\n+\n+            if aspect > max_aspect:\n+                continue\n+\n+            border_tol = 4\n+            if (\n+                x <= border_tol\n+                or y <= border_tol\n+                or x + w >= w_img - border_tol\n+                or y + h >= h_img - border_tol\n+            ):\n+                continue\n+\n+            roi = gray[y : y + h, x : x + w]\n+            mean_val = float(np.mean(roi))\n+\n+            dark_score = max(0.0, 1.0 - mean_val / 255.0)\n+            shape_score = max(0.0, 1.0 - (aspect - 1.0))\n+\n+            final_score = dark_weight * dark_score + shape_weight * shape_score\n+            candidates.append((final_score, x, y, w, h, mean_val))\n \n     candidates.sort(key=lambda x: x[0], reverse=True)\n     return candidates[:max_results]\n@@ -109,15 +137,7 @@     thickness: int = 10,\n     label: bool = True,\n ):\n-    \"\"\"Draw detected dark squares with configurable appearance.\n-\n-    Args:\n-        img: BGR image.\n-        detections: list from detect_dark_squares().\n-        color: border color (BGR tuple).\n-        thickness: rectangle border thickness.\n-        label: whether to draw labels (True/False).\n-    \"\"\"\n+    \"\"\"Draw detected dark squares with configurable appearance.\"\"\"\n     if img is None or not hasattr(img, \"shape\"):\n         return img\n \n@@ -125,7 +145,6 @@     for rank, (_, x, y, w, h, mean_val) in enumerate(detections, start=1):\n         cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)\n         if label:\n-            # Slightly inset label so it sits nicely inside thick borders.\n             lx = x + 15\n             ly = y + 45\n             cv2.putText(\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-22T19:59:02.300570",
+    "patch_name": "Patch 2025-11-22 19:59",
+    "description": "Enhanced Calibration Object Detection for CamScan\n\nThis patch significantly improves the detection of calibration markers (black squares with nested white squares) through:\n\n1. **Nested Pattern Recogn",
+    "files_modified": [
+      "detect_squares.py",
+      "calibration_core.py",
+      "edge_finder.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 3,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "detect_squares.py",
+        "diff": "--- a/detect_squares.py+++ b/detect_squares.py@@ -1,6 +1,39 @@ import cv2\n import numpy as np\n-from typing import List, Tuple\n+from typing import List, Tuple, Optional\n+\n+\n+def _detect_nested_pattern(\n+    gray: np.ndarray,\n+    x: int,\n+    y: int,\n+    w: int,\n+    h: int,\n+    min_white_squares: int = 2,\n+) -> Tuple[bool, int]:\n+    \"\"\"\n+    Verify that a dark square contains lighter/white squares inside.\n+    \n+    Returns:\n+        (has_nested_pattern, num_white_squares)\n+    \"\"\"\n+    roi = gray[y : y + h, x : x + w]\n+    if roi.size == 0:\n+        return False, 0\n+    \n+    # Detect bright regions inside the dark square\n+    _, white_mask = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)\n+    \n+    # Find connected components of white regions\n+    contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n+    \n+    # Count square-like white regions (reasonable size and aspect ratio)\n+    white_squares = sum(\n+        1 for c in contours\n+        if cv2.contourArea(c) > (w * h * 0.02) and cv2.contourArea(c) < (w * h * 0.35)\n+    )\n+    \n+    return white_squares >= min_white_squares, white_squares\n \n \n def _refine_square_in_roi(\n@@ -10,7 +43,9 @@     w: int,\n     h: int,\n     min_fill: float = 0.35,\n-    max_aspect: float = 1.3,\n+    max_aspect: float = 1.4,\n+    check_nested: bool = True,\n+    min_nested_squares: int = 2,\n     debug: bool = False,\n ):\n     \"\"\"\n@@ -25,6 +60,12 @@         box_global: (4, 2) int32 array of rotated rectangle points in *global*\n                     image coordinates, or None if not valid.\n     \"\"\"\n+    # First check for nested pattern if requested\n+    if check_nested:\n+        has_pattern, num_squares = _detect_nested_pattern(gray, x, y, w, h, min_nested_squares)\n+        if not has_pattern:\n+            return False, None\n+    \n     roi = gray[y : y + h, x : x + w]\n     if roi.size == 0:\n         return False, None\n@@ -39,7 +80,10 @@     )\n \n     # Edges help stabilize shape even with inner white squares\n-    roi_edges = cv2.Canny(roi_bin, 50, 150)\n+    # Use adaptive thresholding for better edge detection in varying lighting\n+    roi_adaptive = cv2.adaptiveThreshold(roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\n+                                          cv2.THRESH_BINARY_INV, 11, 2)\n+    roi_edges = cv2.Canny(roi_adaptive, 40, 120)\n \n     contours, _ = cv2.findContours(\n         roi_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE\n@@ -94,13 +138,17 @@ \n def detect_dark_squares(\n     img,\n-    min_area: float = 1000.0,\n+    min_area: float = 800.0,\n     max_area_ratio: float = 0.6,\n-    max_aspect: float = 1.6,\n-    brightness_thresh: int = 80,\n-    approx_eps: float = 0.03,\n+    max_aspect: float = 1.5,\n+    brightness_thresh: Optional[int] = None,\n+    approx_eps: float = 0.02,\n     max_results: int = 25,\n     clahe_clip: float = 2.0,\n+    use_multi_scale: bool = True,\n+    scale_factors: Tuple[float, ...] = (1.0, 0.75, 0.5),\n+    check_nested_pattern: bool = True,\n+    min_nested_squares: int = 2,\n     clahe_grid: Tuple[int, int] = (8, 8),\n     blur_ksize: int = 5,\n     morph_kernel_size: int = 5,\n@@ -115,6 +163,20 @@       1) Global: find dark-ish, roughly square candidates over entire frame.\n       2) Per-candidate: re-check each ROI with a more detailed square test.\n \n+    Args:\n+        img: Input BGR image\n+        min_area: Minimum contour area in pixels\n+        max_area_ratio: Maximum ratio of contour area to frame area\n+        max_aspect: Maximum aspect ratio for square-like shapes\n+        brightness_thresh: Fixed threshold for dark regions (None = auto with Otsu)\n+        approx_eps: Epsilon for polygon approximation\n+        max_results: Maximum number of candidates to return\n+        clahe_clip: CLAHE clip limit for contrast enhancement\n+        use_multi_scale: Enable multi-scale detection for robustness\n+        scale_factors: Scales to process if multi-scale is enabled\n+        check_nested_pattern: Verify nested white squares inside dark square\n+        min_nested_squares: Minimum number of nested white squares required\n+        \n     Returns a list of candidates sorted by descending score:\n         (score, x, y, w, h, mean_val)\n \n@@ -128,119 +190,317 @@     h_img, w_img = gray.shape[:2]\n     frame_area = float(h_img * w_img)\n \n-    # --- Step 1: Local contrast normalization ---\n-    blur = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)\n-    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)\n-    enhanced = clahe.apply(blur)\n-\n-    # --- Step 2: Dark region mask (global pass) ---\n-    _, base_mask = cv2.threshold(\n-        enhanced,\n-        brightness_thresh,\n-        255,\n-        cv2.THRESH_BINARY_INV,\n+    all_candidates = []\n+    \n+    # Multi-scale detection for better robustness\n+    scales = scale_factors if use_multi_scale else (1.0,)\n+    \n+    for scale in scales:\n+        if scale != 1.0:\n+            scaled_w = int(w_img * scale)\n+            scaled_h = int(h_img * scale)\n+            gray_scaled = cv2.resize(gray, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)\n+        else:\n+            gray_scaled = gray\n+            scale = 1.0\n+            \n+        # --- Step 1: Enhanced preprocessing with bilateral filter ---\n+        # Bilateral filter preserves edges while smoothing noise\n+        blur = cv2.bilateralFilter(gray_scaled, 9, 75, 75)\n+        \n+        # Apply CLAHE for local contrast enhancement\n+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=clahe_grid)\n+        enhanced = clahe.apply(blur)\n+        \n+        # --- Step 2: Adaptive dark region detection ---\n+        if brightness_thresh is None:\n+            # Use Otsu's method for automatic threshold selection\n+            thresh_val, base_mask = cv2.threshold(\n+                enhanced,\n+                0,\n+                255,\n+                cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,\n+            )\n+        else:\n+            _, base_mask = cv2.threshold(\n+                enhanced,\n+                brightness_thresh,\n+                255,\n+                cv2.THRESH_BINARY_INV,\n+            )\n+            thresh_val = brightness_thresh\n+        \n+        # Adaptive threshold as complement for varying lighting\n+        adaptive_mask = cv2.adaptiveThreshold(\n+            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\n+            cv2.THRESH_BINARY_INV, 21, 5\n+        )\n+        \n+        # Combine global and adaptive masks\n+        combined_mask = cv2.bitwise_or(base_mask, adaptive_mask)\n+        \n+        # Multi-scale edge detection with different parameters\n+        edges1 = cv2.Canny(enhanced, 30, 90)\n+        edges2 = cv2.Canny(enhanced, 50, 150)\n+        edges_combined = cv2.bitwise_or(edges1, edges2)\n+        \n+        # Combine masks with edges\n+        dark_mask = cv2.bitwise_or(combined_mask, edges_combined)\n+        \n+        # Morphological operations to clean up and connect regions\n+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size))\n+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k, iterations=morph_iterations)\n+        \n+        # Additional opening to remove small noise\n+        k_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))\n+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, k_open, iterations=1)\n+        \n+        if debug:\n+            cv2.imshow(f\"enhanced_{scale}\", enhanced)\n+            cv2.imshow(f\"dark_mask_{scale}\", dark_mask)\n+            cv2.waitKey(0)\n+\n+        # --- Step 3: Find contours (candidate generation) ---\n+        contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n+        \n+        # Scale-adjusted minimum area\n+        scale_factor_area = scale * scale\n+        eff_min_area = max(min_area * scale_factor_area, 0.0003 * (gray_scaled.shape[0] * gray_scaled.shape[1]))\n+        \n+        scale_candidates = []\n+        \n+        for c in contours:\n+            area = cv2.contourArea(c)\n+            if area < eff_min_area:\n+                continue\n+\n+            hull = cv2.convexHull(c)\n+            hull_area = cv2.contourArea(hull)\n+            if not (eff_min_area < hull_area < (gray_scaled.shape[0] * gray_scaled.shape[1]) * max_area_ratio):\n+                continue\n+\n+            peri = cv2.arcLength(hull, True)\n+            approx = cv2.approxPolyDP(hull, approx_eps * peri, True)\n+\n+            candidate_quads = []\n+\n+            if len(approx) == 4 and cv2.isContourConvex(approx):\n+                candidate_quads.append(approx.reshape(4, 2).astype(np.float32))\n+            else:\n+                rect = cv2.minAreaRect(hull)\n+                box = cv2.boxPoints(rect)\n+                candidate_quads.append(box.astype(np.float32))\n+\n+            for quad in candidate_quads:\n+                x, y, w, h = cv2.boundingRect(np.intp(quad))\n+                \n+                # Scale back to original coordinates\n+                x_orig = int(x / scale)\n+                y_orig = int(y / scale)\n+                w_orig = int(w / scale)\n+                h_orig = int(h / scale)\n+                \n+                if w_orig <= 0 or h_orig <= 0:\n+                    continue\n+\n+                # Rough aspect filter\n+                long_side = float(max(w_orig, h_orig))\n+                short_side = float(max(1, min(w_orig, h_orig)))\n+                aspect = long_side / short_side\n+                if aspect > max_aspect:\n+                    continue\n+\n+                # Skip frame-border artifacts\n+                border_tol = 5\n+                if (\n+                    x_orig <= border_tol\n+                    or y_orig <= border_tol\n+                    or x_orig + w_orig >= w_img - border_tol\n+                    or y_orig + h_orig >= h_img - border_tol\n+                ):\n+                    continue\n+\n+                # --- Step 4: Per-candidate refinement with nested pattern check ---\n+                ok, _ = _refine_square_in_roi(\n+                    gray,\n+                    x_orig,\n+                    y_orig,\n+                    w_orig,\n+                    h_orig,\n+                    min_fill=0.30,\n+                    max_aspect=1.4,\n+                    check_nested=check_nested_pattern,\n+                    min_nested_squares=min_nested_squares,\n+                    debug=False,\n+                )\n+                if not ok:\n+                    continue\n+\n+                roi = gray[y_orig : y_orig + h_orig, x_orig : x_orig + w_orig]\n+                mean_val = float(np.mean(roi))\n+                \n+                # Enhanced scoring system\n+                # Darkness score\n+                dark_score = max(0.0, 1.0 - mean_val / 255.0)\n+                \n+                # Shape score (closer to square = higher score)\n+                shape_score = max(0.0, 1.0 - (aspect - 1.0) * 0.5)\n+                \n+                # Size score (prefer larger markers, normalized by frame)\n+                size_ratio = (w_orig * h_orig) / frame_area\n+                size_score = min(1.0, size_ratio / 0.1)  # Optimal around 10% of frame\n+                \n+                # Nested pattern bonus\n+                has_nested, num_nested = _detect_nested_pattern(\n+                    gray, x_orig, y_orig, w_orig, h_orig, min_nested_squares\n+                )\n+                nested_score = 1.0 if has_nested else 0.5\n+                \n+                # Weighted final score\n+                final_score = (\n+                    dark_weight * dark_score +\n+                    shape_weight * shape_score +\n+                    0.15 * size_score +\n+                    0.10 * nested_score\n+                )\n+                \n+                scale_candidates.append((final_score, x_orig, y_orig, w_orig, h_orig, mean_val, scale))\n+        \n+        all_candidates.extend(scale_candidates)\n+    \n+    # Deduplicate across scales using NMS-like approach\n+    if len(all_candidates) > 1:\n+        # Sort by score\n+        all_candidates.sort(key=lambda x: x[0], reverse=True)\n+        \n+        # Non-maximum suppression\n+        final_candidates = []\n+        for candidate in all_candidates:\n+            score, x, y, w, h, mean_val, scale_used = candidate\n+            \n+            # Check if this overlaps significantly with existing candidates\n+            overlap = False\n+            for existing in final_candidates:\n+                _, ex, ey, ew, eh, _, _ = existing\n+                \n+                # Compute IoU\n+                x1 = max(x, ex)\n+                y1 = max(y, ey)\n+                x2 = min(x + w, ex + ew)\n+                y2 = min(y + h, ey + eh)\n+                \n+                if x2 > x1 and y2 > y1:\n+                    intersection = (x2 - x1) * (y2 - y1)\n+                    union = w * h + ew * eh - intersection\n+                    iou = intersection / union if union > 0 else 0\n+                    \n+                    if iou > 0.5:\n+                        overlap = True\n+                        break\n+            \n+            if not overlap:\n+                final_candidates.append(candidate)\n+                \n+        # Convert back to original format (without scale info)\n+        candidates = [(score, x, y, w, h, mean_val) for score, x, y, w, h, mean_val, _ in final_candidates]\n+    else:\n+        candidates = [(score, x, y, w, h, mean_val) for score, x, y, w, h, mean_val, _ in all_candidates]\n+\n+    return candidates[:max_results]\n+\n+\n+def detect_dark_squares_robust(\n+    img,\n+    edge_mm: float = 30.0,\n+    **kwargs\n+) -> List[Tuple[float, int, int, int, int, float]]:\n+    \"\"\"\n+    Wrapper for detect_dark_squares with robust multi-threshold detection.\n+    \n+    Combines results from multiple detection passes with different parameters\n+    to handle varying lighting conditions and marker appearances.\n+    \n+    Args:\n+        img: Input BGR image\n+        edge_mm: Expected edge length in mm (used for size priors)\n+        **kwargs: Additional arguments passed to detect_dark_squares\n+        \n+    Returns:\n+        Combined and deduplicated list of candidates\n+    \"\"\"\n+    if img is None:\n+        return []\n+    \n+    # Estimate expected marker size in pixels based on image dimensions\n+    h, w = img.shape[:2]\n+    diagonal_px = np.sqrt(w*w + h*h)\n+    \n+    # Assume marker is roughly 5-20% of image diagonal\n+    estimated_marker_diagonal = diagonal_px * 0.10\n+    estimated_marker_area = (estimated_marker_diagonal / np.sqrt(2)) ** 2\n+    \n+    all_detections = []\n+    \n+    # Pass 1: Standard detection with auto-threshold\n+    detections1 = detect_dark_squares(\n+        img,\n+        brightness_thresh=None,  # Auto\n+        min_area=max(800, estimated_marker_area * 0.3),\n+        **kwargs\n     )\n-\n-    # If mask is almost empty or almost full, fall back to Otsu\n-    white_ratio = cv2.countNonZero(base_mask) / float(base_mask.size)\n-    if white_ratio < 0.01 or white_ratio > 0.9:\n-        _, base_mask = cv2.threshold(\n-            enhanced,\n-            0,\n-            255,\n-            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,\n-        )\n-\n-    edges = cv2.Canny(enhanced, 40, 120)\n-    dark_mask = cv2.bitwise_or(base_mask, edges)\n-\n-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_kernel_size, morph_kernel_size))\n-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, k, iterations=morph_iterations)\n-\n-    if debug:\n-        cv2.imshow(\"gray\", gray)\n-        cv2.imshow(\"enhanced\", enhanced)\n-        cv2.imshow(\"dark_mask\", dark_mask)\n-        cv2.waitKey(0)\n-        cv2.destroyAllWindows()\n-\n-    # --- Step 3: Find contours (candidate generation) ---\n-    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)\n-    candidates: List[Tuple[float, int, int, int, int, float]] = []\n-\n-    # Effective min area scales with image size so we handle different FOVs\n-    eff_min_area = max(min_area, 0.0003 * frame_area)  # ~0.03% of frame\n-\n-    for c in contours:\n-        if cv2.contourArea(c) < eff_min_area:\n-            continue\n-\n-        hull = cv2.convexHull(c)\n-        area = cv2.contourArea(hull)\n-        if not (eff_min_area < area < frame_area * max_area_ratio):\n-            continue\n-\n-        peri = cv2.arcLength(hull, True)\n-        approx = cv2.approxPolyDP(hull, approx_eps * peri, True)\n-\n-        candidate_quads = []\n-\n-        if len(approx) == 4 and cv2.isContourConvex(approx):\n-            candidate_quads.append(approx.reshape(4, 2).astype(np.float32))\n-        else:\n-            rect = cv2.minAreaRect(hull)\n-            box = cv2.boxPoints(rect)\n-            candidate_quads.append(box.astype(np.float32))\n-\n-        for quad in candidate_quads:\n-            x, y, w, h = cv2.boundingRect(np.intp(quad))\n-            if w <= 0 or h <= 0:\n-                continue\n-\n-            # Rough aspect filter (global pass)\n-            long_side = float(max(w, h))\n-            short_side = float(max(1, min(w, h)))\n-            aspect = long_side / short_side\n-            if aspect > max_aspect:\n-                continue\n-\n-            # Skip obvious frame-border blobs\n-            border_tol = 4\n-            if (\n-                x <= border_tol\n-                or y <= border_tol\n-                or x + w >= w_img - border_tol\n-                or y + h >= h_img - border_tol\n-            ):\n-                continue\n-\n-            # --- Step 4: Per-candidate refinement (second pass) ---\n-            ok, _ = _refine_square_in_roi(\n-                gray,\n-                x,\n-                y,\n-                w,\n-                h,\n-                min_fill=0.35,\n-                max_aspect=1.3,\n-                debug=False,\n-            )\n-            if not ok:\n-                continue\n-\n-            roi = gray[y : y + h, x : x + w]\n-            mean_val = float(np.mean(roi))\n-\n-            # Darkness score: darker patches score higher\n-            dark_score = max(0.0, 1.0 - mean_val / 255.0)\n-            # Shape score (global): 1.0 for perfect square, decays as aspect grows\n-            shape_score = max(0.0, 1.0 - (aspect - 1.0))\n-\n-            final_score = dark_weight * dark_score + shape_weight * shape_score\n-            candidates.append((final_score, x, y, w, h, mean_val))\n-\n-    candidates.sort(key=lambda x: x[0], reverse=True)\n-    return candidates[:max_results]\n+    all_detections.extend(detections1)\n+    \n+    # Pass 2: Dark markers (low threshold)\n+    detections2 = detect_dark_squares(\n+        img,\n+        brightness_thresh=70,\n+        min_area=max(800, estimated_marker_area * 0.3),\n+        **kwargs\n+    )\n+    all_detections.extend(detections2)\n+    \n+    # Pass 3: Very dark markers\n+    detections3 = detect_dark_squares(\n+        img,\n+        brightness_thresh=50,\n+        min_area=max(800, estimated_marker_area * 0.3),\n+        **kwargs\n+    )\n+    all_detections.extend(detections3)\n+    \n+    # Deduplicate using IoU threshold\n+    if not all_detections:\n+        return []\n+    \n+    all_detections.sort(key=lambda x: x[0], reverse=True)\n+    \n+    unique_detections = []\n+    for detection in all_detections:\n+        score, x, y, w, h, mean_val = detection\n+        \n+        # Check overlap with existing detections\n+        is_duplicate = False\n+        for existing in unique_detections:\n+            _, ex, ey, ew, eh, _ = existing\n+            \n+            x1 = max(x, ex)\n+            y1 = max(y, ey)\n+            x2 = min(x + w, ex + ew)\n+            y2 = min(y + h, ey + eh)\n+            \n+            if x2 > x1 and y2 > y1:\n+                intersection = (x2 - x1) * (y2 - y1)\n+                union = w * h + ew * eh - intersection\n+                iou = intersection / union if union > 0 else 0\n+                \n+                if iou > 0.4:\n+                    is_duplicate = True\n+                    break\n+        \n+        if not is_duplicate:\n+            unique_detections.append(detection)\n+    \n+    return unique_detections\n \n \n def draw_squares(\n@@ -282,11 +542,13 @@             cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)\n \n         if label:\n+            # Enhanced label with confidence score\n             lx = x + 15\n             ly = y + 45\n+            label_text = f\"S{rank}\"\n             cv2.putText(\n                 result,\n-                f\"S{rank}\",\n+                label_text,\n                 (lx, ly),\n                 cv2.FONT_HERSHEY_SIMPLEX,\n                 1.0,\n@@ -296,7 +558,7 @@             )\n             cv2.putText(\n                 result,\n-                f\"S{rank}\",\n+                label_text,\n                 (lx, ly),\n                 cv2.FONT_HERSHEY_SIMPLEX,\n                 1.0,\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -3,7 +3,7 @@ from typing import Dict, Any, Tuple, List, Optional\n \n # External helpers (already in your project)\n-from detect_squares import detect_dark_squares\n+from detect_squares import detect_dark_squares, detect_dark_squares_robust\n from edge_finder import find_main_edges\n \n # ----------------------------\n@@ -94,6 +94,8 @@ def calibrate_image(img_bgr: np.ndarray,\n                     edge_mm: Optional[float] = None,\n                     thresholds: Tuple[int,int,int] = (60, 80, 100),\n+                    use_robust_detection: bool = True,\n+                    min_nested_squares: int = 2,\n                     line_thickness: int = LINE_THICKNESS\n                     ) -> Tuple[Dict[str, Any], np.ndarray]:\n     \"\"\"\n@@ -122,15 +124,34 @@     edge_len_mm = float(edge_mm) if edge_mm is not None else float(EDGE_MM_DEFAULT)\n     print(f\"[Calibration] Using edge length: {edge_len_mm} mm  (module default={EDGE_MM_DEFAULT})\")\n \n-    # 1) Broad square detection at multiple brightness thresholds\n+    # 1) Enhanced multi-threshold detection with pattern verification\n     rects: List[Tuple[int,int,int,int]] = []\n-    for t in thresholds:\n-        dets = detect_dark_squares(img_bgr, brightness_thresh=t)\n+    \n+    if use_robust_detection:\n+        # Use the enhanced robust detection method\n+        print(f\"[Calibration] Using robust multi-scale detection with nested pattern check\")\n+        dets = detect_dark_squares_robust(\n+            img_bgr,\n+            edge_mm=edge_len_mm,\n+            check_nested_pattern=True,\n+            min_nested_squares=min_nested_squares,\n+            use_multi_scale=True,\n+            scale_factors=(1.0, 0.8, 0.6)\n+        )\n         for (_score, x, y, w, h, _mean) in dets:\n             rects.append((x, y, w, h))\n-\n+    else:\n+        # Original multi-threshold approach\n+        for t in thresholds:\n+            dets = detect_dark_squares(img_bgr, brightness_thresh=t)\n+            for (_score, x, y, w, h, _mean) in dets:\n+                rects.append((x, y, w, h))\n+    \n     rects = _dedup_rects(rects, iou_thresh=0.45)\n     rects = sorted(rects, key=lambda r: r[2]*r[3], reverse=True)\n+    \n+    print(f\"[Calibration] Found {len(rects)} candidate marker regions\")\n+    \n \n     markers: List[Dict[str, Any]] = []\n \n@@ -177,6 +198,7 @@             \"corners\": [{\"x\": int(a), \"y\": int(b)} for (a,b) in mapped]\n         })\n \n+    print(f\"[Calibration] Successfully calibrated {len(markers)} marker(s)\")\n     # Global averages\n     mm_per_px_vals = [m[\"mm_per_px\"] for m in markers] or [0.0]\n     mm_per_px_avg = float(np.mean(mm_per_px_vals))\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "edge_finder.py",
+        "diff": "--- a/edge_finder.py+++ b/edge_finder.py@@ -1,5 +1,6 @@ import cv2\n import numpy as np\n+from typing import Tuple, List, Optional\n \n \n def _auto_canny(image: np.ndarray, sigma: float = 0.33) -> np.ndarray:\n@@ -64,6 +65,7 @@     warp_size: int = 512,\n     min_area: float = 1500.0,\n     debug: bool = False,\n+    use_enhanced_preprocessing: bool = True,\n ):\n     \"\"\"\n     Find the dominant square-like contour in the crop and return its corners.\n@@ -80,6 +82,8 @@         Size of the warped output (warp_size x warp_size).\n     min_area:\n         Minimum contour area (in pixels) required to be considered.\n+    use_enhanced_preprocessing:\n+        Enable enhanced preprocessing with bilateral filtering and adaptive methods\n     debug:\n         If True, shows intermediate debug windows (desktop only).\n \n@@ -97,21 +101,42 @@     if crop is None or crop.size == 0:\n         return crop, 0, None, None\n \n-    # --- Pre-processing ---\n+    # --- Enhanced Pre-processing ---\n     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)\n-    gray = cv2.bilateralFilter(gray, 7, 50, 50)\n-\n-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))\n-    eq = clahe.apply(gray)\n-\n-    # Multi-sigma Canny to capture both weak and strong edges\n+    \n+    if use_enhanced_preprocessing:\n+        # Bilateral filter preserves edges while reducing noise\n+        gray = cv2.bilateralFilter(gray, 9, 75, 75)\n+        \n+        # Enhanced CLAHE for better contrast\n+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))\n+        eq = clahe.apply(gray)\n+        \n+        # Combine with adaptive histogram equalization\n+        eq_global = cv2.equalizeHist(gray)\n+        eq = cv2.addWeighted(eq, 0.7, eq_global, 0.3, 0)\n+    else:\n+        gray = cv2.bilateralFilter(gray, 7, 50, 50)\n+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))\n+        eq = clahe.apply(gray)\n+\n+    # Multi-scale, multi-sigma Canny edge detection\n     edges = np.zeros_like(eq)\n-    for s in (0.20, 0.33, 0.50):\n+    for s in (0.15, 0.25, 0.33, 0.45):\n         edges = cv2.bitwise_or(edges, _auto_canny(eq, sigma=s))\n-\n-    # Connect broken edges\n+    \n+    # Add structured edge detection using morphological gradient\n+    morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))\n+    gradient = cv2.morphologyEx(eq, cv2.MORPH_GRADIENT, morph_kernel)\n+    _, gradient_thresh = cv2.threshold(gradient, 20, 255, cv2.THRESH_BINARY)\n+    edges = cv2.bitwise_or(edges, gradient_thresh)\n+\n+    # Connect broken edges with larger kernel\n     k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))\n     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k, iterations=2)\n+    \n+    # Dilate slightly to connect nearby edges\n+    edges = cv2.dilate(edges, k, iterations=1)\n \n     # Fallback: if very few edge pixels, try threshold-based mask as well\n     if cv2.countNonZero(edges) < 0.01 * edges.size:\n@@ -148,8 +173,14 @@ \n         if len(approx) == 4 and cv2.isContourConvex(approx):\n             candidate_quads.append(approx.reshape(4, 2))\n+        elif len(approx) > 4:\n+            # Try to fit a rectangle to multi-sided polygon\n+            # Fallback: rotated bounding box\n+            rect = cv2.minAreaRect(hull)\n+            box = cv2.boxPoints(rect)\n+            candidate_quads.append(box)\n         else:\n-            # Fallback: rotated bounding box\n+            # For very irregular contours, use rotated rect\n             rect = cv2.minAreaRect(hull)\n             box = cv2.boxPoints(rect)\n             candidate_quads.append(box)\n@@ -161,6 +192,15 @@                 continue\n \n             score = _score_quad(ordered, crop.shape)\n+            \n+            # Bonus for quads that are more central in the crop\n+            center_x, center_y = crop.shape[1] / 2, crop.shape[0] / 2\n+            quad_center = np.mean(ordered, axis=0)\n+            dist_to_center = np.linalg.norm(quad_center - [center_x, center_y])\n+            max_dist = np.sqrt(center_x**2 + center_y**2)\n+            centrality_bonus = 1.0 - (dist_to_center / max_dist) * 0.3\n+            score *= centrality_bonus\n+            \n             if score > best_score:\n                 best_score = score\n                 best_quad = ordered\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-22T20:09:08.828139",
+    "patch_name": "Patch 2025-11-22 20:09",
+    "description": "Quick Fix: Disable Strict Nested Pattern Checking\n\nThis patch fixes the issue where no squares are being detected by disabling the strict nested pattern requirement.\n\nThe issue: The enhanced detection",
+    "files_modified": [
+      "detect_squares.py",
+      "detect_squares.py",
+      "calibration_core.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 3,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "detect_squares.py",
+        "diff": "--- a/detect_squares.py+++ b/detect_squares.py@@ -147,8 +147,8 @@     clahe_clip: float = 2.0,\n     use_multi_scale: bool = True,\n     scale_factors: Tuple[float, ...] = (1.0, 0.75, 0.5),\n-    check_nested_pattern: bool = True,\n-    min_nested_squares: int = 2,\n+    check_nested_pattern: bool = False,\n+    min_nested_squares: int = 0,\n     clahe_grid: Tuple[int, int] = (8, 8),\n     blur_ksize: int = 5,\n     morph_kernel_size: int = 5,\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "detect_squares.py",
+        "diff": "--- a/detect_squares.py+++ b/detect_squares.py@@ -44,8 +44,8 @@     h: int,\n     min_fill: float = 0.35,\n     max_aspect: float = 1.4,\n-    check_nested: bool = True,\n-    min_nested_squares: int = 2,\n+    check_nested: bool = False,\n+    min_nested_squares: int = 0,\n     debug: bool = False,\n ):\n     \"\"\"\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -133,8 +133,8 @@         dets = detect_dark_squares_robust(\n             img_bgr,\n             edge_mm=edge_len_mm,\n-            check_nested_pattern=True,\n-            min_nested_squares=min_nested_squares,\n+            check_nested_pattern=False,\n+            min_nested_squares=0,\n             use_multi_scale=True,\n             scale_factors=(1.0, 0.8, 0.6)\n         )\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-22T20:13:15.105567",
+    "patch_name": "Patch 2025-11-22 20:13",
+    "description": "Enhanced Calibration Object Detection for CamScan (Relaxed Version)\n\nThis patch significantly improves the detection of calibration markers (black squares with nested white squares) while maintaining ",
+    "files_modified": [
+      "detect_squares.py",
+      "calibration_core.py",
+      "edge_finder.py"
+    ],
+    "summary": {
+      "total": 3,
+      "ok": 3,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "detect_squares.py",
+        "diff": "--- a/detect_squares.py+++ b/detect_squares.py@@ -354,14 +354,14 @@                 has_nested, num_nested = _detect_nested_pattern(\n                     gray, x_orig, y_orig, w_orig, h_orig, min_nested_squares\n                 )\n-                nested_score = 1.0 if has_nested else 0.5\n+                nested_score = 1.0 if has_nested else 0.9\n                 \n                 # Weighted final score\n                 final_score = (\n                     dark_weight * dark_score +\n                     shape_weight * shape_score +\n                     0.15 * size_score +\n-                    0.10 * nested_score\n+                    0.05 * nested_score\n                 )\n                 \n                 scale_candidates.append((final_score, x_orig, y_orig, w_orig, h_orig, mean_val, scale))\n",
+        "status": "ok",
+        "message": "modified"
+      },
+      {
+        "path": "calibration_core.py",
+        "diff": "--- a/calibration_core.py+++ b/calibration_core.py@@ -95,7 +95,7 @@                     edge_mm: Optional[float] = None,\n                     thresholds: Tuple[int,int,int] = (60, 80, 100),\n                     use_robust_detection: bool = True,\n-                    min_nested_squares: int = 2,\n+                    min_nested_squares: int = 0,\n                     line_thickness: int = LINE_THICKNESS\n                     ) -> Tuple[Dict[str, Any], np.ndarray]:\n     \"\"\"\n@@ -133,8 +133,8 @@         dets = detect_dark_squares_robust(\n             img_bgr,\n             edge_mm=edge_len_mm,\n-            check_nested_pattern=False,\n-            min_nested_squares=0,\n+            check_nested_pattern=True,\n+            min_nested_squares=0,  # Disabled by default for compatibility\n             use_multi_scale=True,\n             scale_factors=(1.0, 0.8, 0.6)\n         )\n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-11-26T20:47:04.053493",
+    "patch_name": "Patch 2025-11-26 20:47",
+    "description": "",
+    "files_modified": [
+      "app.py"
+    ],
+    "summary": {
+      "total": 1,
+      "ok": 1,
+      "skipped": 0,
+      "failed": 0
+    },
+    "success": true,
+    "patch_data": null,
+    "error_message": null,
+    "diff_results": [
+      {
+        "path": "app.py",
+        "diff": "--- a/app.py+++ b/app.py@@ -16,17 +16,19 @@ if not CALIB_PREFIX.startswith(\"/\"):\n     CALIB_PREFIX = \"/\" + CALIB_PREFIX\n \n-# ---- Explicit load order for overlay JS modules (served by Dash from /assets) ----\n+# ---- Explicit load order for overlay JS modules (served via URL_PREFIX, e.g. /camscan/assets) ----\n+# NOTE: We prepend CALIB_PREFIX so that when the app is mounted under /camscan behind Caddy,\n+#       all overlay scripts are requested as /camscan/assets/... instead of /assets/...\n ORDERED_SCRIPTS = [\n-    \"/assets/calib.units.js\",\n-    \"/assets/calib.geometry.js\",\n-    \"/assets/calib.draw.js\",\n-    \"/assets/calib.annotations.js\",\n-    \"/assets/calib.export.js\",\n-    \"/assets/calib.viewport.js\",\n-    \"/assets/calib.gestures.js\",\n-    \"/assets/calib.ui.js\",\n-    \"/assets/calibrationOverlay.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.units.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.geometry.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.draw.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.annotations.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.export.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.viewport.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.gestures.js\",\n+    f\"{CALIB_PREFIX}/assets/calib.ui.js\",\n+    f\"{CALIB_PREFIX}/assets/calibrationOverlay.js\",\n ]\n \n \n",
+        "status": "ok",
+        "message": "modified"
+      }
+    ]
+  }
+]

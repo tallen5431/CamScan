@@ -1,0 +1,18 @@
+{
+  "schema": "codesmith.patch.v1",
+  "timestamp": "2025-10-13T19:42:05.213986",
+  "root_path": null,
+  "file_hashes": {},
+  "file_hashes_eol": {},
+  "edits": [
+    {
+      "operation": "modify",
+      "path": "assets/calib.ui.topbar.js",
+      "content": "window.CalibUITopbar = (function(){\n  function create(rootEl, overlay, panelAPI){\n    const bar = document.createElement('div');\n    bar.className = 'cal-bottombar';\n\n    const btn = (icon, title, fn)=>{\n      const b=document.createElement('button');\n      b.className='cal-btn';\n      b.textContent=icon; b.title=title; b.onclick=fn;\n      b.addEventListener('touchstart', ()=>b.classList.add('active'), {passive:true});\n      b.addEventListener('touchend', ()=>b.classList.remove('active'), {passive:true});\n      return b;\n    };\n\n    // primary tools\n    const modes=[ ['pan','🖐','Pan'], ['segment','📏','Measure'], ['note','🏷','Note'] ];\n    const modeBtns=modes.map(([val,icon,tip])=> btn(icon, tip, ()=>setMode(val)));\n\n    const exportBtn = btn('💾','Export', ()=>overlay.savePNG?.() || overlay.saveJSON?.());\n    const moreBtn = btn('⋯','More', ()=>panelAPI.toggle());\n\n    bar.append(...modeBtns, exportBtn, moreBtn);\n    rootEl.appendChild(bar);\n\n    function reflect(){ modeBtns.forEach((b,i)=> b.setAttribute('aria-pressed', String(overlay.opts.mode===modes[i][0])) ); }\n    function setMode(m){ overlay.setMode(m); reflect(); }\n    reflect();\n\n    // Auto-hide on idle (3s)\n    let hideTimer;\n    function showBar(){ bar.classList.add('visible'); clearTimeout(hideTimer); hideTimer=setTimeout(()=>bar.classList.remove('visible'),3000); }\n    ['pointermove','touchstart','keydown'].forEach(ev=>document.addEventListener(ev, showBar,{passive:true}));\n    showBar();\n\n    // Inject minimal CSS for dark bottom bar\n    const css=`\n      .cal-bottombar{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space-around;align-items:center;z-index:50;background:rgba(18,18,18,0.92);backdrop-filter:blur(6px);padding:6px 0;border-top:1px solid #333;opacity:0;transform:translateY(100%);transition:opacity .25s ease,transform .25s ease;}\n      .cal-bottombar.visible{opacity:1;transform:translateY(0);}\n      .cal-bottombar .cal-btn{flex:1;font-size:24px;color:#fff;background:none;border:none;outline:none;min-width:48px;min-height:48px;border-radius:12px;}\n      .cal-bottombar .cal-btn.active{background:rgba(255,255,255,0.1);}\n      @media (hover:hover){.cal-bottombar .cal-btn:hover{background:rgba(255,255,255,0.08);}}\n    `;\n    const style=document.createElement('style'); style.textContent=css; document.head.appendChild(style);\n\n    return {root:bar, reflectMode:reflect};\n  }\n  return {create};\n})();"
+    }
+  ],
+  "normalize_defaults": {},
+  "allow_large_default": false,
+  "transactional": true,
+  "instructions": null
+}
