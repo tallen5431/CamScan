@@ -111,6 +111,20 @@
       "timestamp": "2025-11-26T20:47:04.048882",
       "description": "pre-modify app.py",
       "size": 8109
+    },
+    {
+      "path": "/home/jupyter-tj/projects/CamScan/app.py",
+      "backup_path": "/home/jupyter-tj/projects/CamScan/.backups/app.py.20251127-023016-409.bak",
+      "timestamp": "2025-11-27T02:30:16.410225",
+      "description": "pre-modify app.py",
+      "size": 8441
+    },
+    {
+      "path": "/home/jupyter-tj/projects/CamScan/calibration_core.py",
+      "backup_path": "/home/jupyter-tj/projects/CamScan/.backups/calibration_core.py.20251127-023016-424.bak",
+      "timestamp": "2025-11-27T02:30:16.424810",
+      "description": "pre-modify calibration_core.py",
+      "size": 9848
     }
   ]
 }

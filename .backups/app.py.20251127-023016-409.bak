@@ -1,11 +1,9 @@
 # CamScan — Calibration Exporter (single-page viewer)
-import os, base64, uuid, time, tempfile
+import os, base64, uuid, time
 from flask import Flask, send_from_directory, url_for
 from dash import Dash, html, dcc, Input, Output, State, no_update
 import cv2, numpy as np
 from werkzeug.middleware.proxy_fix import ProxyFix  # NEW: respect X-Forwarded-* behind Caddy
-from werkzeug.utils import secure_filename
-from werkzeug.exceptions import RequestEntityTooLarge
 
 from calibration_core import calibrate_image, save_outputs
 
@@ -19,6 +17,8 @@ if not CALIB_PREFIX.startswith("/"):
     CALIB_PREFIX = "/" + CALIB_PREFIX
 
 # ---- Explicit load order for overlay JS modules (served via URL_PREFIX, e.g. /camscan/assets) ----
+# NOTE: We prepend CALIB_PREFIX so that when the app is mounted under /camscan behind Caddy,
+#       all overlay scripts are requested as /camscan/assets/... instead of /assets/...
 ORDERED_SCRIPTS = [
     f"{CALIB_PREFIX}/assets/calib.units.js",
     f"{CALIB_PREFIX}/assets/calib.geometry.js",
@@ -30,12 +30,6 @@ ORDERED_SCRIPTS = [
     f"{CALIB_PREFIX}/assets/calib.ui.js",
     f"{CALIB_PREFIX}/assets/calibrationOverlay.js",
 ]
-
-# Allowed image extensions (lowercase, no leading dot)
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"}
-
-# Maximum upload size in bytes (default 8 MiB) — override with env MAX_CONTENT_LENGTH_BYTES
-MAX_CONTENT_BYTES = int(os.getenv("MAX_CONTENT_LENGTH_BYTES", 8 * 1024 * 1024))
 
 
 def _resolve_edge_mm_from_env():
@@ -50,9 +44,6 @@ def _resolve_edge_mm_from_env():
 
 
 server = Flask(__name__)
-# Enforce max upload size
-server.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_BYTES
-
 # NEW: make Flask/Dash respect X-Forwarded-Proto/Host/Port/Prefix from Caddy
 server.wsgi_app = ProxyFix(
     server.wsgi_app,
@@ -63,29 +54,15 @@ server.wsgi_app = ProxyFix(
     x_prefix=1,
 )
 
-# Helpful error handler for oversized uploads
-@server.errorhandler(RequestEntityTooLarge)
-def handle_too_large(e):
-    return "File too large (max bytes={})".format(MAX_CONTENT_BYTES), 413
-
-
-def _is_allowed_filename(filename: str) -> bool:
-    if not filename:
-        return False
-    name = filename.rsplit('/', 1)[-1].rsplit('\\\\', 1)[-1]
-    ext = os.path.splitext(name)[1].lstrip('.').lower()
-    return ext in ALLOWED_EXTENSIONS
-
-
 app = Dash(
     __name__,
     server=server,
     suppress_callback_exceptions=True,
     external_scripts=ORDERED_SCRIPTS,  # guaranteed JS order
     assets_ignore=(
-        r'.*\\.ipynb_checkpoints.*'
-        r'|calib\\..*\\.js'          # let ORDERED_SCRIPTS control all calib.* JS
-        r'|calibrationOverlay\\.js'  # avoid auto-loading overlay twice
+        r'.*\.ipynb_checkpoints.*'
+        r'|calib\..*\.js'          # let ORDERED_SCRIPTS control all calib.* JS
+        r'|calibrationOverlay\.js'  # avoid auto-loading overlay twice
     ),
     # Served under /camscan/ when behind Caddy
     requests_pathname_prefix=CALIB_PREFIX + "/",
@@ -182,7 +159,8 @@ app.layout = html.Div([
                 "width": "100%", "height": "120px", "lineHeight": "120px", "borderWidth": "2px",
                 "borderStyle": "dashed", "borderRadius": "8px", "textAlign": "center", "margin": "10px 0"
             },
-            accept="image/*",
+            accept="image/*",  # important for iOS to allow camera
+            # Note: Dash doesn't expose `capture`, so we set it via app.index_string above.
         ),
         html.Div(id="status", style={"margin": "8px 0"}),
     ], id="top-panel"),
@@ -204,37 +182,13 @@ def on_upload(contents, filename):
     if not contents:
         return "⚠️ No file.", no_update, no_update
 
-    # Basic validation of filename extension
-    if not _is_allowed_filename(filename):
-        return "⚠️ Unsupported file type.", no_update, no_update
-
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stem = os.path.splitext(filename or "image")[0]
     safe = "".join(c for c in stem if c.isalnum() or c in ("-", "_")).strip("_") or "image"
     out_name = f"{safe}-{uuid.uuid4().hex[:8]}.jpg"
 
     img = _decode_b64_image(contents)
-    if img is None:
-        return "⚠️ Uploaded file is not a valid image.", no_update, no_update
-
-    # write atomically to avoid partial files
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=UPLOAD_DIR, prefix=f".{out_name}.", suffix=".tmp")
-    os.close(tmp_fd)
-    try:
-        ok, enc = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-        if not ok:
-            raise ValueError('Failed to encode image')
-        with open(tmp_path, 'wb') as f:
-            f.write(enc.tobytes())
-        final_path = os.path.join(UPLOAD_DIR, out_name)
-        os.replace(tmp_path, final_path)
-    except Exception as e:
-        try:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        except Exception:
-            pass
-        return f"⚠️ Failed to save upload: {e}", no_update, no_update
+    cv2.imwrite(os.path.join(UPLOAD_DIR, out_name), img)
 
     edge_mm_env = _resolve_edge_mm_from_env()
     if edge_mm_env is not None:
@@ -242,11 +196,7 @@ def on_upload(contents, filename):
     else:
         print("[App] No CALIB_EDGE_MM set; using calibration_core module default")
 
-    try:
-        cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
-    except Exception as e:
-        return f"⚠️ Processing error: {e}", no_update, no_update
-
+    cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
     json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
 
     ts = int(time.time() * 1000)
@@ -273,6 +223,7 @@ def on_upload(contents, filename):
         f"✅ Processed '{filename}' — {len(cal.get('markers', []))} marker(s). "
         f"Marker size: {marker_mm} mm. Tap/click to annotate."
     )
+    # Hide the header/uploader once we have an image so the viewer gets maximum vertical space
     return status, viewer, {"display": "none"}
 
 
