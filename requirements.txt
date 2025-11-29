@@ -1,3 +1,15 @@
-dash
-opencv-python
-numpy
+# CamScan Dependencies
+# Core web framework
+dash==2.14.2
+flask==3.0.1
+werkzeug==3.0.1
+
+# Image processing
+opencv-python==4.8.1.78
+numpy==1.26.2
+
+# Note: Dash will automatically install:
+# - plotly
+# - dash-html-components
+# - dash-core-components
+# - dash-table
