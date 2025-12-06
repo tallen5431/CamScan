@@ -12,7 +12,7 @@ from edge_finder import find_main_edges
 EDGE_MM_DEFAULT: float = 30.0   # default marker edge in millimeters
 PADDING_PX: int = 80            # crop padding around candidate square
 DOWNSCALE_FACTOR: float = 1.0   # speed-up for edge finder (1.0 = off)
-MAX_EDGES: int = 10             # contours to analyze inside edge_finder
+MAX_EDGES: int = 50             # contours to analyze inside edge_finder (increased for inner squares)
 LINE_THICKNESS: int = 3         # overlay poly thickness
 
 # Artifacts policy
@@ -120,12 +120,12 @@ def calibrate_image(img_bgr: np.ndarray,
 
     if use_robust_detection:
         # Strategy 1: Try calibration pattern detection (outer + 4 inner white squares)
-        print(f"[Calibration] Strategy 1: Calibration pattern detection (bright polarity)")
+        print(f"[Calibration] Strategy 1: Calibration pattern detection (both polarities)")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
-            polarity="bright",                    # NEW API: detect bright squares
-            enforce_calibration_pattern=True,     # NEW API: find 4-square grid pattern
+            polarity="both",                      # Detect both dark (black square) and bright (white squares)
+            enforce_calibration_pattern=True,     # Find 4-square grid pattern with outer container
             calibration_outer_only=False,         # Return outer + 4 inner squares
             min_area=400,
             max_area_ratio=0.5,
@@ -138,38 +138,38 @@ def calibrate_image(img_bgr: np.ndarray,
         for (_score, x, y, w, h, _mean) in dets:
             rects.append((x, y, w, h))
 
-        # Strategy 2: If nothing found, try with relaxed constraints
+        # Strategy 2: If nothing found, try with relaxed constraints for distant/angled shots
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 2: Relaxed constraints")
+            print(f"[Calibration] Strategy 2: Relaxed constraints (for distant/angled shots)")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                polarity="bright",
+                polarity="both",                  # Detect both dark and bright squares
                 enforce_calibration_pattern=True,
-                calibration_outer_only=False,         # Return outer + inner
-                min_area=200,                   # Lower minimum area
-                max_area_ratio=0.6,
-                max_aspect=1.5,                 # More permissive aspect ratio
-                min_fill_ratio=0.6,
-                min_hull_ratio=0.85,
-                min_compactness=0.5,
+                calibration_outer_only=False,     # Return outer + inner
+                min_area=100,                     # Much lower for distant shots
+                max_area_ratio=0.7,               # More permissive
+                max_aspect=1.8,                   # More permissive for angled shots
+                min_fill_ratio=0.5,               # More permissive
+                min_hull_ratio=0.8,               # More permissive
+                min_compactness=0.4,              # More permissive
                 border_margin_frac=0.01,
             )
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
 
-        # Strategy 3: If still nothing, try "both" polarity (dark + bright)
+        # Strategy 3: If still nothing, try very relaxed constraints with contrast enhancement
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 3: Both polarities")
+            print(f"[Calibration] Strategy 3: Very relaxed constraints + contrast enhancement")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                polarity="both",                  # Try both dark and bright
+                polarity="both",                  # Both polarities
                 enforce_calibration_pattern=True,
-                calibration_outer_only=False,         # Return outer + inner
-                min_area=200,
-                max_area_ratio=0.6,
-                max_aspect=1.5,
+                calibration_outer_only=False,     # Return outer + inner
+                min_area=100,
+                max_area_ratio=0.8,
+                max_aspect=2.0,                   # Very permissive for severe angles
                 clahe_clip=3.0,                   # Enhanced contrast
             )
             for (_score, x, y, w, h, _mean) in dets:
@@ -221,6 +221,10 @@ def calibrate_image(img_bgr: np.ndarray,
     # When calibration_outer_only=False, we get: [outer_black_square, inner_white_1, inner_white_2, ...]
     outer_rect = rects[0] if len(rects) > 0 else None
     inner_rects = rects[1:] if len(rects) > 1 else []
+
+    print(f"[Calibration] Square separation:")
+    print(f"  - Outer square: {'Found' if outer_rect else 'Not found'}")
+    print(f"  - Inner squares: {len(inner_rects)} detected")
 
     # Process outer black square for calibration measurement
     if outer_rect is not None:
