@@ -126,7 +126,7 @@ def calibrate_image(img_bgr: np.ndarray,
             edge_mm=edge_len_mm,
             polarity="bright",                    # NEW API: detect bright squares
             enforce_calibration_pattern=True,     # NEW API: find 4-square grid pattern
-            calibration_outer_only=True,          # Return only outer square for calibration
+            calibration_outer_only=False,         # Return outer + 4 inner squares
             min_area=400,
             max_area_ratio=0.5,
             max_aspect=1.3,
@@ -146,7 +146,7 @@ def calibrate_image(img_bgr: np.ndarray,
                 edge_mm=edge_len_mm,
                 polarity="bright",
                 enforce_calibration_pattern=True,
-                calibration_outer_only=True,
+                calibration_outer_only=False,         # Return outer + inner
                 min_area=200,                   # Lower minimum area
                 max_area_ratio=0.6,
                 max_aspect=1.5,                 # More permissive aspect ratio
@@ -166,7 +166,7 @@ def calibrate_image(img_bgr: np.ndarray,
                 edge_mm=edge_len_mm,
                 polarity="both",                  # Try both dark and bright
                 enforce_calibration_pattern=True,
-                calibration_outer_only=True,
+                calibration_outer_only=False,         # Return outer + inner
                 min_area=200,
                 max_area_ratio=0.6,
                 max_aspect=1.5,
@@ -217,7 +217,14 @@ def calibrate_image(img_bgr: np.ndarray,
     markers: List[Dict[str, Any]] = []
     refinement_failures = 0
 
-    for idx, (x, y, w, h) in enumerate(rects, 1):
+    # Separate outer square (largest, first) from inner squares (rest)
+    # When calibration_outer_only=False, we get: [outer_black_square, inner_white_1, inner_white_2, ...]
+    outer_rect = rects[0] if len(rects) > 0 else None
+    inner_rects = rects[1:] if len(rects) > 1 else []
+
+    # Process outer black square for calibration measurement
+    if outer_rect is not None:
+        x, y, w, h = outer_rect
         # Crop + optional downscale
         crop, ox, oy = _crop_region(img_bgr, x, y, w, h, PADDING_PX)
         crop_ds = (cv2.resize(
@@ -231,36 +238,69 @@ def calibrate_image(img_bgr: np.ndarray,
         edge_vis, _n_edges, warped, corners_local = find_main_edges(
             crop_ds, MAX_EDGES, warp=True, polarity="dark"
         )
-        if not corners_local:
+        if corners_local:
+            # Map corners back to full image coords
+            denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
+            mapped: List[Tuple[int,int]] = [
+                (ox + int(cx / denom), oy + int(cy / denom))
+                for (cx, cy) in corners_local
+            ]
+
+            # Compute scale
+            px_edge = _avg_side_len(mapped)
+            if px_edge > 0:
+                mm_per_px = float(edge_len_mm) / float(px_edge)
+
+                # Draw outer square in YELLOW (0,255,255)
+                cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0,255,255), line_thickness)
+                for (gx, gy) in mapped:
+                    cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
+                    cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
+
+                # Record calibration data
+                markers.append({
+                    "edge_mm": float(edge_len_mm),
+                    "mm_per_px": float(mm_per_px),
+                    "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
+                })
+                print(f"  ✅ Outer square calibrated: {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px")
+        else:
             refinement_failures += 1
-            print(f"  ⚠️  Candidate #{idx} failed corner refinement")
-            continue
+            print(f"  ⚠️  Outer square failed corner refinement")
 
-        # Map corners back to full image coords
-        denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
-        mapped: List[Tuple[int,int]] = [
-            (ox + int(cx / denom), oy + int(cy / denom))
-            for (cx, cy) in corners_local
-        ]
+    # Process inner white squares for visualization only (no calibration measurement)
+    for idx, (x, y, w, h) in enumerate(inner_rects, 1):
+        # Crop + optional downscale
+        crop, ox, oy = _crop_region(img_bgr, x, y, w, h, PADDING_PX)
+        crop_ds = (cv2.resize(
+            crop,
+            (max(1, int(crop.shape[1]*DOWNSCALE_FACTOR)),
+             max(1, int(crop.shape[0]*DOWNSCALE_FACTOR))),
+            interpolation=cv2.INTER_AREA
+        ) if DOWNSCALE_FACTOR < 1.0 else crop)
 
-        # Compute scale
-        px_edge = _avg_side_len(mapped)
-        if px_edge <= 0:
-            continue
-        mm_per_px = float(edge_len_mm) / float(px_edge)
+        # Find principal quad and corners (using bright polarity for white squares)
+        edge_vis, _n_edges, warped, corners_local = find_main_edges(
+            crop_ds, MAX_EDGES, warp=True, polarity="bright"
+        )
+        if corners_local:
+            # Map corners back to full image coords
+            denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
+            mapped: List[Tuple[int,int]] = [
+                (ox + int(cx / denom), oy + int(cy / denom))
+                for (cx, cy) in corners_local
+            ]
 
-        # Overlay
-        cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0,255,255), line_thickness)
-        for (gx, gy) in mapped:
-            cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
-            cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
+            # Draw inner square in CYAN (255,255,0)
+            cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (255,255,0), line_thickness)
+            for (gx, gy) in mapped:
+                cv2.circle(overlay, (gx, gy), 8, (0,0,0), -1)
+                cv2.circle(overlay, (gx, gy), 5, (255,255,0), -1)
 
-        # Record
-        markers.append({
-            "edge_mm": float(edge_len_mm),
-            "mm_per_px": float(mm_per_px),
-            "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
-        })
+            print(f"  ✅ Inner square #{idx} visualized")
+        else:
+            refinement_failures += 1
+            print(f"  ⚠️  Inner square #{idx} failed corner refinement")
 
     elapsed = time.time() - start_time
     print(f"[Calibration] Processing complete:")
