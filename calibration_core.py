@@ -119,57 +119,76 @@ def calibrate_image(img_bgr: np.ndarray,
     rects: List[Tuple[int,int,int,int]] = []
 
     if use_robust_detection:
-        # Strategy 1: Try robust detection with nested pattern validation (4 white squares)
-        print(f"[Calibration] Strategy 1: Robust multi-scale detection with nested pattern check")
+        # Strategy 1: Try calibration pattern detection (outer + 4 inner white squares)
+        print(f"[Calibration] Strategy 1: Calibration pattern detection (bright polarity)")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
-            check_nested_pattern=True,  # Enabled - requires nested white squares
-            min_nested_squares=3,  # Require at least 3 of 4 white squares visible
-            use_multi_scale=True,
-            scale_factors=(1.0, 0.8, 0.6)
+            polarity="bright",                    # NEW API: detect bright squares
+            enforce_calibration_pattern=True,     # NEW API: find 4-square grid pattern
+            calibration_outer_only=True,          # Return only outer square for calibration
+            min_area=400,
+            max_area_ratio=0.5,
+            max_aspect=1.3,
+            min_fill_ratio=0.7,
+            min_hull_ratio=0.9,
+            min_compactness=0.6,
+            border_margin_frac=0.02,
         )
         for (_score, x, y, w, h, _mean) in dets:
             rects.append((x, y, w, h))
 
-        # Strategy 2: If nothing found, try with relaxed pattern requirement
+        # Strategy 2: If nothing found, try with relaxed constraints
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 2: Relaxed pattern requirement (min 2 squares)")
+            print(f"[Calibration] Strategy 2: Relaxed constraints")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                check_nested_pattern=True,
-                min_nested_squares=2,  # More relaxed - accept 2 of 4 squares
-                min_area=200,
-                use_multi_scale=True,
-                scale_factors=(1.0, 0.8, 0.6, 0.5)  # Add even smaller scale
+                polarity="bright",
+                enforce_calibration_pattern=True,
+                calibration_outer_only=True,
+                min_area=200,                   # Lower minimum area
+                max_area_ratio=0.6,
+                max_aspect=1.5,                 # More permissive aspect ratio
+                min_fill_ratio=0.6,
+                min_hull_ratio=0.85,
+                min_compactness=0.5,
+                border_margin_frac=0.01,
             )
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
 
-        # Strategy 3: If still nothing, try with higher contrast enhancement
+        # Strategy 3: If still nothing, try "both" polarity (dark + bright)
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 3: High contrast enhancement + relaxed pattern")
+            print(f"[Calibration] Strategy 3: Both polarities")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                check_nested_pattern=True,
-                min_nested_squares=2,
+                polarity="both",                  # Try both dark and bright
+                enforce_calibration_pattern=True,
+                calibration_outer_only=True,
                 min_area=200,
-                clahe_clip=4.0,  # More aggressive contrast (default is 2.0)
-                use_multi_scale=True,
-                scale_factors=(1.0, 0.8, 0.6)
+                max_area_ratio=0.6,
+                max_aspect=1.5,
+                clahe_clip=3.0,                   # Enhanced contrast
             )
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
 
-        # Strategy 4: Last resort - try legacy multi-threshold approach
+        # Strategy 4: Last resort - general square detection without pattern enforcement
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 4: Legacy multi-threshold approach")
-            for t in thresholds:
-                dets = detect_dark_squares(img_bgr, brightness_thresh=t, min_area=200)
-                for (_score, x, y, w, h, _mean) in dets:
-                    rects.append((x, y, w, h))
+            print(f"[Calibration] Strategy 4: General square detection (no pattern enforcement)")
+            dets = detect_dark_squares_robust(
+                img_bgr,
+                edge_mm=edge_len_mm,
+                polarity="both",
+                enforce_calibration_pattern=False,  # Disable pattern requirement
+                min_area=200,
+                max_area_ratio=0.6,
+                max_aspect=1.5,
+            )
+            for (_score, x, y, w, h, _mean) in dets:
+                rects.append((x, y, w, h))
     else:
         # Original multi-threshold approach
         for t in thresholds:
@@ -208,9 +227,9 @@ def calibrate_image(img_bgr: np.ndarray,
             interpolation=cv2.INTER_AREA
         ) if DOWNSCALE_FACTOR < 1.0 else crop)
 
-        # Find principal quad and corners
+        # Find principal quad and corners (using dark polarity for black square)
         edge_vis, _n_edges, warped, corners_local = find_main_edges(
-            crop_ds, MAX_EDGES, warp=True
+            crop_ds, MAX_EDGES, warp=True, polarity="dark"
         )
         if not corners_local:
             refinement_failures += 1
