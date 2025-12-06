@@ -197,17 +197,18 @@ app.layout = html.Div([
     Output("status", "children"),
     Output("viewer", "children"),
     Output("top-panel", "style"),
+    Output("uploader", "contents"),  # Reset upload to allow new uploads
     Input("uploader", "contents"),
     State("uploader", "filename"),
     prevent_initial_call=True
 )
 def on_upload(contents, filename):
     if not contents:
-        return "⚠️ No file.", no_update, no_update
+        return "⚠️ No file.", no_update, no_update, None
 
     # Basic validation of filename extension
     if not _is_allowed_filename(filename):
-        return "⚠️ Unsupported file type.", no_update, no_update
+        return "⚠️ Unsupported file type.", no_update, no_update, None
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stem = os.path.splitext(filename or "image")[0]
@@ -216,7 +217,7 @@ def on_upload(contents, filename):
 
     img = _decode_b64_image(contents)
     if img is None:
-        return "⚠️ Uploaded file is not a valid image.", no_update, no_update
+        return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
 
     # write atomically to avoid partial files
     tmp_fd, tmp_path = tempfile.mkstemp(dir=UPLOAD_DIR, prefix=f".{out_name}.", suffix=".tmp")
@@ -235,7 +236,7 @@ def on_upload(contents, filename):
                 os.unlink(tmp_path)
         except Exception:
             pass
-        return f"⚠️ Failed to save upload: {e}", no_update, no_update
+        return f"⚠️ Failed to save upload: {e}", no_update, no_update, None
 
     edge_mm_env = _resolve_edge_mm_from_env()
     if edge_mm_env is not None:
@@ -246,7 +247,7 @@ def on_upload(contents, filename):
     try:
         cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
     except Exception as e:
-        return f"⚠️ Processing error: {e}", no_update, no_update
+        return f"⚠️ Processing error: {e}", no_update, no_update, None
 
     json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
 
@@ -274,7 +275,7 @@ def on_upload(contents, filename):
         f"✅ Processed '{filename}' — {len(cal.get('markers', []))} marker(s). "
         f"Marker size: {marker_mm} mm. Tap/click to annotate."
     )
-    return status, viewer, {"display": "none"}
+    return status, viewer, {"display": "none"}, None  # Reset upload for next file
 
 
 @server.route(f"{CALIB_PREFIX}/uploads/<path:fname>")
