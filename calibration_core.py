@@ -17,6 +17,7 @@ LINE_THICKNESS: int = 3         # overlay poly thickness
 
 # Artifacts policy
 SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs
+SAVE_DEBUG_IMAGES: bool = True      # Save annotated debug images showing detection results
 
 # Cleanup policy
 DELETE_ALL_OTHER_UPLOADS: bool = False  # keep previous uploads; clean up with separate job
@@ -250,11 +251,31 @@ def calibrate_image(img_bgr: np.ndarray,
     else:
         print(f"  ❌ No squares detected")
 
+    # Save debug image showing detected rectangles BEFORE edge refinement
+    if SAVE_DEBUG_IMAGES and len(rects) > 0:
+        debug_img = img_bgr.copy()
+        for idx, (x, y, w, h) in enumerate(rects):
+            color = (0, 255, 255) if idx == 0 else (255, 255, 0)  # Yellow for outer, cyan for inner
+            cv2.rectangle(debug_img, (x, y), (x+w, y+h), color, 3)
+            cv2.putText(debug_img, f"#{idx}", (x+5, y+25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        debug_path = os.path.join(uploads_dir, "debug_detected_rects.jpg")
+        cv2.imwrite(debug_path, debug_img)
+        print(f"  💾 Debug image saved: {debug_path}")
+        print(f"     View at: http://localhost:8050/uploads/debug_detected_rects.jpg")
+
     # Process outer black square for calibration measurement
+    print(f"\n[Calibration] Processing squares for overlay:")
     if outer_rect is not None:
         x, y, w, h = outer_rect
+        print(f"  📦 Outer square: pos=({x},{y}) size={w}x{h} area={w*h:,}px²")
+
         # Crop + optional downscale
         crop, ox, oy = _crop_region(img_bgr, x, y, w, h, PADDING_PX)
+        print(f"     Cropped region: {crop.shape[1]}x{crop.shape[0]}px at offset=({ox},{oy})")
+
         crop_ds = (cv2.resize(
             crop,
             (max(1, int(crop.shape[1]*DOWNSCALE_FACTOR)),
@@ -263,9 +284,12 @@ def calibrate_image(img_bgr: np.ndarray,
         ) if DOWNSCALE_FACTOR < 1.0 else crop)
 
         # Find principal quad and corners (using dark polarity for black square)
+        print(f"     Finding edges with polarity='dark', max_edges={MAX_EDGES}")
         edge_vis, _n_edges, warped, corners_local = find_main_edges(
             crop_ds, MAX_EDGES, warp=True, polarity="dark"
         )
+        print(f"     Edge detection found {_n_edges} contours, corners={'found' if corners_local else 'NOT FOUND'}")
+
         if corners_local:
             # Map corners back to full image coords
             denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
@@ -297,9 +321,14 @@ def calibrate_image(img_bgr: np.ndarray,
             print(f"  ⚠️  Outer square failed corner refinement")
 
     # Process inner white squares for visualization only (no calibration measurement)
+    print(f"\n  🔲 Processing {len(inner_rects)} inner white squares:")
     for idx, (x, y, w, h) in enumerate(inner_rects, 1):
+        print(f"     Inner square #{idx}: pos=({x},{y}) size={w}x{h} area={w*h:,}px²")
+
         # Crop + optional downscale
         crop, ox, oy = _crop_region(img_bgr, x, y, w, h, PADDING_PX)
+        print(f"       Cropped: {crop.shape[1]}x{crop.shape[0]}px at offset=({ox},{oy})")
+
         crop_ds = (cv2.resize(
             crop,
             (max(1, int(crop.shape[1]*DOWNSCALE_FACTOR)),
@@ -308,9 +337,12 @@ def calibrate_image(img_bgr: np.ndarray,
         ) if DOWNSCALE_FACTOR < 1.0 else crop)
 
         # Find principal quad and corners (using bright polarity for white squares)
+        print(f"       Finding edges with polarity='bright', max_edges={MAX_EDGES}")
         edge_vis, _n_edges, warped, corners_local = find_main_edges(
             crop_ds, MAX_EDGES, warp=True, polarity="bright"
         )
+        print(f"       Edge detection found {_n_edges} contours, corners={'found' if corners_local else 'NOT FOUND'}")
+
         if corners_local:
             # Map corners back to full image coords
             denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
