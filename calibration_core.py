@@ -119,59 +119,71 @@ def calibrate_image(img_bgr: np.ndarray,
     rects: List[Tuple[int,int,int,int]] = []
 
     if use_robust_detection:
-        # Strategy 1: Try calibration pattern detection (outer + 4 inner white squares)
-        print(f"[Calibration] Strategy 1: Calibration pattern detection (both polarities)")
+        # Strategy 1: Calibration pattern with bright polarity (user's working approach)
+        # Note: On dark backgrounds, even the black square appears "bright" relative to background
+        print(f"[Calibration] Strategy 1: Calibration pattern (bright polarity, low min_area)")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
-            polarity="both",                      # Detect both dark (black square) and bright (white squares)
-            enforce_calibration_pattern=True,     # Find 4-square grid pattern with outer container
-            calibration_outer_only=False,         # Return outer + 4 inner squares
-            min_area=400,
+            polarity="bright",                    # Bright regions (works on dark backgrounds)
+            enforce_calibration_pattern=True,     # Find 4-square grid + outer container
+            calibration_outer_only=False,         # Return ALL: outer + 4 inner
+            min_area=100,                         # LOW threshold to catch small inner squares
             max_area_ratio=0.5,
             max_aspect=1.3,
-            min_fill_ratio=0.7,
-            min_hull_ratio=0.9,
-            min_compactness=0.6,
-            border_margin_frac=0.02,
+            min_fill_ratio=0.6,                   # Slightly relaxed for real-world conditions
+            min_hull_ratio=0.85,                  # Slightly relaxed
+            min_compactness=0.5,                  # Slightly relaxed
+            border_margin_frac=0.01,
+            debug=True,                           # Enable debug logging
         )
+        print(f"[Calibration] Strategy 1 found {len(dets)} detections")
         for (_score, x, y, w, h, _mean) in dets:
             rects.append((x, y, w, h))
 
-        # Strategy 2: If nothing found, try with relaxed constraints for distant/angled shots
-        if len(rects) == 0:
-            print(f"[Calibration] Strategy 2: Relaxed constraints (for distant/angled shots)")
+        # Strategy 2: Try "both" polarity if Strategy 1 found < 5 squares
+        if len(rects) < 5:
+            print(f"[Calibration] Strategy 2: Both polarities (got {len(rects)}, need 5)")
+            rects.clear()  # Clear and retry with different polarity
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                polarity="both",                  # Detect both dark and bright squares
+                polarity="both",                  # Both dark and bright
                 enforce_calibration_pattern=True,
-                calibration_outer_only=False,     # Return outer + inner
-                min_area=100,                     # Much lower for distant shots
-                max_area_ratio=0.7,               # More permissive
-                max_aspect=1.8,                   # More permissive for angled shots
-                min_fill_ratio=0.5,               # More permissive
-                min_hull_ratio=0.8,               # More permissive
-                min_compactness=0.4,              # More permissive
+                calibration_outer_only=False,
+                min_area=100,
+                max_area_ratio=0.6,
+                max_aspect=1.5,
+                min_fill_ratio=0.5,
+                min_hull_ratio=0.8,
+                min_compactness=0.4,
                 border_margin_frac=0.01,
+                debug=True,
             )
+            print(f"[Calibration] Strategy 2 found {len(dets)} detections")
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
 
-        # Strategy 3: If still nothing, try very relaxed constraints with contrast enhancement
-        if len(rects) == 0:
-            print(f"[Calibration] Strategy 3: Very relaxed constraints + contrast enhancement")
+        # Strategy 3: Very relaxed for distant/angled shots
+        if len(rects) < 5:
+            print(f"[Calibration] Strategy 3: Very relaxed (got {len(rects)}, need 5)")
+            rects.clear()
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
-                polarity="both",                  # Both polarities
+                polarity="both",
                 enforce_calibration_pattern=True,
-                calibration_outer_only=False,     # Return outer + inner
-                min_area=100,
-                max_area_ratio=0.8,
-                max_aspect=2.0,                   # Very permissive for severe angles
-                clahe_clip=3.0,                   # Enhanced contrast
+                calibration_outer_only=False,
+                min_area=50,                      # Very low for distant shots
+                max_area_ratio=0.7,
+                max_aspect=2.0,                   # Very permissive for angles
+                min_fill_ratio=0.4,
+                min_hull_ratio=0.75,
+                min_compactness=0.3,
+                clahe_clip=3.0,
+                debug=True,
             )
+            print(f"[Calibration] Strategy 3 found {len(dets)} detections")
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
 
@@ -218,13 +230,25 @@ def calibrate_image(img_bgr: np.ndarray,
     refinement_failures = 0
 
     # Separate outer square (largest, first) from inner squares (rest)
-    # When calibration_outer_only=False, we get: [outer_black_square, inner_white_1, inner_white_2, ...]
+    # When calibration_outer_only=False with successful pattern matching:
+    #   - rects[0] = outer square (black square)
+    #   - rects[1:5] = 4 inner white squares
+    # If pattern matching failed, rects might contain unorganized squares
+
     outer_rect = rects[0] if len(rects) > 0 else None
     inner_rects = rects[1:] if len(rects) > 1 else []
 
     print(f"[Calibration] Square separation:")
+    print(f"  - Total rects: {len(rects)}")
     print(f"  - Outer square: {'Found' if outer_rect else 'Not found'}")
     print(f"  - Inner squares: {len(inner_rects)} detected")
+
+    if len(rects) == 5:
+        print(f"  ✅ Full calibration pattern detected (1 outer + 4 inner)")
+    elif len(rects) > 0:
+        print(f"  ⚠️  Incomplete pattern (expected 5, got {len(rects)}) - pattern matching may have failed")
+    else:
+        print(f"  ❌ No squares detected")
 
     # Process outer black square for calibration measurement
     if outer_rect is not None:
