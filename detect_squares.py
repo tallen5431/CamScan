@@ -25,14 +25,14 @@ import numpy as np
 
 Detection = Tuple[float, int, int, int, int, float]
 
-# Defaults (you override from the notebook)
-MIN_AREA_DEFAULT        = 150
+# Defaults - IMPROVED for better detection reliability
+MIN_AREA_DEFAULT        = 50    # LOWERED from 150 to catch smaller inner squares
 MAX_AREA_RATIO_DEFAULT  = 0.6
 MAX_ASPECT_DEFAULT      = 3.0
 
-MIN_FILL_RATIO_DEFAULT  = 0.6
-MIN_HULL_RATIO_DEFAULT  = 0.8
-MIN_COMPACTNESS_DEFAULT = 0.5
+MIN_FILL_RATIO_DEFAULT  = 0.6  # Already good - tolerates slight distortions
+MIN_HULL_RATIO_DEFAULT  = 0.8  # Already good
+MIN_COMPACTNESS_DEFAULT = 0.5  # Already good
 
 PATTERN_MAX_CANDIDATES  = 18   # top-N for 4-pad search
 
@@ -41,12 +41,22 @@ PATTERN_MAX_CANDIDATES  = 18   # top-N for 4-pad search
 # Basic helpers
 # ─────────────────────────────
 
-def _prepare_gray(img: np.ndarray) -> np.ndarray:
-    """BGR→GRAY + light blur."""
+def _prepare_gray(img: np.ndarray, enhance_contrast: bool = True) -> np.ndarray:
+    """
+    BGR→GRAY + optional CLAHE + light blur.
+
+    IMPROVED: Added CLAHE for better contrast in varying lighting conditions.
+    """
     if img.ndim == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         gray = img.copy()
+
+    # Apply CLAHE for better local contrast (helps with dark backgrounds)
+    if enhance_contrast:
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+
     return cv2.GaussianBlur(gray, (5, 5), 0)
 
 
@@ -93,17 +103,21 @@ def _iou_xywh(a, b) -> float:
 
 def _find_4pad_pattern(
     candidates: List[Detection],
-    size_ratio_max: float = 2.0,
-    pad_frac: float = 0.2,
+    size_ratio_max: float = 2.5,   # IMPROVED from 2.0 - more tolerant of size variations
+    pad_frac: float = 0.25,         # IMPROVED from 0.2 - more padding for outer square
     debug: bool = False,
 ) -> Optional[List[Detection]]:
     """
-    Find 4 pads:
-      - similar area
+    Find 4 pads (IMPROVED for real-world tolerance):
+      - similar area (allows up to 2.5x size variation)
       - compact, roughly square cluster
       - reasonably uniform distances
 
     Return [outer, pad1..pad4] or None.
+
+    IMPROVEMENTS:
+    - size_ratio_max: 2.0 → 2.5 (tolerates more size variation)
+    - pad_frac: 0.2 → 0.25 (adds more padding to outer square)
     """
     n = len(candidates)
     if n < 4:
@@ -279,13 +293,19 @@ def detect_dark_squares(
     # We only really care about bright pads for your pipeline.
     bright_mask = _bright_mask(gray)
 
-    # Brightness thresholds:
-    #   brightness_thresh == 0 → skip brightness gating
-    #   None → auto thresholds; >0 → explicit threshold
+    # IMPROVED: Adaptive brightness thresholds using percentiles
+    # Works better for dark backgrounds and varying lighting
     auto_mean = float(np.mean(gray))
     if brightness_thresh is None:
-        bright_thresh = int(auto_mean * 1.02)
+        # Use percentile-based threshold for better adaptivity
+        bright_percentile = float(np.percentile(gray, 70))  # 70th percentile
+        # Accept bright regions above 90% of the bright percentile
+        bright_thresh = int(max(bright_percentile * 0.9, auto_mean * 1.02))
         use_brightness = True
+
+        if debug:
+            print(f"[Adaptive threshold] bright_thresh={bright_thresh}, "
+                  f"mean={auto_mean:.1f}, p70={bright_percentile:.1f}")
     elif brightness_thresh == 0:
         bright_thresh = 0
         use_brightness = False

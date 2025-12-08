@@ -120,23 +120,25 @@ def calibrate_image(img_bgr: np.ndarray,
     rects: List[Tuple[int,int,int,int]] = []
 
     if use_robust_detection:
-        # Strategy 1: Calibration pattern with bright polarity (user's working approach)
-        # Note: On dark backgrounds, even the black square appears "bright" relative to background
-        print(f"[Calibration] Strategy 1: Calibration pattern (bright polarity, low min_area)")
+        # Strategy 1: IMPROVED calibration pattern detection
+        # Uses enhanced detect_squares.py with CLAHE, adaptive thresholds, relaxed matching
+        print(f"[Calibration] Strategy 1: IMPROVED 4-pad pattern detection")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
             polarity="bright",                    # Bright regions (works on dark backgrounds)
-            enforce_calibration_pattern=True,     # Find 4-square grid + outer container
-            calibration_outer_only=False,         # Return ALL: outer + 4 inner
-            min_area=100,                         # LOW threshold to catch small inner squares
+            enforce_calibration_pattern=True,     # Find 4-pad pattern + outer square
+            calibration_outer_only=False,         # Return ALL: outer + 4 pads
+            min_area=30,                          # VERY LOW for tiny squares at distance
             max_area_ratio=0.5,
-            max_aspect=1.3,
-            min_fill_ratio=0.6,                   # Slightly relaxed for real-world conditions
-            min_hull_ratio=0.85,                  # Slightly relaxed
-            min_compactness=0.5,                  # Slightly relaxed
+            max_aspect=2.0,                       # More permissive for angled shots
+            # Leverages improved defaults from detect_squares.py:
+            # - MIN_AREA_DEFAULT: 150 → 50
+            # - CLAHE preprocessing for better contrast
+            # - Adaptive percentile-based brightness thresholds
+            # - Relaxed 4-pad pattern matching (size_ratio_max: 2.0 → 2.5)
             border_margin_frac=0.01,
-            debug=True,                           # Enable debug logging
+            debug=True,
         )
         print(f"[Calibration] Strategy 1 found {len(dets)} detections")
         for (_score, x, y, w, h, _mean) in dets:
