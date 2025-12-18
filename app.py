@@ -13,23 +13,19 @@ APP_PORT = int(os.getenv("PORT", "8059"))
 APP_HOST = os.getenv("HOST", "0.0.0.0")
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 
-# Base URL prefix when served behind Caddy (e.g. /camscan)
-CALIB_PREFIX = os.getenv("URL_PREFIX", "/camscan").rstrip("/")
-if not CALIB_PREFIX.startswith("/"):
-    CALIB_PREFIX = "/" + CALIB_PREFIX
-
 # ---- Explicit load order for overlay JS modules (served via URL_PREFIX, e.g. /camscan/assets) ----
 ORDERED_SCRIPTS = [
-    f"{CALIB_PREFIX}/assets/calib.units.js",
-    f"{CALIB_PREFIX}/assets/calib.geometry.js",
-    f"{CALIB_PREFIX}/assets/calib.draw.js",
-    f"{CALIB_PREFIX}/assets/calib.annotations.js",
-    f"{CALIB_PREFIX}/assets/calib.export.js",
-    f"{CALIB_PREFIX}/assets/calib.viewport.js",
-    f"{CALIB_PREFIX}/assets/calib.gestures.js",
-    f"{CALIB_PREFIX}/assets/calib.ui.enhanced.js",
-    f"{CALIB_PREFIX}/assets/calibrationOverlay.js",
+    "/assets/calib.units.js",
+    "/assets/calib.geometry.js",
+    "/assets/calib.draw.js",
+    "/assets/calib.annotations.js",
+    "/assets/calib.export.js",
+    "/assets/calib.viewport.js",
+    "/assets/calib.gestures.js",
+    "/assets/calib.ui.enhanced.js",
+    "/assets/calibrationOverlay.js",
 ]
+
 
 # Allowed image extensions (lowercase, no leading dot)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"}
@@ -81,17 +77,15 @@ app = Dash(
     __name__,
     server=server,
     suppress_callback_exceptions=True,
-    external_scripts=ORDERED_SCRIPTS,  # guaranteed JS order
+    external_scripts=ORDERED_SCRIPTS,
     assets_ignore=(
         r'.*\\.ipynb_checkpoints.*'
-        r'|calib\\..*\\.js'          # let ORDERED_SCRIPTS control all calib.* JS
-        r'|calibrationOverlay\\.js'  # avoid auto-loading overlay twice
-        r'|calib\\.ui\\.js$'         # use enhanced version only
+        r'|calib\\..*\\.js'
+        r'|calibrationOverlay\\.js'
+        r'|calib\\.ui\\.js$'
     ),
-    # Served under /camscan/ when behind Caddy
-    requests_pathname_prefix=CALIB_PREFIX + "/",
-    routes_pathname_prefix=CALIB_PREFIX + "/",
 )
+
 app.title = "CamScan — Calibration Exporter"
 
 # --- Force the uploader's <input type=file> to open the camera when possible ---
@@ -278,10 +272,9 @@ def on_upload(contents, filename):
     return status, viewer, {"display": "none"}, None  # Reset upload for next file
 
 
-@server.route(f"{CALIB_PREFIX}/uploads/<path:fname>")
+@server.route("/uploads/<path:fname>")
 def downloads(fname):
     return send_from_directory(UPLOAD_DIR, fname, as_attachment=False)
-
 
 if __name__ == "__main__":
     app.run(host=APP_HOST, port=APP_PORT, debug=False)
