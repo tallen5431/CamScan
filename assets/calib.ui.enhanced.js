@@ -5,7 +5,7 @@
   const st = document.createElement('style'); st.id = ID;
   st.textContent = `
     :root{
-      --cal-topbar-h: 120px;
+      --cal-topbar-h: 140px;
       --cal-accent: #00d4ff;
       --cal-accent-hover: #00b8e6;
       --cal-bg-dark: #0e0e0e;
@@ -13,7 +13,7 @@
       --cal-border: #2a2a2a;
       --cal-text: #eee;
     }
-    @media (min-width:900px){ :root{ --cal-topbar-h: 130px; } }
+    @media (min-width:900px){ :root{ --cal-topbar-h: 150px; } }
 
     .cal-topbar{
       position: sticky;
@@ -24,8 +24,8 @@
       border-bottom: 2px solid var(--cal-border);
       display: flex;
       align-items: center;
-      gap: 0.3rem;
-      padding: 0.4rem 0.5rem;
+      gap: 0.6rem;
+      padding: 0.8rem 1rem;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
       scrollbar-width: thin;
@@ -51,16 +51,16 @@
     @media (min-width: 768px){
       .cal-topbar{
         flex-wrap: wrap;
-        gap: 0.5rem;
-        padding: 0.5rem 0.75rem;
+        gap: 0.8rem;
+        padding: 1rem 1.25rem;
       }
     }
 
     .cal-toolbar-section{
       display: flex;
       align-items: center;
-      gap: 0.3rem;
-      padding: 0.2rem 0;
+      gap: 0.5rem;
+      padding: 0.4rem 0;
       flex-shrink: 0; /* Prevent sections from shrinking */
     }
 
