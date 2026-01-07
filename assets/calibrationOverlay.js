@@ -256,6 +256,16 @@
           if(near(item.b)) return {item, kind:'ang-b'};
           return {item, kind:'move-ang', start:p};
         }
+        if(item.type==='circle'){
+          const [cx,cy]=item.center;
+          // Check if near center (for moving)
+          if(near([cx,cy])) return {item, kind:'move-circle', start:p};
+          // Check if near edge (for resizing)
+          const edgePt=[cx+item.radius,cy];
+          if(near(edgePt)) return {item, kind:'circle-resize'};
+          // Otherwise move the whole circle
+          return {item, kind:'move-circle', start:p};
+        }
         return null;
       }
       _updateDrag(p){
@@ -275,6 +285,8 @@
         else if(d.kind==='move-poly'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; d.item.pts=d.item.pts.map(q=>[q[0]+dx,q[1]+dy]); d.start=[p[0],p[1]]; }
         else if(d.kind==='ang-a'){ d.item.a=[p[0],p[1]]; } else if(d.kind==='ang-v'){ d.item.v=[p[0],p[1]]; } else if(d.kind==='ang-b'){ d.item.b=[p[0],p[1]]; }
         else if(d.kind==='move-ang'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; d.item.a=[d.item.a[0]+dx,d.item.a[1]+dy]; d.item.b=[d.item.b[0]+dx,d.item.b[1]+dy]; d.item.v=[d.item.v[0]+dx,d.item.v[1]+dy]; d.start=[p[0],p[1]]; }
+        else if(d.kind==='move-circle'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; d.item.center=[d.item.center[0]+dx,d.item.center[1]+dy]; d.start=[p[0],p[1]]; }
+        else if(d.kind==='circle-resize'){ const [cx,cy]=d.item.center; d.item.radius=Math.hypot(p[0]-cx,p[1]-cy); }
       }
 
       // --- draw ----------------------------------------------------------------
@@ -337,6 +349,22 @@
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange";
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
             const ang=window.CalibGeom.angleABC(a.a,a.v,a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale);
+          } else if(a.type==='circle'){
+            const [cx,cy]=a.center, r=a.radius;
+            const mm=a.mm_per_px||this.getScale()||0;
+            const diam_mm=2*r*mm, area_mm2=Math.PI*r*r*mm*mm;
+            const diam_val=unit.fromMM(diam_mm);
+            c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"cyan";
+            c.beginPath(); c.arc(cx,cy,r,0,Math.PI*2); c.stroke();
+            // Draw diameter line
+            c.beginPath(); c.moveTo(cx-r,cy); c.lineTo(cx+r,cy); c.stroke();
+            // Draw center dot
+            c.fillStyle=sel?"rgba(255,170,0,1)":"cyan";
+            c.beginPath(); c.arc(cx,cy,dotR,0,Math.PI*2); c.fill();
+            c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
+            // Labels
+            Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, cx, cy-r-35, `A ${area_mm2.toFixed(2)} mm²`, this.opts.labelScale);
           }
         }
       }
