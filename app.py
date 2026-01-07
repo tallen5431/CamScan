@@ -18,6 +18,7 @@ ORDERED_SCRIPTS = [
     "/assets/calib.units.js",
     "/assets/calib.geometry.js",
     "/assets/calib.draw.js",
+    "/assets/calib.circles.js",      # NEW: Circle detection and measurement
     "/assets/calib.annotations.js",
     "/assets/calib.export.js",
     "/assets/calib.viewport.js",
@@ -275,6 +276,55 @@ def on_upload(contents, filename):
 @server.route("/uploads/<path:fname>")
 def downloads(fname):
     return send_from_directory(UPLOAD_DIR, fname, as_attachment=False)
+
+
+@server.route("/api/export/dxf", methods=["POST"])
+def export_dxf():
+    """DXF export endpoint for CAD software integration."""
+    from flask import request, send_file
+    import json
+
+    try:
+        from circle_detection import export_to_dxf
+    except ImportError:
+        return "DXF export requires ezdxf: pip install ezdxf", 500
+
+    data = request.get_json()
+    geometry = data.get("geometry", [])
+    mm_per_px = data.get("mm_per_px", 1.0)
+
+    if not geometry:
+        return "No geometry provided", 400
+
+    # Generate unique filename
+    import tempfile
+    dxf_fd, dxf_path = tempfile.mkstemp(suffix=".dxf", dir=UPLOAD_DIR)
+    os.close(dxf_fd)
+
+    try:
+        success = export_to_dxf(geometry, dxf_path, mm_per_px)
+        if success:
+            return send_file(dxf_path, as_attachment=True, download_name="geometry.dxf")
+        else:
+            return "DXF export failed", 500
+    except Exception as e:
+        print(f"[DXF Export] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"Error: {str(e)}", 500
+    finally:
+        # Clean up temp file after short delay
+        import threading
+        def cleanup():
+            import time
+            time.sleep(2)
+            try:
+                if os.path.exists(dxf_path):
+                    os.unlink(dxf_path)
+            except Exception:
+                pass
+        threading.Thread(target=cleanup, daemon=True).start()
+
 
 if __name__ == "__main__":
     app.run(host=APP_HOST, port=APP_PORT, debug=False)
