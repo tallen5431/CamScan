@@ -170,6 +170,14 @@
               const [a,v,b]=this.selectedPoints; Ann.addAngle(this.ann, a,v,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
             }
+            if(this.opts.mode==='circle' && this.selectedPoints.length===2){
+              const [center,edge]=this.selectedPoints; Ann.addCircle(this.ann, center, edge, mm, this.opts.units, this.opts.lockMarkerId);
+              this.selectedPoints=[]; return this.requestDraw();
+            }
+            if(this.opts.mode==='circle3pt' && this.selectedPoints.length===3){
+              Ann.addCircle3pt(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId);
+              this.selectedPoints=[]; return this.requestDraw();
+            }
             this.requestDraw();
           }
         });
@@ -185,6 +193,8 @@
           if(k==='3') this.setMode('polyline');
           if(k==='4') this.setMode('rectangle');
           if(k==='5') this.setMode('angle');
+          if(k==='6') this.setMode('circle');
+          if(k==='7') this.setMode('circle3pt');
           if(k==='+' || k==='=') this.zoomStep(1.2);
           if(k==='-' || k==='_') this.zoomStep(1/1.2);
         });
@@ -356,6 +366,31 @@
           const v=(this.selectedPoints.length>=2)?this.selectedPoints[1]:H;
           const b=(this.selectedPoints.length>=3)?this.selectedPoints[2]:H;
           if(a&&v&&b){ c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(v[0],v[1]); c.lineTo(a[0],a[1]); c.moveTo(v[0],v[1]); c.lineTo(b[0],b[1]); c.stroke(); c.restore(); }
+        }
+        else if(this.opts.mode==='circle' && this.selectedPoints.length===1 && H){
+          const center=this.selectedPoints[0], edge=H;
+          const radius=Math.hypot(edge[0]-center[0], edge[1]-center[1]);
+          const sMM=this.getScale()||0, diam_mm=2*radius*sMM, diam_val=unit.fromMM(diam_mm);
+          c.save(); c.setLineDash([10,8]); c.strokeStyle='cyan'; c.lineWidth=linePx;
+          c.beginPath(); c.arc(center[0],center[1],radius,0,Math.PI*2); c.stroke();
+          c.setLineDash([]); c.beginPath(); c.moveTo(center[0]-radius,center[1]); c.lineTo(center[0]+radius,center[1]); c.stroke();
+          c.restore();
+          Draw.boxLabel(c, this.canvas, center[0], center[1]-radius-15, `⌀ ~${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+        }
+        else if(this.opts.mode==='circle3pt' && this.selectedPoints.length>=2 && H){
+          const pts=(this.selectedPoints.length===2)?[...this.selectedPoints,H]:this.selectedPoints;
+          if(pts.length===3 && window.CalibCircles){
+            const fitted=window.CalibCircles.fitCircleFromPoints(pts);
+            if(fitted){
+              const [cx,cy]=fitted.center, r=fitted.radius;
+              const sMM=this.getScale()||0, diam_mm=2*r*sMM, diam_val=unit.fromMM(diam_mm);
+              c.save(); c.setLineDash([10,8]); c.strokeStyle='cyan'; c.lineWidth=linePx;
+              c.beginPath(); c.arc(cx,cy,r,0,Math.PI*2); c.stroke();
+              c.setLineDash([]); c.beginPath(); c.moveTo(cx-r,cy); c.lineTo(cx+r,cy); c.stroke();
+              c.restore();
+              Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ~${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+            }
+          }
         }
       }
 

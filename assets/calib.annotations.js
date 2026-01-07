@@ -10,6 +10,26 @@ window.CalibAnn = (function(){
   function addRectangle(s,a,b,mm_per_px,units,markerId){ const x1=Math.min(a[0],b[0]),y1=Math.min(a[1],b[1]),x2=Math.max(a[0],b[0]),y2=Math.max(a[1],b[1]); const id=next(); s.items.push({id,type:'rectangle',rect:[x1,y1,x2,y2],mm_per_px,units,markerId}); s.selectedId=id; }
   function addAngle(s,a,v,b,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'angle',a:[...a],v:[...v],b:[...b],mm_per_px,units,markerId}); s.selectedId=id; }
 
+  // Circle annotation: center + radius (manual circle - 2 points)
+  function addCircle(s,center,edge,mm_per_px,units,markerId){
+    const radius=Math.hypot(edge[0]-center[0],edge[1]-center[1]);
+    const id=next();
+    s.items.push({id,type:'circle',center:[...center],radius,mm_per_px,units,markerId});
+    s.selectedId=id;
+  }
+
+  // Circle from 3 points (using CalibCircles.fitCircleFromPoints)
+  function addCircle3pt(s,pts,mm_per_px,units,markerId){
+    if(pts.length<3) return;
+    const Circles=window.CalibCircles;
+    if(!Circles) return;
+    const fitted=Circles.fitCircleFromPoints(pts);
+    if(!fitted) return;
+    const id=next();
+    s.items.push({id,type:'circle',center:[...fitted.center],radius:fitted.radius,mm_per_px,units,markerId});
+    s.selectedId=id;
+  }
+
   // allowFn(item) optional; hitTolPx is in IMAGE units (overlay scales it with zoom)
   function hitTest(s,x,y,allowFn){
     let best=null, bestD=s.hitTolPx||18;
@@ -24,6 +44,12 @@ window.CalibAnn = (function(){
         for(const [ax,ay,bx,by] of es){ const d=distPtLine(x,y,ax,ay,bx,by); if(d<bestD){bestD=d;best=it;} }
       }else if(it.type==='angle'){
         const ln=[[it.v,it.a],[it.v,it.b]]; for(const [p,q] of ln){ const d=distPtLine(x,y,p[0],p[1],q[0],q[1]); if(d<bestD){bestD=d;best=it;} }
+      }else if(it.type==='circle'){
+        // Hit test on circle perimeter
+        const [cx,cy]=it.center;
+        const distFromCenter=Math.hypot(x-cx,y-cy);
+        const distFromPerimeter=Math.abs(distFromCenter-it.radius);
+        if(distFromPerimeter<bestD){bestD=distFromPerimeter;best=it;}
       }else if(it.type==='note'){
         const d=Math.hypot(x-it.p[0],y-it.p[1]); if(d<bestD){bestD=d;best=it;}
       }
@@ -35,5 +61,5 @@ window.CalibAnn = (function(){
     return { image: imgSrc, calibration: calib, annotations: store.items.map(a=>JSON.parse(JSON.stringify(a))), units };
   }
 
-  return { createStore, addSegment, addNote, addPolyline, addRectangle, addAngle, hitTest, toExportJSON };
+  return { createStore, addSegment, addNote, addPolyline, addRectangle, addAngle, addCircle, addCircle3pt, hitTest, toExportJSON };
 })();

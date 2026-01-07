@@ -5,7 +5,7 @@
   const st = document.createElement('style'); st.id = ID;
   st.textContent = `
     :root{
-      --cal-topbar-h: 56px;
+      --cal-topbar-h: 90px;
       --cal-accent: #00d4ff;
       --cal-accent-hover: #00b8e6;
       --cal-bg-dark: #0e0e0e;
@@ -13,7 +13,7 @@
       --cal-border: #2a2a2a;
       --cal-text: #eee;
     }
-    @media (min-width:900px){ :root{ --cal-topbar-h: 60px; } }
+    @media (min-width:900px){ :root{ --cal-topbar-h: 100px; } }
 
     .cal-topbar{
       position: sticky;
@@ -601,6 +601,8 @@ window.CalibUI = (function(){
       ['segment',   '📏',  'Measure',    'Measure Distance'],
       ['rectangle', '▭',  'Area',       'Measure Area'],
       ['angle',     '∠',  'Angle',      'Measure Angle'],
+      ['circle',    '⭕',  'Circle',     'Measure Circle/Curve'],
+      ['circle3pt', '◎',  '3-Point',    'Fit Circle to 3 Points'],
       ['note',      '🏷',  'Note',       'Add Note/Label']
     ];
 
@@ -803,7 +805,25 @@ window.CalibUI = (function(){
       saveMenu.classList.remove('active');
     };
 
-    saveMenu.append(savePNG, saveJSON, saveBoth);
+    const saveCSV = document.createElement('button');
+    saveCSV.innerHTML = '<span class="icon">📊</span><span>Save CSV Spreadsheet</span>';
+    saveCSV.onclick = () => {
+      if (overlay && window.CalibExport) {
+        window.CalibExport.exportCSV(overlay.data, overlay.ann, overlay.opts.units);
+      }
+      saveMenu.classList.remove('active');
+    };
+
+    const saveDXF = document.createElement('button');
+    saveDXF.innerHTML = '<span class="icon">📐</span><span>Save DXF (CAD Format)</span>';
+    saveDXF.onclick = async () => {
+      if (overlay && window.CalibExport) {
+        await window.CalibExport.exportDXF(overlay.data, overlay.ann);
+      }
+      saveMenu.classList.remove('active');
+    };
+
+    saveMenu.append(savePNG, saveJSON, saveCSV, saveDXF, saveBoth);
     downloadSection.append(quickDownload, download, saveMenu);
 
     download.onclick = () => {
