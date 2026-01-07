@@ -301,6 +301,13 @@ def export_to_dxf(
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
 
+    # Set document units to millimeters (critical for CAD software)
+    # Without this, values are interpreted as unitless and may scale incorrectly
+    doc.units = ezdxf.units.MM
+
+    # Also set drawing units in header for maximum compatibility
+    doc.header['$INSUNITS'] = 4  # 4 = millimeters in AutoCAD
+
     for item in geometry:
         if item["type"] == "circle":
             cx = item["center_x"] * mm_per_px

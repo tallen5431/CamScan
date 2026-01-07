@@ -5,7 +5,7 @@
   const st = document.createElement('style'); st.id = ID;
   st.textContent = `
     :root{
-      --cal-topbar-h: 90px;
+      --cal-topbar-h: 120px;
       --cal-accent: #00d4ff;
       --cal-accent-hover: #00b8e6;
       --cal-bg-dark: #0e0e0e;
@@ -13,7 +13,7 @@
       --cal-border: #2a2a2a;
       --cal-text: #eee;
     }
-    @media (min-width:900px){ :root{ --cal-topbar-h: 100px; } }
+    @media (min-width:900px){ :root{ --cal-topbar-h: 130px; } }
 
     .cal-topbar{
       position: sticky;
