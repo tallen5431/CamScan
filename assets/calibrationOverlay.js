@@ -348,9 +348,11 @@
             const [tx,ty]=a.p; c.fillStyle=sel?"rgba(255,170,0,1)":"deepskyblue";
             c.beginPath(); c.arc(tx,ty,Draw.px(this.canvas,9),0,Math.PI*2); c.fill();
             c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
-            if(a.text){ const f=Math.round(18*this.opts.labelScale); const pad=8*this.opts.labelScale; const lx=tx+14; const ly=ty-(f+2*pad)/2;
-              c.fillStyle="rgba(0,0,0,.7)"; c.fillRect(lx,ly,Math.max(140,a.text.length*10)*(this.opts.labelScale*0.8), f+2*pad);
-              c.fillStyle="#fff"; c.textAlign="left"; c.textBaseline="middle"; c.font=Draw.font(f); c.fillText(a.text, lx+pad, ty);
+            if(a.text){ const f=Math.round(18*this.opts.labelScale); const pad=8*this.opts.labelScale; const lx=tx+14;
+              c.font=Draw.font(f); c.textAlign="left"; c.textBaseline="middle";
+              const boxW=c.measureText(a.text).width + 2*pad, boxH=f+2*pad, ly=ty-boxH/2;
+              c.fillStyle="rgba(0,0,0,.7)"; c.fillRect(lx,ly,boxW,boxH);
+              c.fillStyle="#fff"; c.fillText(a.text, lx+pad, ty);
             }
           } else if(a.type==='polyline'){
             const pts=a.pts||[]; if(pts.length<2) continue;

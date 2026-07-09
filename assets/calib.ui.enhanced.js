@@ -840,6 +840,11 @@ window.CalibUI = (function(){
 
     top.appendChild(downloadSection);
 
+    // Focus mode: hide the tools for an unobstructed, full-height view of the image.
+    // The floating "Show Tools" button (below) brings them back.
+    const focus = btn('⛶', '', 'Focus mode (hide tools)', () => setCollapsed(true));
+    top.appendChild(focus);
+
     // More button
     const more = btn('⋮', '', 'More Settings', () => {
       details.open = !details.open;
