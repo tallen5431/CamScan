@@ -13,19 +13,11 @@ APP_PORT = int(os.getenv("PORT", "8059"))
 APP_HOST = os.getenv("HOST", "0.0.0.0")
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 
-# ---- Explicit load order for overlay JS modules (served via URL_PREFIX, e.g. /camscan/assets) ----
-ORDERED_SCRIPTS = [
-    "/assets/calib.units.js",
-    "/assets/calib.geometry.js",
-    "/assets/calib.draw.js",
-    "/assets/calib.circles.js",      # NEW: Circle detection and measurement
-    "/assets/calib.annotations.js",
-    "/assets/calib.export.js",
-    "/assets/calib.viewport.js",
-    "/assets/calib.gestures.js",
-    "/assets/calib.ui.enhanced.js",
-    "/assets/calibrationOverlay.js",
-]
+# The overlay JS modules live in ./assets and are served + injected automatically by Dash.
+# Dash prefixes their URLs correctly when running behind a reverse proxy with a path prefix
+# (see ProxyFix below), so we do NOT hard-code "/assets/..." script tags. The modules are
+# order-independent: each publishes a `window.Calib*` global and looks its dependencies up
+# lazily, and calibrationOverlay.js waits for every dependency before booting.
 
 
 # Allowed image extensions (lowercase, no leading dot)
@@ -78,13 +70,9 @@ app = Dash(
     __name__,
     server=server,
     suppress_callback_exceptions=True,
-    external_scripts=ORDERED_SCRIPTS,
-    assets_ignore=(
-        r'.*\\.ipynb_checkpoints.*'
-        r'|calib\\..*\\.js'
-        r'|calibrationOverlay\\.js'
-        r'|calib\\.ui\\.js$'
-    ),
+    # Only skip editor/backup artefacts that may land in ./assets. Every real module is
+    # auto-loaded exactly once, so there is no double-execution or old/new UI conflict.
+    assets_ignore=r'.*\.ipynb_checkpoints.*|.*\.bak$|untitled.*',
 )
 
 app.title = "CamScan — Calibration Exporter"
@@ -199,7 +187,11 @@ app.layout = html.Div([
 )
 def on_upload(contents, filename):
     if not contents:
-        return "⚠️ No file.", no_update, no_update, None
+        # This callback resets its own `contents` Input to None (below) so the same file
+        # can be re-uploaded. That reset re-fires the callback with contents=None; ignore
+        # it rather than overwriting the success status with a spurious warning.
+        from dash.exceptions import PreventUpdate
+        raise PreventUpdate
 
     # Basic validation of filename extension
     if not _is_allowed_filename(filename):
@@ -254,7 +246,6 @@ def on_upload(contents, filename):
 
     viewer = html.Div([
         html.Div([
-            html.Div(id="cal-toolbar", className="cal-toolbar"),
             html.Canvas(id="cal-canvas", style={"display": "block", "margin": "0 auto"})
         ], id="cal-view", className="cal-view",
            **{
@@ -280,50 +271,60 @@ def downloads(fname):
 
 @server.route("/api/export/dxf", methods=["POST"])
 def export_dxf():
-    """DXF export endpoint for CAD software integration."""
-    from flask import request, send_file
-    import json
+    """DXF export endpoint for CAD software integration.
+
+    The DXF is written to a temporary file, read into memory, and the file is
+    deleted before responding — so there is no cleanup race and nothing leaks on
+    disk regardless of how slowly the client downloads.
+    """
+    from flask import request, Response
 
     try:
         from circle_detection import export_to_dxf
     except ImportError:
         return "DXF export requires ezdxf: pip install ezdxf", 500
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     geometry = data.get("geometry", [])
-    mm_per_px = data.get("mm_per_px", 1.0)
-
-    if not geometry:
+    if not isinstance(geometry, list) or not geometry:
         return "No geometry provided", 400
 
-    # Generate unique filename
-    import tempfile
+    try:
+        mm_per_px = float(data.get("mm_per_px", 1.0)) or 1.0
+    except (TypeError, ValueError):
+        mm_per_px = 1.0
+
+    # Image height (pixels) lets us flip the Y axis: image coordinates grow downward,
+    # CAD coordinates grow upward. Without this the exported part comes out mirrored.
+    try:
+        image_height = float(data.get("image_height", 0)) or None
+    except (TypeError, ValueError):
+        image_height = None
+
     dxf_fd, dxf_path = tempfile.mkstemp(suffix=".dxf", dir=UPLOAD_DIR)
     os.close(dxf_fd)
-
     try:
-        success = export_to_dxf(geometry, dxf_path, mm_per_px)
-        if success:
-            return send_file(dxf_path, as_attachment=True, download_name="geometry.dxf")
-        else:
+        ok = export_to_dxf(geometry, dxf_path, mm_per_px, image_height_px=image_height)
+        if not ok:
             return "DXF export failed", 500
+        with open(dxf_path, "rb") as f:
+            payload = f.read()
     except Exception as e:
         print(f"[DXF Export] Error: {e}")
         import traceback
         traceback.print_exc()
         return f"Error: {str(e)}", 500
     finally:
-        # Clean up temp file after short delay
-        import threading
-        def cleanup():
-            import time
-            time.sleep(2)
-            try:
-                if os.path.exists(dxf_path):
-                    os.unlink(dxf_path)
-            except Exception:
-                pass
-        threading.Thread(target=cleanup, daemon=True).start()
+        try:
+            os.unlink(dxf_path)
+        except OSError:
+            pass
+
+    return Response(
+        payload,
+        mimetype="application/dxf",
+        headers={"Content-Disposition": "attachment; filename=geometry.dxf"},
+    )
 
 
 if __name__ == "__main__":

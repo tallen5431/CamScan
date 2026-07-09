@@ -64,6 +64,44 @@ def _avg_side_len(pts: List[Tuple[float,float]]) -> float:
         d += float(np.linalg.norm(a-b))
     return d / 4.0
 
+
+def _fallback_square_corners(crop_bgr: np.ndarray, rect_local, polarity: str = "dark"):
+    """Best-effort 4 corners for a square when precise edge refinement fails.
+
+    Thresholds the square's own bounding box (``rect_local`` = (x, y, w, h) in crop
+    coordinates, from the detector) for the given polarity, takes the largest contour
+    and returns its rotated bounding box corners (minAreaRect). Restricting to the
+    detected box avoids latching onto neighbouring dark/bright objects in the padded
+    crop. Less exact than edge_finder.find_main_edges, but keeps calibration working
+    (non-zero scale) instead of giving up. Returns corners in crop coords, or None.
+    """
+    if crop_bgr is None or crop_bgr.size == 0:
+        return None
+    H, W = crop_bgr.shape[:2]
+    rx, ry, rw, rh = rect_local
+    # Expand the detected box slightly to include the full (possibly soft) edge.
+    m = max(4, int(0.04 * max(rw, rh)))
+    x0 = max(0, int(rx) - m); y0 = max(0, int(ry) - m)
+    x1 = min(W, int(rx + rw) + m); y1 = min(H, int(ry + rh) + m)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    sub = crop_bgr[y0:y1, x0:x1]
+    gray = cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    if polarity == "bright":
+        _t, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        _t, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    c = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(c) < 25:
+        return None
+    box = cv2.boxPoints(cv2.minAreaRect(c))  # 4 (x, y) points, in `sub` coords
+    return [(float(px) + x0, float(py) + y0) for (px, py) in box]
+
 def _delete_other_uploads(out_dir: str, keep_base: str) -> None:
     """
     Delete all image files in out_dir whose base name != keep_base.
@@ -292,6 +330,18 @@ def calibrate_image(img_bgr: np.ndarray,
         )
         print(f"     Edge detection found {_n_edges} contours, corners={'found' if corners_local else 'NOT FOUND'}")
 
+        corner_source = "refined"
+        if not corners_local:
+            # Precise refinement failed — fall back to a rotated bounding box so we still
+            # produce a (slightly less exact) scale instead of leaving the image uncalibrated.
+            # The detected square sits at (x-ox, y-oy) within the crop; scale by DOWNSCALE.
+            sc = DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0
+            rect_local = ((x - ox) * sc, (y - oy) * sc, w * sc, h * sc)
+            corners_local = _fallback_square_corners(crop_ds, rect_local, polarity="dark")
+            corner_source = "bbox"
+            if corners_local:
+                print(f"     ↩︎ Using minAreaRect fallback for outer square corners")
+
         if corners_local:
             # Map corners back to full image coords
             denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
@@ -311,16 +361,19 @@ def calibrate_image(img_bgr: np.ndarray,
                     cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
                     cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
 
-                # Record calibration data
+                # Record calibration data. edge_px lets the browser recompute the scale
+                # instantly when the user enters a different real cube size.
                 markers.append({
                     "edge_mm": float(edge_len_mm),
+                    "edge_px": float(px_edge),
                     "mm_per_px": float(mm_per_px),
+                    "source": corner_source,
                     "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
                 })
-                print(f"  ✅ Outer square calibrated: {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px")
+                print(f"  ✅ Outer square calibrated ({corner_source}): {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px")
         else:
             refinement_failures += 1
-            print(f"  ⚠️  Outer square failed corner refinement")
+            print(f"  ⚠️  Outer square failed corner refinement (no fallback contour)")
 
     # Process inner white squares for visualization only (no calibration measurement)
     print(f"\n  🔲 Processing {len(inner_rects)} inner white squares:")

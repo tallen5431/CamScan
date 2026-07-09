@@ -1,6 +1,7 @@
 // Annotation store + hit testing (+ optional visibility filter) + export JSON
 window.CalibAnn = (function(){
-  const { distPtLine } = window.CalibGeom;
+  // Look the dependency up lazily so module load order never matters.
+  const distPtLine = (...a)=>window.CalibGeom.distPtLine(...a);
   let _id=1; const next=()=>_id++;
 
   function createStore(){ return { items:[], selectedId:null, hitTolPx:24 }; }

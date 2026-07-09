@@ -1,13 +1,59 @@
 
 CamScan — Calibration Exporter (Dash)
 
-1) pip install -r requirements.txt
-   - or run StartApp.bat on Windows (creates venv, installs deps, launches)
-2) python app.py
-3) Open http://127.0.0.1:8059 (also on LAN via your host IP:8059)
-4) Upload an image with 47.5 mm squares; preview shows overlay; click "Open interactive viewer" to measure.
+Measure real-world objects in a photo using a printed calibration square as the
+size reference, then export the measurements for CAD / 3D modelling.
 
-Artifacts in /uploads:
-  - <name>.jpg               original upload
-  - <name>_overlay.jpg       overlay preview
-  - <name>.calibration.json  calibration data for JS viewer
+--------------------------------------------------------------------------------
+QUICK START
+--------------------------------------------------------------------------------
+1) pip install -r requirements.txt
+   - or run Start.sh (Linux/Mac) / Start.bat (Windows) to create a venv + launch
+2) python app.py
+3) Open http://127.0.0.1:8059  (also reachable on your LAN at http://<host-ip>:8059)
+4) Tap "snap a photo" (or drop an image) that contains your calibration square.
+
+--------------------------------------------------------------------------------
+CALIBRATION SQUARE
+--------------------------------------------------------------------------------
+The calibration target is a solid black square (optionally with 4 white inner
+pads for easier detection). CamScan detects the black square's outer edge and
+uses its known real edge length to convert pixels to millimetres.
+
+IMPORTANT — set your real square size:
+  Open "More Settings & Options" → Calibration → "Calibration square size (mm)"
+  and enter the printed edge length of YOUR square. Every measurement rescales
+  instantly (no re-processing). The default assumes a 30 mm square.
+
+  You can also set the CALIB_EDGE_MM environment variable to change the default
+  used at upload time, e.g.  CALIB_EDGE_MM=47.5 python app.py
+
+No square detected? Use the "Set Scale" tool (📐): draw a line across anything of
+known length and type in that length — CamScan calibrates from it.
+
+--------------------------------------------------------------------------------
+MEASURING
+--------------------------------------------------------------------------------
+Tools (toolbar):
+  Pan / Select / Set Scale / Measure (distance) / Path (perimeter) /
+  Area (rectangle) / Angle / Circle (2-point) / 3-Point circle / Note
+  - Path: click points, then double-click or press Enter (or the ✓ button) to finish.
+  - Circle: drag the centre to move, drag the ring to resize.
+Keyboard: 0 Pan · 1 Select · 2 Measure · 3 Path · 4 Area · 5 Angle · 6 Circle ·
+  7 3-Point · 8 Note · Enter finish path · Esc cancel · +/- zoom · Space to pan.
+
+--------------------------------------------------------------------------------
+EXPORT (for models)
+--------------------------------------------------------------------------------
+Download menu:
+  PNG   annotated image
+  JSON  full calibration + measurement data
+  CSV   spreadsheet of every measurement (mm + selected unit)
+  DXF   CAD geometry (mm, Y-axis oriented like the photo) for AutoCAD / FreeCAD /
+        Fusion 360 / etc. Requires the ezdxf package.
+
+--------------------------------------------------------------------------------
+ARTIFACTS in /uploads
+--------------------------------------------------------------------------------
+  <name>.jpg               original upload
+  <name>.calibration.json  calibration data for the viewer

@@ -278,19 +278,27 @@ def circles_to_json(
 def export_to_dxf(
     geometry: List[Dict[str, Any]],
     filename: str,
-    mm_per_px: float = 1.0
+    mm_per_px: float = 1.0,
+    image_height_px: Optional[float] = None,
 ):
     """
     Export geometry to DXF file for CAD software (AutoCAD, FreeCAD, etc).
 
     Args:
-        geometry: List of geometry dicts (circles, lines, rectangles, etc.)
+        geometry: List of geometry dicts (circles, lines, rectangles, etc.), in
+            image pixel coordinates.
         filename: Output DXF filename
-        mm_per_px: Calibration scale
+        mm_per_px: Default calibration scale. Each geometry item may carry its own
+            ``mm_per_px`` (captured against the marker used when it was drawn); that
+            value takes precedence so measurements stay correct with multiple markers.
+        image_height_px: Height of the source image in pixels. When provided, the Y
+            axis is flipped (y_out = height - y_in) so the exported geometry has the
+            same orientation as the photo — image Y grows downward but CAD Y grows
+            upward, so without this the part would be mirrored top-to-bottom.
 
     Geometry dict format:
       - type: "circle", "line", "rectangle", "polyline"
-      - (type-specific fields)
+      - (type-specific fields), all in pixels
     """
     try:
         import ezdxf
@@ -301,38 +309,49 @@ def export_to_dxf(
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
 
-    # Set document units to millimeters (critical for CAD software)
-    # Without this, values are interpreted as unitless and may scale incorrectly
+    # Set document units to millimeters (critical for CAD software).
+    # Without this, values are interpreted as unitless and may scale incorrectly.
     doc.units = ezdxf.units.MM
-
-    # Also set drawing units in header for maximum compatibility
     doc.header['$INSUNITS'] = 4  # 4 = millimeters in AutoCAD
 
+    def _flip_y(y_px: float) -> float:
+        return (image_height_px - y_px) if image_height_px else y_px
+
     for item in geometry:
-        if item["type"] == "circle":
-            cx = item["center_x"] * mm_per_px
-            cy = item["center_y"] * mm_per_px
-            r = item["radius_px"] * mm_per_px
+        # Per-item scale wins over the request default so multi-marker exports are correct.
+        try:
+            s = float(item.get("mm_per_px") or mm_per_px)
+        except (TypeError, ValueError):
+            s = mm_per_px
+        if not s:
+            s = mm_per_px
+
+        itype = item.get("type")
+        if itype == "circle":
+            cx = item["center_x"] * s
+            cy = _flip_y(item["center_y"]) * s
+            r = item["radius_px"] * s
             msp.add_circle((cx, cy), r, dxfattribs={'layer': 'CIRCLES'})
 
-        elif item["type"] == "line":
-            x1 = item["x1"] * mm_per_px
-            y1 = item["y1"] * mm_per_px
-            x2 = item["x2"] * mm_per_px
-            y2 = item["y2"] * mm_per_px
+        elif itype == "line":
+            x1 = item["x1"] * s
+            y1 = _flip_y(item["y1"]) * s
+            x2 = item["x2"] * s
+            y2 = _flip_y(item["y2"]) * s
             msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': 'LINES'})
 
-        elif item["type"] == "rectangle":
-            x1 = item["x1"] * mm_per_px
-            y1 = item["y1"] * mm_per_px
-            x2 = item["x2"] * mm_per_px
-            y2 = item["y2"] * mm_per_px
+        elif itype == "rectangle":
+            x1 = item["x1"] * s
+            x2 = item["x2"] * s
+            y1 = _flip_y(item["y1"]) * s
+            y2 = _flip_y(item["y2"]) * s
             points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
             msp.add_lwpolyline(points, dxfattribs={'layer': 'RECTANGLES'})
 
-        elif item["type"] == "polyline":
-            points = [(p[0] * mm_per_px, p[1] * mm_per_px) for p in item["points"]]
-            msp.add_lwpolyline(points, dxfattribs={'layer': 'POLYLINES'})
+        elif itype == "polyline":
+            points = [(p[0] * s, _flip_y(p[1]) * s) for p in item.get("points", [])]
+            if points:
+                msp.add_lwpolyline(points, dxfattribs={'layer': 'POLYLINES'})
 
     doc.saveas(filename)
     print(f"[DXF Export] Saved to {filename}")

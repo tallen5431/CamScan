@@ -5,7 +5,7 @@
   const st = document.createElement('style'); st.id = ID;
   st.textContent = `
     :root{
-      --cal-topbar-h: 140px;
+      --cal-topbar-h: 56px;
       --cal-accent: #00d4ff;
       --cal-accent-hover: #00b8e6;
       --cal-bg-dark: #0e0e0e;
@@ -13,7 +13,7 @@
       --cal-border: #2a2a2a;
       --cal-text: #eee;
     }
-    @media (min-width:900px){ :root{ --cal-topbar-h: 150px; } }
+    @media (min-width:900px){ :root{ --cal-topbar-h: 60px; } }
 
     .cal-topbar{
       position: sticky;
@@ -47,12 +47,12 @@
       }
     }
 
-    /* On desktop, allow wrapping */
+    /* On desktop, allow wrapping into grouped rows (kept compact to preserve image space) */
     @media (min-width: 768px){
       .cal-topbar{
         flex-wrap: wrap;
-        gap: 0.8rem;
-        padding: 1rem 1.25rem;
+        gap: 0.5rem 0.8rem;
+        padding: 0.5rem 1rem;
       }
     }
 
@@ -67,7 +67,7 @@
     @media (min-width: 768px){
       .cal-toolbar-section{
         gap: 0.4rem;
-        padding: 0.25rem 0;
+        padding: 0;
       }
     }
 
@@ -223,7 +223,7 @@
       position: fixed;
       left: 0;
       right: 0;
-      bottom: 0;
+      bottom: 28px;            /* sit above the fixed KPI status strip */
       z-index: 11;
       touch-action: pan-y pinch-zoom;
     }
@@ -322,12 +322,19 @@
     .cal-view{
       height: 100dvh;
       position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;      /* the canvas fills the space; no page scroll under the toolbar */
     }
 
+    /* The toolbar wrapper takes its natural (content) height; the canvas fills the rest,
+       so the whole image is visible below the toolbar instead of being cut off. */
+    .cal-view > .cal-tools{ flex: 0 0 auto; }
     .cal-view canvas{
       display: block;
       width: 100%;
-      height: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
     }
 
     .cal-view[data-tools="collapsed"] .cal-topbar{ display: none; }
@@ -366,11 +373,10 @@
       display: inline-flex;
     }
 
-    /* Quick save menu */
+    /* Quick save menu. position:fixed (not absolute) so it is NOT clipped by the
+       toolbar's overflow-x:auto — its coordinates are set from the button on open. */
     .cal-quick-save-menu{
-      position: absolute;
-      top: calc(100% + 8px);
-      right: 0;
+      position: fixed;
       background: var(--cal-bg-dark);
       border: 2px solid var(--cal-border);
       border-radius: 8px;
@@ -378,7 +384,7 @@
       min-width: 200px;
       display: none;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-      z-index: 20;
+      z-index: 30;
     }
 
     .cal-quick-save-menu.active{
@@ -411,11 +417,22 @@
       font-size: 16px;
     }
 
+    /* Always-visible status strip pinned to the very bottom (carries the
+       "not calibrated" warning), with the settings sheet stacked just above it. */
     .cal-kpi{
-      margin: 8px 0 12px;
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 12;
+      margin: 0;
+      padding: 5px 10px;
       color: #ddd;
       text-align: center;
-      font: 13px/1.4 Segoe UI, system-ui, sans-serif;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      background: rgba(10,10,10,0.9);
+      border-top: 1px solid var(--cal-border);
+      font: 12px/1.35 Segoe UI, system-ui, sans-serif;
     }
   `;
   document.head.appendChild(st);
@@ -457,6 +474,42 @@ window.CalibUI = (function(){
     // Fill the bottom sheet
     if (overlay) {
       const Units = window.CalibUnits;
+
+      // ——— Calibration (the reference that turns pixels into real measurements) ———
+      const calHead = document.createElement('div');
+      calHead.innerHTML = '<strong>📐 Calibration</strong>';
+      calHead.style.cssText = 'margin:0.25rem 0 0.5rem;font-size:15px;';
+      body.appendChild(calHead);
+
+      const calLabel = document.createElement('label');
+      calLabel.innerHTML = 'Calibration square size (mm):';
+      const calInput = document.createElement('input');
+      calInput.type = 'number'; calInput.min = '0.1'; calInput.step = '0.1';
+      calInput.placeholder = 'e.g. 30';
+      const curMM = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
+      calInput.value = curMM ? String(curMM) : '';
+      calInput.oninput = () => { const v = parseFloat(calInput.value); if (v > 0 && overlay.setMarkerSizeMM) overlay.setMarkerSizeMM(v); };
+      calLabel.appendChild(calInput);
+      body.appendChild(calLabel);
+
+      const calHint = document.createElement('div');
+      calHint.textContent = 'Enter the real printed edge length of your calibration square — every measurement rescales instantly.';
+      calHint.style.cssText = 'font-size:12px;color:#9aa;margin:-0.4rem 0 0.6rem;';
+      body.appendChild(calHint);
+
+      const setScaleBtn = document.createElement('button');
+      setScaleBtn.type = 'button'; setScaleBtn.className = 'cal-icon';
+      setScaleBtn.style.cssText = 'width:100%;justify-content:center;margin-bottom:0.4rem;';
+      setScaleBtn.innerHTML = '<span class="cal-icon-emoji">📐</span><span>Set scale from a known line</span>';
+      setScaleBtn.onclick = () => { if (overlay.setMode) overlay.setMode('setscale'); details.open = false; };
+      body.appendChild(setScaleBtn);
+
+      const clearScaleBtn = document.createElement('button');
+      clearScaleBtn.type = 'button'; clearScaleBtn.className = 'cal-icon';
+      clearScaleBtn.style.cssText = 'width:100%;justify-content:center;margin-bottom:0.75rem;';
+      clearScaleBtn.innerHTML = '<span class="cal-icon-emoji">↺</span><span>Clear manual scale (use square)</span>';
+      clearScaleBtn.onclick = () => { if (overlay.clearManualScale) overlay.clearManualScale(); };
+      body.appendChild(clearScaleBtn);
 
       // Units selector
       if (Units && Units.defs) {
@@ -598,7 +651,9 @@ window.CalibUI = (function(){
     const modes = [
       ['pan',       '🖐',  'Pan',        'Pan/Move Image'],
       ['select',    '⌖',  'Select',     'Select Annotations'],
+      ['setscale',  '📐',  'Set Scale',  'Set scale from a line of known length'],
       ['segment',   '📏',  'Measure',    'Measure Distance'],
+      ['polyline',  '〰',  'Path',       'Measure Path/Perimeter (double-click or Enter to finish)'],
       ['rectangle', '▭',  'Area',       'Measure Area'],
       ['angle',     '∠',  'Angle',      'Measure Angle'],
       ['circle',    '⭕',  'Circle',     'Measure Circle/Curve'],
@@ -670,13 +725,18 @@ window.CalibUI = (function(){
     });
     del.disabled = !(overlay.ann && overlay.ann.selectedId != null);
 
+    const finish = btn('✓', 'Finish', 'Finish current path (polyline)', () => {
+      if (overlay.finishPolyline) overlay.finishPolyline();
+    });
+    finish.disabled = true;
+
     const clearAll = btn('🗑✖', 'Clear', 'Clear All Annotations', () => {
       if (confirm('Delete all annotations? This cannot be undone.')) {
         if (overlay.clearAll) overlay.clearAll();
       }
     });
 
-    editSection.append(undo, del, clearAll);
+    editSection.append(undo, finish, del, clearAll);
     top.appendChild(editSection);
 
     // Divider
@@ -719,20 +779,7 @@ window.CalibUI = (function(){
     quickDownload.className = 'cal-icon cal-btn-download';
     quickDownload.setAttribute('data-tooltip', 'Quick Download PNG');
     quickDownload.innerHTML = '<span class="cal-icon-emoji">💾</span><span class="cal-icon-text">Save PNG</span>';
-    quickDownload.onclick = () => {
-      if (overlay && window.CalibExport) {
-        window.CalibExport.exportPNG(
-          overlay.img,
-          overlay.data,
-          overlay.ann,
-          overlay.opts.showGrid,
-          overlay.opts.showMarkers,
-          overlay.opts.units,
-          overlay.opts.labelScale,
-          overlay.opts.linePx
-        );
-      }
-    };
+    quickDownload.onclick = () => { if (overlay.savePNG) overlay.savePNG(); };
 
     // Download options menu button
     const download = document.createElement('button');
@@ -747,86 +794,40 @@ window.CalibUI = (function(){
 
     const savePNG = document.createElement('button');
     savePNG.innerHTML = '<span class="icon">🖼️</span><span>Save PNG Image</span>';
-    savePNG.onclick = () => {
-      if (overlay && window.CalibExport) {
-        window.CalibExport.exportPNG(
-          overlay.img,
-          overlay.data,
-          overlay.ann,
-          overlay.opts.showGrid,
-          overlay.opts.showMarkers,
-          overlay.opts.units,
-          overlay.opts.labelScale,
-          overlay.opts.linePx
-        );
-      }
-      saveMenu.classList.remove('active');
-    };
+    savePNG.onclick = () => { if (overlay.savePNG) overlay.savePNG(); saveMenu.classList.remove('active'); };
 
     const saveJSON = document.createElement('button');
     saveJSON.innerHTML = '<span class="icon">📄</span><span>Save JSON Data</span>';
-    saveJSON.onclick = () => {
-      if (overlay && window.CalibExport) {
-        const payload = {
-          calibration: overlay.data,
-          annotations: overlay.ann.items,
-          units: overlay.opts.units
-        };
-        window.CalibExport.exportJSON(payload);
-      }
-      saveMenu.classList.remove('active');
-    };
+    saveJSON.onclick = () => { if (overlay.saveJSON) overlay.saveJSON(); saveMenu.classList.remove('active'); };
 
     const saveBoth = document.createElement('button');
     saveBoth.innerHTML = '<span class="icon">📦</span><span>Save Both (PNG + JSON)</span>';
     saveBoth.onclick = () => {
-      if (overlay && window.CalibExport) {
-        // PNG
-        window.CalibExport.exportPNG(
-          overlay.img,
-          overlay.data,
-          overlay.ann,
-          overlay.opts.showGrid,
-          overlay.opts.showMarkers,
-          overlay.opts.units,
-          overlay.opts.labelScale,
-          overlay.opts.linePx
-        );
-        // JSON
-        setTimeout(() => {
-          const payload = {
-            calibration: overlay.data,
-            annotations: overlay.ann.items,
-            units: overlay.opts.units
-          };
-          window.CalibExport.exportJSON(payload);
-        }, 500);
-      }
+      if (overlay.savePNG) overlay.savePNG();
+      if (overlay.saveJSON) setTimeout(() => overlay.saveJSON(), 500);
       saveMenu.classList.remove('active');
     };
 
     const saveCSV = document.createElement('button');
     saveCSV.innerHTML = '<span class="icon">📊</span><span>Save CSV Spreadsheet</span>';
-    saveCSV.onclick = () => {
-      if (overlay && window.CalibExport) {
-        window.CalibExport.exportCSV(overlay.data, overlay.ann, overlay.opts.units);
-      }
-      saveMenu.classList.remove('active');
-    };
+    saveCSV.onclick = () => { if (overlay.saveCSV) overlay.saveCSV(); saveMenu.classList.remove('active'); };
 
     const saveDXF = document.createElement('button');
     saveDXF.innerHTML = '<span class="icon">📐</span><span>Save DXF (CAD Format)</span>';
-    saveDXF.onclick = async () => {
-      if (overlay && window.CalibExport) {
-        await window.CalibExport.exportDXF(overlay.data, overlay.ann);
-      }
-      saveMenu.classList.remove('active');
-    };
+    saveDXF.onclick = async () => { if (overlay.saveDXF) await overlay.saveDXF(); saveMenu.classList.remove('active'); };
 
     saveMenu.append(savePNG, saveJSON, saveCSV, saveDXF, saveBoth);
     downloadSection.append(quickDownload, download, saveMenu);
 
     download.onclick = () => {
+      const willOpen = !saveMenu.classList.contains('active');
+      if (willOpen) {
+        // Anchor the fixed menu to the button, right-aligned, kept on-screen.
+        const r = download.getBoundingClientRect();
+        saveMenu.style.top = Math.round(r.bottom + 6) + 'px';
+        saveMenu.style.left = 'auto';
+        saveMenu.style.right = Math.max(6, Math.round(window.innerWidth - r.right)) + 'px';
+      }
       saveMenu.classList.toggle('active');
     };
 
@@ -865,6 +866,7 @@ window.CalibUI = (function(){
         b.setAttribute('aria-pressed', String(active));
       });
       del.disabled = !(overlay.ann && overlay.ann.selectedId != null);
+      finish.disabled = !(mode === 'polyline' && overlay.selectedPoints && overlay.selectedPoints.length >= 2);
     }
 
     // Keep UI in sync with overlay redraws

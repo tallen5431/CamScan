@@ -20,7 +20,10 @@ window.CalibGestures = (function () {
     let isPanning = false;
     let pinch = null; // {startDist, startK, anchor}
 
-    const CLICK_EPS = 6;
+    // Movement below this counts as a click (not a drag). Coordinates are in device
+    // pixels, so scale by DPR — otherwise on a 3x phone a 6px budget is only 2 CSS px
+    // and ordinary finger wobble makes taps register as drags (points never placed).
+    const CLICK_EPS = 9 * ((viewport && viewport.dpr) || 1);
     let downInfo = null; // {id, cx, cy, imgX, imgY, time}
 
     function toCanvasXY(e) {

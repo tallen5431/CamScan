@@ -16,8 +16,7 @@
     const st=document.createElement('style'); st.id=ID;
     st.textContent = `
       .cal-view{max-width:1000px;margin:0 auto}
-      .cal-view canvas{display:block; width:100%; height:100%; touch-action:none}
-      .cal-kpi{margin:6px 0 10px;color:#ddd;text-align:center}
+      .cal-view canvas{display:block; width:100%; touch-action:none}
     `;
     document.head.appendChild(st);
   })();
@@ -37,12 +36,13 @@
         this.drag=null; this._rAF=0; this._spacePan=false;
 
         this.opts = {
-          mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','note'
+          mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','circle','circle3pt','note','setscale'
           units:'mm',
           snap:false, snapPx:15,  // DEFAULT: off (precise clicks)
           labelScale:1.35, linePx:3,
           showGrid:false, showAnn:true, showMarkers:true,
-          exportVisibleOnly:true, lockMarkerId:null
+          exportVisibleOnly:true, lockMarkerId:null,
+          manualMmPerPx:null      // user-set scale (from a known length) — wins over markers
         };
 
         this._init();
@@ -55,24 +55,26 @@
           await this._loadJSON();
           (this.data.markers||[]).forEach((m,i)=>{ if(m.id==null) m.id=i+1; });
 
-          // Force the view and canvas height to match the current viewport
-          const vh = window.innerHeight || document.documentElement.clientHeight || 600;
-          if (wrap) {
-            wrap.style.height = vh + 'px';
-          }
-          this.canvas.style.height = vh + 'px';
+          // If the user picked a real cube size earlier this session, apply it now.
+          try{
+            const ms=parseFloat(localStorage.getItem('calib.markerSizeMM'));
+            if(ms>0 && this.data && this.data.markers && this.data.markers.length){ this.setMarkerSizeMM(ms); }
+          }catch(e){}
 
-          // Baseline fit to container
-          this.vp.fit(this.canvas, this.img);
-          // On phones in portrait, auto-fit by height so the image fills the screen
-          if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {
-            this.vp.fitHeight(this.canvas, this.img);
-          }
           this._wire();
-          UI.build(wrap, this);
+          UI.build(wrap, this);           // builds the toolbar (its height defines the canvas top)
+          this._layout();                  // size the canvas to the space under the toolbar + fit
           this.redraw();
         };
         this.img.src = this.imgSrc;
+      }
+
+      // Flexbox (CSS) makes the canvas fill the space beneath the sticky toolbar; here we
+      // just refresh the backing store and fit the whole image inside that box (contain),
+      // so nothing is hidden behind the toolbar or cut off at the bottom.
+      _layout(){
+        this.vp.fit(this.canvas, this.img);
+        this.requestDraw();
       }
 
       async _loadJSON(){
@@ -98,15 +100,15 @@
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       fitToContainer(){ this.vp.fit(this.canvas, this.img); this.requestDraw(); }
       fitToHeight(){ this.vp.fitHeight(this.canvas, this.img); this.requestDraw(); }
-      resetView(){
-        this.vp.reset();
-        this.vp.fit(this.canvas, this.img);
-        if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {
-          this.vp.fitHeight(this.canvas, this.img);
+      resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this.requestDraw(); }
+      undo(){
+        if(this.selectedPoints.length){ this.selectedPoints.pop(); }
+        else if(this.ann.selectedId!=null){
+          this.ann.items=this.ann.items.filter(a=>a.id!==this.ann.selectedId);
+          this.ann.selectedId=null;   // clear so the next Undo isn't a no-op
         }
-        this.requestDraw();
+        this.hover=null; this.requestDraw();
       }
-      undo(){ if(this.selectedPoints.length) this.selectedPoints.pop(); else if(this.ann.selectedId!=null) this.ann.items=this.ann.items.filter(a=>a.id!==this.ann.selectedId); this.hover=null; this.requestDraw(); }
       clearAll(){ this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }
 
       deleteSelected(){
@@ -156,8 +158,25 @@
               return this.requestDraw();
             }
 
+            // Polyline: a tap near the previous point (or double-tap) finishes the path.
+            if (this.opts.mode==='polyline' && this.selectedPoints.length>=2){
+              const last=this.selectedPoints[this.selectedPoints.length-1];
+              if(Math.hypot(p[0]-last[0], p[1]-last[1]) < this.vp.pxToImg(12)){
+                return this.finishPolyline();
+              }
+            }
+
             this.selectedPoints.push(p);
             const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
+
+            // Set-scale-from-line: two clicks define a line of known real length.
+            if(this.opts.mode==='setscale' && this.selectedPoints.length===2){
+              const [a,b]=this.selectedPoints;
+              const px=Math.hypot(b[0]-a[0], b[1]-a[1]);
+              this.selectedPoints=[];
+              this._promptScale(px);
+              return this.requestDraw();
+            }
             if(this.opts.mode==='segment' && this.selectedPoints.length===2){
               const [a,b]=this.selectedPoints; Ann.addSegment(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
@@ -182,6 +201,12 @@
           }
         });
 
+        // Double-click / double-tap finishes an in-progress polyline.
+        this.canvas.addEventListener('dblclick', (e)=>{
+          e.preventDefault();
+          if(this.opts.mode==='polyline') this.finishPolyline();
+        });
+
         // keyboard: add Space-to-pan
         window.addEventListener('keydown', (e)=>{
           if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
@@ -195,25 +220,21 @@
           if(k==='5') this.setMode('angle');
           if(k==='6') this.setMode('circle');
           if(k==='7') this.setMode('circle3pt');
+          if(k==='8') this.setMode('note');
+          if(k==='enter') this.finishPolyline();
+          if(k==='escape'){ this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
           if(k==='+' || k==='=') this.zoomStep(1.2);
           if(k==='-' || k==='_') this.zoomStep(1/1.2);
         });
         window.addEventListener('keyup', (e)=>{ if(e.key===' ') this._spacePan=false; });
 
-        const onResize = ()=>{
-          const view = this.canvas.closest('.cal-view');
-          const vh = window.innerHeight || document.documentElement.clientHeight || 600;
-          if (view) view.style.height = vh + 'px';
-          this.canvas.style.height = vh + 'px';
-
-          this.vp.fit(this.canvas, this.img);
-          if (window.innerHeight > window.innerWidth && this.vp.fitHeight) {
-            this.vp.fitHeight(this.canvas, this.img);
-          }
+        // Orientation change → re-fit (the aspect changed). Plain resize → keep the
+        // user's zoom/pan, just refresh the backing store so drawing stays crisp.
+        window.addEventListener('resize', ()=>{
+          this.vp._updateBackingStore();
           this.requestDraw();
-        };
-        window.addEventListener('resize', onResize, {passive:true});
-        window.addEventListener('orientationchange', onResize, {passive:true});
+        }, {passive:true});
+        window.addEventListener('orientationchange', ()=>{ this._layout(); }, {passive:true});
       }
 
       // --- helpers -------------------------------------------------------------
@@ -258,12 +279,12 @@
         }
         if(item.type==='circle'){
           const [cx,cy]=item.center;
-          // Check if near center (for moving)
+          // Near the center → move the whole circle.
           if(near([cx,cy])) return {item, kind:'move-circle', start:p};
-          // Check if near edge (for resizing)
-          const edgePt=[cx+item.radius,cy];
-          if(near(edgePt)) return {item, kind:'circle-resize'};
-          // Otherwise move the whole circle
+          // Anywhere on the ring → resize (grab the perimeter, not just one point).
+          const distFromCenter=Math.hypot(p[0]-cx, p[1]-cy);
+          if(Math.abs(distFromCenter-item.radius)<tol) return {item, kind:'circle-resize'};
+          // Otherwise move.
           return {item, kind:'move-circle', start:p};
         }
         return null;
@@ -344,7 +365,7 @@
             const [x1,y1,x2,y2]=a.rect;
             const mm=a.mm_per_px||this.getScale()||0; const wmm=(x2-x1)*mm, hmm=(y2-y1)*mm, amm=wmm*hmm;
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange"; c.strokeRect(x1,y1,x2-x1,y2-y1);
-            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, `${Units.get(this.opts.units).fromMM(wmm).toFixed(3)}×${Units.get(this.opts.units).fromMM(hmm).toFixed(3)} ${Units.get(this.opts.units).label} • A ${(amm).toFixed(1)} mm²`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale);
           } else if(a.type==='angle'){
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange";
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
@@ -364,7 +385,7 @@
             c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
             // Labels
             Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
-            Draw.boxLabel(c, this.canvas, cx, cy-r-35, `A ${area_mm2.toFixed(2)} mm²`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, cx, cy-r-35, `A ${unit.areaFromMM2(area_mm2).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale);
           }
         }
       }
@@ -376,10 +397,15 @@
         c.fillStyle='orange'; c.strokeStyle='rgba(255,200,0,.9)'; c.lineWidth=linePx;
         for(const [x,y] of this.selectedPoints){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle='#000'; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
         const H=this.hover;
-        if(this.opts.mode==='segment' && this.selectedPoints.length===1 && H){ const a=this.selectedPoints[0], b=H;
+        if((this.opts.mode==='segment'||this.opts.mode==='setscale') && this.selectedPoints.length===1 && H){ const a=this.selectedPoints[0], b=H;
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(a[0],a[1]); c.lineTo(b[0],b[1]); c.stroke(); c.restore();
-          const sMM=this.getScale()||0, val=unit.fromMM(Math.hypot(b[0]-a[0], b[1]-a[1]) * sMM); const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
-          Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+          const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
+          if(this.opts.mode==='setscale'){
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this.opts.labelScale);
+          } else {
+            const sMM=this.getScale()||0, val=unit.fromMM(Math.hypot(b[0]-a[0], b[1]-a[1]) * sMM);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+          }
         }
         else if(this.opts.mode==='polyline' && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke(); c.restore();
@@ -422,31 +448,152 @@
         }
       }
 
-      getScale(){
+      // Pixel edge length of a marker, computed from its 4 corners. This lets us
+      // recompute mm_per_px for any real cube size without re-running detection.
+      _markerEdgePx(m){
+        const pts=(m.corners||[]).map(p=>[p.x,p.y]);
+        if(pts.length<4) return 0;
+        let d=0; for(let i=0;i<4;i++){ const a=pts[i], b=pts[(i+1)%4]; d+=Math.hypot(a[0]-b[0], a[1]-b[1]); }
+        return d/4;
+      }
+
+      // Scale (mm/px) that applies at image point `ref`.
+      _scaleForPoint(ref){
+        // 1) A manually entered scale (from a known length) always wins.
+        if(this.opts.manualMmPerPx && this.opts.manualMmPerPx>0) return this.opts.manualMmPerPx;
         if(!this.data || !Array.isArray(this.data.markers) || !this.data.markers.length) return 0;
+        // 2) A specific locked marker, if it resolves.
         if(this.opts.lockMarkerId){
           const m=this.data.markers.find(m=>String(m.id)===String(this.opts.lockMarkerId));
-          return (m && m.mm_per_px) ? m.mm_per_px : 0;
+          if(m && m.mm_per_px) return m.mm_per_px;
+          // fall through to auto if the locked marker is missing/invalid
         }
-        // Fallback: nearest marker with mm_per_px
-        const ref = this.hover || this.selectedPoints[0] || [0,0];
+        // 3) Nearest marker (to `ref`) with a valid scale.
+        ref = ref || [0,0];
         let best=null, bestD=1e18;
         for(const m of this.data.markers){
           const pts=(m.corners||[]).map(p=>[p.x,p.y]); if(pts.length<4||!m.mm_per_px) continue;
           const c=pts.reduce((a,p)=>[a[0]+p[0]/pts.length,a[1]+p[1]/pts.length],[0,0]);
           const d=Math.hypot(ref[0]-c[0], ref[1]-c[1]); if(d<bestD){ bestD=d; best=m; }
         }
-        return best ? best.mm_per_px : (this.data?.markers?.[0]?.mm_per_px || 0);
+        if(best) return best.mm_per_px;
+        // 4) Any marker with a scale.
+        const any=this.data.markers.find(m=>m.mm_per_px>0);
+        return any ? any.mm_per_px : 0;
+      }
+
+      getScale(){ return this._scaleForPoint(this.hover || this.selectedPoints[0] || [0,0]); }
+
+      _annCentroid(a){
+        if(a.type==='segment') return [(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
+        if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; return [(x1+x2)/2,(y1+y2)/2]; }
+        if(a.type==='angle') return a.v;
+        if(a.type==='circle') return a.center;
+        if(a.type==='polyline' && a.pts && a.pts.length) return a.pts[Math.floor(a.pts.length/2)];
+        if(a.type==='note') return a.p;
+        return [0,0];
+      }
+
+      // After the calibration changes (cube size or manual scale), refresh the frozen
+      // per-annotation scale so existing measurements update to the new reference.
+      _rescaleAnnotations(){
+        for(const a of this.ann.items){
+          if(a.type==='note') continue;
+          const s=this._scaleForPoint(this._annCentroid(a));
+          if(s>0) a.mm_per_px=s;
+        }
+      }
+
+      isCalibrated(){ return this.getScale() > 0; }
+
+      // Re-scale every detected marker to a new real cube edge length (mm). Because
+      // detection is purely pixel-based, mm_per_px = size_mm / edge_px is exact and
+      // instant — no server round-trip needed.
+      setMarkerSizeMM(mm){
+        mm = parseFloat(mm);
+        if(!(mm>0)) return;
+        this.opts.manualMmPerPx = null; // markers become the source of truth again
+        const vals=[];
+        for(const m of (this.data?.markers||[])){
+          const px = m.edge_px || this._markerEdgePx(m);
+          if(px>0){ m.edge_mm = mm; m.mm_per_px = mm/px; vals.push(m.mm_per_px); }
+        }
+        if(this.data){
+          this.data.marker_size_mm = mm;
+          if(vals.length){ this.data.mm_per_px = vals.reduce((a,b)=>a+b,0)/vals.length; this.data.pixels_per_mm = 1/this.data.mm_per_px; }
+        }
+        try{ localStorage.setItem('calib.markerSizeMM', String(mm)); }catch(e){}
+        this._rescaleAnnotations();
+        this.requestDraw();
+      }
+
+      // Set the scale directly from a known length: the user draws a line of known real
+      // length; mm_per_px = knownMM / pixelLength. Works even with zero detected markers.
+      setManualScaleFromPixels(pixelLength, knownMM){
+        knownMM = parseFloat(knownMM);
+        if(!(pixelLength>0) || !(knownMM>0)) return;
+        this.opts.manualMmPerPx = knownMM/pixelLength;
+        this._rescaleAnnotations();
+        this.requestDraw();
+      }
+      clearManualScale(){ this.opts.manualMmPerPx = null; this._rescaleAnnotations(); this.requestDraw(); }
+      currentMarkerSizeMM(){ return (this.data && this.data.marker_size_mm) || null; }
+
+      // Commit the in-progress polyline (needs >=2 points). Clears the working points.
+      finishPolyline(){
+        if(this.opts.mode==='polyline' && this.selectedPoints.length>=2){
+          const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
+          Ann.addPolyline(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId);
+        }
+        this.selectedPoints=[]; this.hover=null; this.requestDraw();
+      }
+
+      // Ask for the real length of a just-drawn line and set the working scale from it.
+      // The UI may provide onNeedScaleInput(pixelLen, apply) for an inline field; otherwise
+      // we fall back to a prompt(). The entered value is in the current display unit.
+      _promptScale(pixelLen){
+        const unit=Units.get(this.opts.units);
+        const apply=(valStr)=>{
+          if(valStr==null) return;
+          const v=parseFloat(valStr);
+          if(v>0){ this.setManualScaleFromPixels(pixelLen, unit.toMM(v)); this.setMode('select'); }
+        };
+        if(typeof this.onNeedScaleInput==='function') this.onNeedScaleInput(pixelLen, apply, unit);
+        else apply(prompt(`Enter the real length of this line in ${unit.label}:`, ''));
       }
 
       updateKPI(){
         const el=document.getElementById('cal-kpi'); if(!el) return;
-        const s=this.getScale()||0; const um=s*1000; const unit=Units.get(this.opts.units); const unitPerPx=unit.fromMM(s);
-        el.textContent = `Scale: ${um.toFixed(2)} µm/px | ${unitPerPx.toFixed(6)} ${unit.label}/px | Zoom: ${Math.round(this.vp.k*100)}% | Snap: ${this.opts.snap?'on':'off'} | Annotations: ${this.ann.items.length}`;
+        const s=this.getScale()||0; const unit=Units.get(this.opts.units);
+        const zoom=`Zoom: ${Math.round(this.vp.k*100)}%`;
+        const anns=`Annotations: ${this.ann.items.length}`;
+        if(s<=0){
+          el.innerHTML = `⚠️ <b>Not calibrated</b> — no reference square found. Use “Set scale” to draw a line of known length. &nbsp;|&nbsp; ${zoom} &nbsp;|&nbsp; ${anns}`;
+          return;
+        }
+        const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm square`;
+        const unitPerPx=unit.fromMM(s);
+        el.textContent = `Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
       }
 
-      savePNG(){ const store=this.opts.exportVisibleOnly?{items:this.ann.items.filter(Boolean)}:this.ann; Xport.exportPNG(this.img, this.data, store, this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx); }
-      saveJSON(){ const store=this.opts.exportVisibleOnly?{items:this.ann.items.filter(Boolean)}:this.ann; const payload=Ann.toExportJSON(this.imgSrc, { marker_size_mm:this.data?.marker_size_mm??null, mm_per_px:this.data?.mm_per_px??null, pixels_per_mm:this.data?.pixels_per_mm??null, markers:this.data?.markers??[] }, store, this.opts.units); Xport.exportJSON(payload); }
+      _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
+      _imgH(){ return this.img ? (this.img.naturalHeight || this.img.height) : 0; }
+      savePNG(){ Xport.exportPNG(this.img, this.data, this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx); }
+      saveJSON(){
+        const payload=Ann.toExportJSON(this.imgSrc, {
+          marker_size_mm:this.data?.marker_size_mm??null,
+          mm_per_px:this.getScale()||(this.data?.mm_per_px??null),
+          pixels_per_mm:this.data?.pixels_per_mm??null,
+          manual_scale:this.opts.manualMmPerPx||null,
+          markers:this.data?.markers??[]
+        }, this._exportStore(), this.opts.units);
+        Xport.exportJSON(payload);
+      }
+      _confirmUncalibrated(){
+        return this.isCalibrated() || confirm('Not calibrated — exported values will be in pixels, not millimetres. Set a scale first for real measurements. Export anyway?');
+      }
+      saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this.data, this._exportStore(), this.opts.units, this.getScale()); }
+      saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this.data, this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0 }); }
     }
 
     window.CalibrationOverlay = window.CalibrationOverlay || CalibrationOverlay;
@@ -462,7 +609,7 @@
         const canvas=el.querySelector('canvas');
         if(!img||!json||!canvas) return;
         el.setAttribute('data-initialized','1');
-        new CalibrationOverlay(canvas, img, json);
+        el.__overlay = new CalibrationOverlay(canvas, img, json);
       });
     }
     if(document.readyState!=='loading') initScan(); else document.addEventListener('DOMContentLoaded', initScan);

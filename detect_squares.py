@@ -427,9 +427,16 @@ def detect_dark_squares(
 def detect_dark_squares_robust(img, edge_mm: float = 30.0, **kwargs):
     """
     Compatibility wrapper for existing code.
-    edge_mm is ignored; everything is pixel-based.
+
+    edge_mm is ignored; everything is pixel-based. Unknown keyword arguments
+    (e.g. tuning params like ``clahe_clip`` that some callers pass) are silently
+    dropped instead of raising TypeError — otherwise a fallback detection strategy
+    could crash the whole upload for images with few/no calibration squares.
     """
-    return detect_dark_squares(img, **kwargs)
+    import inspect
+    valid = set(inspect.signature(detect_dark_squares).parameters)
+    filtered = {k: v for k, v in kwargs.items() if k in valid}
+    return detect_dark_squares(img, **filtered)
 
 
 def draw_squares(

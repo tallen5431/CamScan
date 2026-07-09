@@ -1,16 +1,42 @@
+# Uploads & generated artifacts
 uploads/
+*_overlay.jpg
+debug_detected_rects.jpg
+circle_detection_result.jpg
+
+# Virtualenvs / envs
 .venv/
+venv/
 .env
+
+# Editor / tool history & backups
+.backups/
+.codesmith_history/
+*.bak
+
+# Packaged builds / archives
+*.zip
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.py[cod]
 *$py.class
+
+# Notebooks
 .ipynb_checkpoints/
+
+# Node (Playwright test helpers, etc.)
+node_modules/
+
+# Packaging
 build/
 dist/
 *.egg-info/
+
+# OS / IDE
 .DS_Store
 .idea/
 .vscode/
