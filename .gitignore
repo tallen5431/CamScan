@@ -28,6 +28,10 @@ __pycache__/
 # Notebooks
 .ipynb_checkpoints/
 
+# Scratch / untitled files
+Untitled*.ipynb
+untitled.*
+
 # Node (Playwright test helpers, etc.)
 node_modules/
 
