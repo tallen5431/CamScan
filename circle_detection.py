@@ -326,32 +326,38 @@ def export_to_dxf(
         if not s:
             s = mm_per_px
 
-        itype = item.get("type")
-        if itype == "circle":
-            cx = item["center_x"] * s
-            cy = _flip_y(item["center_y"]) * s
-            r = item["radius_px"] * s
-            msp.add_circle((cx, cy), r, dxfattribs={'layer': 'CIRCLES'})
+        # Skip (don't abort) on a single malformed item — one bad entry must not
+        # drop every other valid shape from the export.
+        try:
+            itype = item.get("type")
+            if itype == "circle":
+                cx = item["center_x"] * s
+                cy = _flip_y(item["center_y"]) * s
+                r = item["radius_px"] * s
+                msp.add_circle((cx, cy), r, dxfattribs={'layer': 'CIRCLES'})
 
-        elif itype == "line":
-            x1 = item["x1"] * s
-            y1 = _flip_y(item["y1"]) * s
-            x2 = item["x2"] * s
-            y2 = _flip_y(item["y2"]) * s
-            msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': 'LINES'})
+            elif itype == "line":
+                x1 = item["x1"] * s
+                y1 = _flip_y(item["y1"]) * s
+                x2 = item["x2"] * s
+                y2 = _flip_y(item["y2"]) * s
+                msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': 'LINES'})
 
-        elif itype == "rectangle":
-            x1 = item["x1"] * s
-            x2 = item["x2"] * s
-            y1 = _flip_y(item["y1"]) * s
-            y2 = _flip_y(item["y2"]) * s
-            points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
-            msp.add_lwpolyline(points, dxfattribs={'layer': 'RECTANGLES'})
+            elif itype == "rectangle":
+                x1 = item["x1"] * s
+                x2 = item["x2"] * s
+                y1 = _flip_y(item["y1"]) * s
+                y2 = _flip_y(item["y2"]) * s
+                points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
+                msp.add_lwpolyline(points, dxfattribs={'layer': 'RECTANGLES'})
 
-        elif itype == "polyline":
-            points = [(p[0] * s, _flip_y(p[1]) * s) for p in item.get("points", [])]
-            if points:
-                msp.add_lwpolyline(points, dxfattribs={'layer': 'POLYLINES'})
+            elif itype == "polyline":
+                points = [(p[0] * s, _flip_y(p[1]) * s) for p in item.get("points", [])]
+                if points:
+                    msp.add_lwpolyline(points, dxfattribs={'layer': 'POLYLINES'})
+        except (KeyError, TypeError, ValueError, IndexError) as e:
+            print(f"[DXF Export] Skipping malformed {item.get('type', '?')} item: {e}")
+            continue
 
     doc.saveas(filename)
     print(f"[DXF Export] Saved to {filename}")

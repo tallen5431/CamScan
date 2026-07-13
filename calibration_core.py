@@ -71,17 +71,55 @@ def _avg_side_len(pts: List[Tuple[float,float]]) -> float:
     return d / 4.0
 
 
-def _confidence_for_source(source: str) -> str:
-    """Map how a marker's edge was measured to a trust level the UI can surface.
+def _marker_confidence(source: str, distortion_deg: float = 0.0) -> str:
+    """Trust level ("high"/"low") for a calibration marker, from how it was measured.
 
-    - "refined": precise edge_finder quad — trustworthy → "high".
+    - "refined": precise edge_finder quad — trustworthy, UNLESS the underlying
+                 contour is strongly foreshortened (perspective tilt), in which
+                 case a single mm/px scale is unreliable → downgrade to "low".
     - "bbox":    rough rotated-bounding-box fallback used when edge refinement
                  failed (low-contrast/dark backgrounds); can be ~10%+ off → "low".
     - "plain":   a solid square found on the full frame as a last resort. Accurate
                  on a real target, but we are less certain the object we latched
                  onto IS the calibration square → "low" (nudge the user to verify).
     """
-    return "high" if source == "refined" else "low"
+    if source == "refined" and distortion_deg <= PERSPECTIVE_MAX_DEG:
+        return "high"
+    return "low"
+
+
+def _record_marker(overlay: np.ndarray,
+                   mapped: List[Tuple[int, int]],
+                   edge_len_mm: float,
+                   source: str,
+                   distortion_deg: float,
+                   line_thickness: int) -> Optional[Dict[str, Any]]:
+    """Draw a calibration marker on the overlay and build its data dict.
+
+    Shared by the refined-outer-square and plain-square-fallback paths so both
+    always emit the same schema (incl. ``distortion_deg``) and identical overlay
+    styling. Returns None when the corners don't yield a positive edge length.
+    """
+    px_edge = _avg_side_len(mapped)
+    if px_edge <= 0:
+        return None
+    mm_per_px = float(edge_len_mm) / float(px_edge)
+
+    # Draw the square in YELLOW (0,255,255) with black-outlined corner dots.
+    cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0, 255, 255), line_thickness)
+    for (gx, gy) in mapped:
+        cv2.circle(overlay, (gx, gy), 10, (0, 0, 0), -1)
+        cv2.circle(overlay, (gx, gy), 7, (0, 255, 255), -1)
+
+    return {
+        "edge_mm": float(edge_len_mm),
+        "edge_px": float(px_edge),
+        "mm_per_px": float(mm_per_px),
+        "source": source,
+        "confidence": _marker_confidence(source, distortion_deg),
+        "distortion_deg": round(float(distortion_deg), 1),
+        "corners": [{"x": int(a), "y": int(b)} for (a, b) in mapped],
+    }
 
 
 def _fallback_square_corners(crop_bgr: np.ndarray, rect_local, polarity: str = "dark"):
@@ -370,39 +408,16 @@ def calibrate_image(img_bgr: np.ndarray,
                 for (cx, cy) in corners_local
             ]
 
-            # Compute scale
-            px_edge = _avg_side_len(mapped)
-            if px_edge > 0:
-                mm_per_px = float(edge_len_mm) / float(px_edge)
-
-                # Draw outer square in YELLOW (0,255,255)
-                cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0,255,255), line_thickness)
-                for (gx, gy) in mapped:
-                    cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
-                    cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
-
-                # A precisely-refined but strongly-foreshortened (tilted) marker
-                # still yields a clean rectangle from minAreaRect, so its scale can be
-                # off without the corners looking wrong. Downgrade confidence when the
-                # underlying contour shows perspective distortion.
-                distortion = float(edge_metrics.get("distortion_deg", 0.0))
-                confidence = _confidence_for_source(corner_source)
-                if corner_source == "refined" and distortion > PERSPECTIVE_MAX_DEG:
-                    confidence = "low"
+            # A precisely-refined but strongly-foreshortened (tilted) marker still
+            # yields a clean rectangle from minAreaRect, so its scale can be off
+            # without the corners looking wrong; the distortion drives confidence.
+            distortion = float(edge_metrics.get("distortion_deg", 0.0))
+            marker = _record_marker(overlay, mapped, edge_len_mm, corner_source, distortion, line_thickness)
+            if marker is not None:
+                markers.append(marker)
+                if marker["confidence"] == "low" and corner_source == "refined":
                     print(f"     ⚠️  Perspective distortion {distortion:.1f}° > {PERSPECTIVE_MAX_DEG}° — flagging low confidence")
-
-                # Record calibration data. edge_px lets the browser recompute the scale
-                # instantly when the user enters a different real cube size.
-                markers.append({
-                    "edge_mm": float(edge_len_mm),
-                    "edge_px": float(px_edge),
-                    "mm_per_px": float(mm_per_px),
-                    "source": corner_source,
-                    "confidence": confidence,
-                    "distortion_deg": round(distortion, 1),
-                    "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
-                })
-                print(f"  ✅ Outer square calibrated ({corner_source}): {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px")
+                print(f"  ✅ Outer square calibrated ({corner_source}): {marker['edge_px']:.1f}px = {edge_len_mm}mm → {marker['mm_per_px']:.4f} mm/px")
         else:
             refinement_failures += 1
             print(f"  ⚠️  Outer square failed corner refinement (no fallback contour)")
@@ -459,23 +474,11 @@ def calibrate_image(img_bgr: np.ndarray,
             img_bgr, MAX_EDGES, warp=True, polarity="dark"
         )
         if corners_plain:
-            px_edge = _avg_side_len(corners_plain)
-            if px_edge > 0:
-                mm_per_px = float(edge_len_mm) / float(px_edge)
-                mapped = [(int(cx), int(cy)) for (cx, cy) in corners_plain]
-                cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0,255,255), line_thickness)
-                for (gx, gy) in mapped:
-                    cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
-                    cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
-                markers.append({
-                    "edge_mm": float(edge_len_mm),
-                    "edge_px": float(px_edge),
-                    "mm_per_px": float(mm_per_px),
-                    "source": "plain",
-                    "confidence": _confidence_for_source("plain"),
-                    "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
-                })
-                print(f"  ✅ Plain square calibrated: {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px (verify)")
+            mapped = [(int(cx), int(cy)) for (cx, cy) in corners_plain]
+            marker = _record_marker(overlay, mapped, edge_len_mm, "plain", 0.0, line_thickness)
+            if marker is not None:
+                markers.append(marker)
+                print(f"  ✅ Plain square calibrated: {marker['edge_px']:.1f}px = {edge_len_mm}mm → {marker['mm_per_px']:.4f} mm/px (verify)")
         else:
             print(f"  ⚠️  No plain square found either — image will be uncalibrated")
 

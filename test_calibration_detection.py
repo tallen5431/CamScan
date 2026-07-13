@@ -152,11 +152,12 @@ def test_with_refinement(img_path, output_dir='uploads/debug'):
         # Extract the region
         roi = img[y:y+h, x:x+w]
 
-        # Try to find refined edges
+        # Try to find refined edges. find_main_edges returns
+        # (overlay, n_contours, warped, corners); we only need the corners.
         print(f"\n🔧 Refining edges for marker #{idx + 1}...")
-        refined_corners = find_main_edges(
+        _vis, _n, _warped, refined_corners = find_main_edges(
             roi,
-            expected_shape='square',
+            polarity="dark",
             debug=True
         )
 
