@@ -602,7 +602,7 @@
         return this.isCalibrated() || confirm('Not calibrated — exported values will be in pixels, not millimetres. Set a scale first for real measurements. Export anyway?');
       }
       saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this.data, this._exportStore(), this.opts.units, this.getScale(), !this.opts.manualMmPerPx); }
-      saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this.data, this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0 }); }
+      saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this.data, this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:!this.opts.manualMmPerPx }); }
     }
 
     window.CalibrationOverlay = window.CalibrationOverlay || CalibrationOverlay;

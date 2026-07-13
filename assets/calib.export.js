@@ -140,26 +140,51 @@ window.CalibExport = (function(){
   }
 
   // Export to DXF for CAD software (requires the /api/export/dxf backend endpoint).
-  // opts: { image_height (px, for Y-flip), mm_per_px (default/fallback scale) }
-  async function exportDXF(data, store, opts){
+  // opts: { image_height (px, for Y-flip), mm_per_px (default/fallback scale),
+  //         allowHomography (default true) }
+  // Build the DXF request body. Exposed for testing. When a homography is active
+  // (and allowed), every point is projected into plane mm (CAD Y-up) so the DXF is
+  // perspective-rectified and consistent with the on-screen/PNG/CSV measurements;
+  // the backend then writes the coordinates verbatim (mm_per_px=1, no Y-flip).
+  // Otherwise geometry is sent in pixels with the uniform scale as before.
+  function _buildDXFRequest(data, store, opts){
     opts = opts || {};
     const fallback = opts.mm_per_px || (data && data.mm_per_px) || 1.0;
     const Circles = window.CalibCircles;
+    const M = window.CalibMeasure;
+    const ctx = M.context(data, fallback, opts.allowHomography !== false);
+    const plane = ctx.corrected;
     const geometry = [];
+    // Image point -> DXF coord in plane mm, CAD Y-up (negate the image-down Y).
+    const P = (x, y) => { const m = M.project(ctx, x, y); return [m[0], -m[1]]; };
 
     for(const a of store.items){
       const s = _scaleFor(a, data, fallback) || fallback;
       if(a.type === 'segment'){
-        geometry.push({ type:'line', x1:a.a[0], y1:a.a[1], x2:a.b[0], y2:a.b[1], mm_per_px:s });
+        if(plane){ const A=P(a.a[0],a.a[1]), B=P(a.b[0],a.b[1]); geometry.push({ type:'line', x1:A[0], y1:A[1], x2:B[0], y2:B[1], mm_per_px:1 }); }
+        else geometry.push({ type:'line', x1:a.a[0], y1:a.a[1], x2:a.b[0], y2:a.b[1], mm_per_px:s });
       }else if(a.type === 'circle'){
-        if(Circles){ const c = Circles.circleToJSON(a, data, 'mm'); c.mm_per_px = s; geometry.push(c); }
+        if(plane){
+          // Project the centre; approximate the planar radius from a projected rim
+          // point (a circle on a tilted plane is an ellipse — this is first-order).
+          const c=P(a.center[0], a.center[1]), rim=P(a.center[0]+a.radius, a.center[1]);
+          geometry.push({ type:'circle', center_x:c[0], center_y:c[1], radius_px:Math.hypot(rim[0]-c[0], rim[1]-c[1]), mm_per_px:1 });
+        }else if(Circles){ const c = Circles.circleToJSON(a, data, 'mm'); c.mm_per_px = s; geometry.push(c); }
       }else if(a.type === 'rectangle'){
         const [x1, y1, x2, y2] = a.rect;
-        geometry.push({ type:'rectangle', x1, y1, x2, y2, mm_per_px:s });
+        if(plane){ const q=[[x1,y1],[x2,y1],[x2,y2],[x1,y2]].map(p=>P(p[0],p[1])); geometry.push({ type:'polyline', points:[...q, q[0]], mm_per_px:1 }); }
+        else geometry.push({ type:'rectangle', x1, y1, x2, y2, mm_per_px:s });
       }else if(a.type === 'polyline'){
-        geometry.push({ type:'polyline', points:a.pts || [], mm_per_px:s });
+        if(plane){ geometry.push({ type:'polyline', points:(a.pts||[]).map(p=>P(p[0],p[1])), mm_per_px:1 }); }
+        else geometry.push({ type:'polyline', points:a.pts || [], mm_per_px:s });
       }
     }
+    return { geometry, mm_per_px: plane ? 1 : fallback, image_height: plane ? 0 : (opts.image_height || 0), plane };
+  }
+
+  async function exportDXF(data, store, opts){
+    const req = _buildDXFRequest(data, store, opts);
+    const geometry = req.geometry;
 
     if(!geometry.length){ alert('Nothing to export to DXF — draw a line, rectangle, circle or polyline first.'); return false; }
 
@@ -167,7 +192,7 @@ window.CalibExport = (function(){
       const response = await fetch(_apiUrl('api/export/dxf'), {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ geometry, mm_per_px: fallback, image_height: opts.image_height || 0 })
+        body: JSON.stringify({ geometry, mm_per_px: req.mm_per_px, image_height: req.image_height })
       });
 
       if(response.ok){
@@ -186,10 +211,10 @@ window.CalibExport = (function(){
     }catch(err){
       console.error('[DXF Export] Error:', err);
       alert('DXF export requires backend support. Downloading JSON instead.');
-      exportJSON({geometry, mm_per_px: fallback, image_height: opts.image_height || 0, format: 'dxf_compatible'});
+      exportJSON({geometry, mm_per_px: req.mm_per_px, image_height: req.image_height, format: 'dxf_compatible'});
       return false;
     }
   }
 
-  return { exportPNG, exportJSON, exportCSV, exportDXF };
+  return { exportPNG, exportJSON, exportCSV, exportDXF, _buildDXFRequest };
 })();

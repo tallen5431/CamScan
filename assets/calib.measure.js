@@ -25,13 +25,18 @@ window.CalibMeasure = (function(){
     };
   }
 
-  // Project an image point through the homography into plane mm coordinates.
+  // Project an image point through the homography into plane mm coordinates
+  // (X right, Y down — the marker's frame, following image orientation).
   function _mm(ctx, x, y){
     const H = ctx.H;
     const w = H[2][0]*x + H[2][1]*y + H[2][2];
     return [ (H[0][0]*x + H[0][1]*y + H[0][2]) / w * ctx.edgeMM,
              (H[1][0]*x + H[1][1]*y + H[1][2]) / w * ctx.edgeMM ];
   }
+
+  // Public projection to plane mm; returns null when there's no usable homography
+  // so callers can fall back to the uniform scale.
+  function project(ctx, x, y){ return ctx.H ? _mm(ctx, x, y) : null; }
 
   // Length (mm) of the image-space segment (ax,ay)-(bx,by).
   function length(ctx, ax, ay, bx, by){
@@ -70,5 +75,5 @@ window.CalibMeasure = (function(){
     return d > 180 ? 360 - d : d;
   }
 
-  return { context, length, polyline, rect, angle };
+  return { context, project, length, polyline, rect, angle };
 })();
