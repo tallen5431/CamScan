@@ -61,7 +61,7 @@ def handle_too_large(e):
 def _is_allowed_filename(filename: str) -> bool:
     if not filename:
         return False
-    name = filename.rsplit('/', 1)[-1].rsplit('\\\\', 1)[-1]
+    name = filename.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
     ext = os.path.splitext(name)[1].lstrip('.').lower()
     return ext in ALLOWED_EXTENSIONS
 

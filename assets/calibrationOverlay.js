@@ -120,7 +120,10 @@
       }
 
       _wire(){
-        const hitVisible = it => this.opts.showAnn && this.ann.items.includes(it) || true;
+        // Only hit-test annotations that are actually shown. (The previous
+        // `... || true` collapsed this to a constant, so hidden annotations
+        // stayed selectable/draggable.)
+        const hitVisible = () => !!this.opts.showAnn;
 
         const canPanStart = (ev) => (
           this.opts.mode==='pan' || this._spacePan || ev.shiftKey || ev.button===1 || ev.button===2

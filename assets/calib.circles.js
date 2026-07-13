@@ -113,8 +113,8 @@ window.CalibCircles = (function(){
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    // R label on radius line
-    ctx.fillText(`R ${radius_mm.toFixed(2)}`, cx - r/2, cy - 10);
+    // R label on radius line (in the selected display unit, matching the ⌀/area labels)
+    ctx.fillText(`R ${unit.fromMM(radius_mm).toFixed(2)} ${unit.label}`, cx - r/2, cy - 10);
   }
 
   // Export circle to JSON
