@@ -37,7 +37,8 @@ window.CalibExport = (function(){
         Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale);
       }else if(a.type==='circle'){
         if(Circles){
-          Circles.drawCircle(ctx, canvas, a, data, unitsKey, false);
+          Circles.drawCircle(ctx, canvas, a, data, unitsKey,
+            { selected:false, labelScale, linePx, fallbackScale });
         }
       }else if(a.type==='note'){
         const tx=a.p[0], ty=a.p[1];

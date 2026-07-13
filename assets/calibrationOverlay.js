@@ -378,21 +378,12 @@
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
             const ang=window.CalibGeom.angleABC(a.a,a.v,a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale);
           } else if(a.type==='circle'){
-            const [cx,cy]=a.center, r=a.radius;
-            const mm=a.mm_per_px||this.getScale()||0;
-            const diam_mm=2*r*mm, area_mm2=Math.PI*r*r*mm*mm;
-            const diam_val=unit.fromMM(diam_mm);
-            c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"cyan";
-            c.beginPath(); c.arc(cx,cy,r,0,Math.PI*2); c.stroke();
-            // Draw diameter line
-            c.beginPath(); c.moveTo(cx-r,cy); c.lineTo(cx+r,cy); c.stroke();
-            // Draw center dot
-            c.fillStyle=sel?"rgba(255,170,0,1)":"cyan";
-            c.beginPath(); c.arc(cx,cy,dotR,0,Math.PI*2); c.fill();
-            c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
-            // Labels
-            Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
-            Draw.boxLabel(c, this.canvas, cx, cy-r-35, `A ${unit.areaFromMM2(area_mm2).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale);
+            // Shared with the PNG exporter so the live canvas and the export never
+            // drift (line thickness, label size/position all come from opts here).
+            if(window.CalibCircles){
+              window.CalibCircles.drawCircle(c, this.canvas, a, this.data, this.opts.units,
+                { selected: sel, labelScale: this.opts.labelScale, linePx: this.opts.linePx, fallbackScale: this.getScale() });
+            }
           }
         }
       }

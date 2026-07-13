@@ -42,79 +42,44 @@ window.CalibCircles = (function(){
     return [];
   }
 
-  // Draw circle annotation
-  function drawCircle(ctx, canvas, circle, data, unitsKey, isSelected = false){
+  // Draw circle annotation. Single implementation shared by the live canvas and
+  // the PNG export so the two never drift. `opts`:
+  //   { selected, labelScale, linePx, fallbackScale }
+  // (a boolean is still accepted for backward compat and treated as `selected`).
+  function drawCircle(ctx, canvas, circle, data, unitsKey, opts){
+    if(typeof opts === 'boolean') opts = { selected: opts };
+    opts = opts || {};
     const unit = U().get(unitsKey);
-    const mm_per_px = circle.mm_per_px || data?.mm_per_px || 0;
+    const mm_per_px = circle.mm_per_px || opts.fallbackScale || data?.mm_per_px || 0;
 
     const [cx, cy] = circle.center;
     const r = circle.radius;
 
-    // Calculate measurements
-    const diameter_mm = 2 * r * mm_per_px;
-    const radius_mm = r * mm_per_px;
-    const circumference_mm = 2 * Math.PI * r * mm_per_px;
-    const area_mm2 = Math.PI * r * r * mm_per_px * mm_per_px;
+    const diameter_display = unit.fromMM(2 * r * mm_per_px);
+    const area_display = unit.areaFromMM2(Math.PI * r * r * mm_per_px * mm_per_px);
 
-    const diameter_display = unit.fromMM(diameter_mm);
-    const area_display = unit.areaFromMM2(area_mm2);
+    const selected = !!opts.selected;
+    const labelScale = opts.labelScale || 1.35;
+    const linePx = (opts.linePx != null) ? opts.linePx : 3;
+    const color = selected ? 'rgba(255, 170, 0, 1)' : 'cyan';
 
-    // Draw circle
-    const lineWidth = isSelected ? D().px(canvas, 4) : D().px(canvas, 3);
-    const color = isSelected ? 'rgba(255, 170, 0, 1)' : 'cyan';
-
+    // Circle outline + solid diameter line (honors the Line-Thickness slider).
     ctx.strokeStyle = color;
-    ctx.lineWidth = lineWidth;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.lineWidth = D().px(canvas, linePx);
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.stroke();
 
-    // Draw center point
-    const dotR = D().px(canvas, 6);
+    // Center point.
+    const dotR = D().px(canvas, 8);
     ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = D().px(canvas, 2);
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = D().px(canvas, 2); ctx.stroke();
 
-    // Draw diameter line
-    ctx.strokeStyle = color;
-    ctx.lineWidth = D().px(canvas, 2);
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(cx - r, cy);
-    ctx.lineTo(cx + r, cy);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Draw labels
-    const labelScale = 1.2;
-
-    // Diameter label (above)
-    D().boxLabel(
-      ctx, canvas, cx, cy - r - 15,
-      `⌀ ${diameter_display.toFixed(3)} ${unit.label}`,
-      labelScale
-    );
-
-    // Area label (below)
-    D().boxLabel(
-      ctx, canvas, cx, cy + r + 15,
-      `A ${area_display.toFixed(3)} ${unit.areaLabel}`,
-      labelScale
-    );
-
-    // Radius indicators (left and right)
-    const fontSize = Math.round(14 * labelScale);
-    ctx.fillStyle = color;
-    ctx.font = D().font(fontSize);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    // R label on radius line (in the selected display unit, matching the ⌀/area labels)
-    ctx.fillText(`R ${unit.fromMM(radius_mm).toFixed(2)} ${unit.label}`, cx - r/2, cy - 10);
+    // Labels stacked above the circle (honors the Text-Size slider). Offset the
+    // second label by a full box height so they never overlap.
+    const boxH = Math.round(22 * labelScale) + 20 * labelScale;
+    D().boxLabel(ctx, canvas, cx, cy - r - 15, `⌀ ${diameter_display.toFixed(3)} ${unit.label}`, labelScale);
+    D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, `A ${area_display.toFixed(3)} ${unit.areaLabel}`, labelScale);
   }
 
   // Export circle to JSON
