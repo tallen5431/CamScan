@@ -15,6 +15,12 @@ DOWNSCALE_FACTOR: float = 1.0   # speed-up for edge finder (1.0 = off)
 MAX_EDGES: int = 50             # contours to analyze inside edge_finder (increased for inner squares)
 LINE_THICKNESS: int = 3         # overlay poly thickness
 
+# Above this perspective foreshortening (degrees the marker's corners deviate from
+# 90°) a single mm/px scale is no longer reliable, so we mark the result low
+# confidence and prompt the user to verify. ~2.5° corresponds to ≳8% scale error on
+# a tilted square in testing.
+PERSPECTIVE_MAX_DEG: float = 2.5
+
 # Artifacts policy
 SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs
 SAVE_DEBUG_IMAGES: bool = True      # Save annotated debug images showing detection results
@@ -338,8 +344,9 @@ def calibrate_image(img_bgr: np.ndarray,
 
         # Find principal quad and corners (using dark polarity for black square)
         print(f"     Finding edges with polarity='dark', max_edges={MAX_EDGES}")
+        edge_metrics: Dict[str, Any] = {}
         edge_vis, _n_edges, warped, corners_local = find_main_edges(
-            crop_ds, MAX_EDGES, warp=True, polarity="dark"
+            crop_ds, MAX_EDGES, warp=True, polarity="dark", metrics=edge_metrics
         )
         print(f"     Edge detection found {_n_edges} contours, corners={'found' if corners_local else 'NOT FOUND'}")
 
@@ -374,6 +381,16 @@ def calibrate_image(img_bgr: np.ndarray,
                     cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
                     cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
 
+                # A precisely-refined but strongly-foreshortened (tilted) marker
+                # still yields a clean rectangle from minAreaRect, so its scale can be
+                # off without the corners looking wrong. Downgrade confidence when the
+                # underlying contour shows perspective distortion.
+                distortion = float(edge_metrics.get("distortion_deg", 0.0))
+                confidence = _confidence_for_source(corner_source)
+                if corner_source == "refined" and distortion > PERSPECTIVE_MAX_DEG:
+                    confidence = "low"
+                    print(f"     ⚠️  Perspective distortion {distortion:.1f}° > {PERSPECTIVE_MAX_DEG}° — flagging low confidence")
+
                 # Record calibration data. edge_px lets the browser recompute the scale
                 # instantly when the user enters a different real cube size.
                 markers.append({
@@ -381,7 +398,8 @@ def calibrate_image(img_bgr: np.ndarray,
                     "edge_px": float(px_edge),
                     "mm_per_px": float(mm_per_px),
                     "source": corner_source,
-                    "confidence": _confidence_for_source(corner_source),
+                    "confidence": confidence,
+                    "distortion_deg": round(distortion, 1),
                     "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
                 })
                 print(f"  ✅ Outer square calibrated ({corner_source}): {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px")

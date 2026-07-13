@@ -20,18 +20,37 @@ EDGE_FINDER_CONFIG = {
 # ─────────────────────────────────────────
 
 def _order_quad(pts: np.ndarray) -> np.ndarray:
-    """Return points ordered TL, TR, BR, BL."""
+    """Return the 4 corners as a proper clockwise cycle starting at the top-left.
+
+    Ordering by angle around the centroid is robust to rotation. The previous
+    sum/diff heuristic ties near 45° (the corners become axis-aligned diamond
+    tips with equal x+y sums), which made it assign one corner twice and drop
+    another — the degenerate quad then measured a ~15% short edge length.
+    """
     pts = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
     if pts.shape[0] != 4:
         raise ValueError(f"_order_quad expected 4 points, got {pts.shape[0]}")
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1).reshape(-1)
-    ordered = np.zeros((4, 2), dtype=np.float32)
-    ordered[0] = pts[np.argmin(s)]      # top-left
-    ordered[2] = pts[np.argmax(s)]      # bottom-right
-    ordered[1] = pts[np.argmin(diff)]   # top-right
-    ordered[3] = pts[np.argmax(diff)]   # bottom-left
-    return ordered
+
+    c = pts.mean(axis=0)
+    ang = np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0])
+    ordered = pts[np.argsort(ang)]  # consistent cycle, no ties/drops
+
+    # Enforce clockwise winding in image coordinates (y grows downward), so the
+    # order is TL, TR, BR, BL after the top-left rotation below. The shoelace sum
+    # is positive for a clockwise polygon in a y-down frame.
+    area2 = 0.0
+    for i in range(4):
+        x1, y1 = ordered[i]
+        x2, y2 = ordered[(i + 1) % 4]
+        area2 += x1 * y2 - x2 * y1
+    if area2 < 0:
+        ordered = ordered[::-1]
+
+    # Rotate the cycle so it starts at the top-left-most corner (min x+y) for a
+    # stable, deterministic labelling.
+    start = int(np.argmin(ordered[:, 0] + ordered[:, 1]))
+    ordered = np.roll(ordered, -start, axis=0)
+    return ordered.astype(np.float32)
 
 
 def _angle_score(quad: np.ndarray) -> float:
@@ -107,6 +126,38 @@ def _square_mask(gray: np.ndarray, polarity: str = "dark") -> np.ndarray:
     return mask
 
 
+def _perspective_distortion(contour) -> float:
+    """Max deviation (degrees) of the contour's 4-corner angles from 90°.
+
+    A fronto-parallel square projects to a square at any in-plane rotation
+    (deviation ≈ 0). Camera tilt projects it to a trapezoid, so the corner
+    angles move away from 90° — this grows with foreshortening, which is exactly
+    when a single mm/px scale becomes unreliable. Returns 0.0 when the contour
+    does not reduce to a clean quadrilateral (unknown → do not penalise).
+
+    NOTE: computed from the raw contour, because the refined corners come from
+    minAreaRect and are always a perfect rectangle (they hide perspective).
+    """
+    peri = cv2.arcLength(contour, True)
+    if peri <= 0:
+        return 0.0
+    approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+    if len(approx) != 4:
+        return 0.0
+    p = [approx[i][0].astype(np.float64) for i in range(4)]
+    max_dev = 0.0
+    for i in range(4):
+        a = p[(i - 1) % 4] - p[i]
+        b = p[(i + 1) % 4] - p[i]
+        na = float(np.linalg.norm(a)); nb = float(np.linalg.norm(b))
+        if na < 1e-6 or nb < 1e-6:
+            continue
+        cosang = float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))
+        ang = float(np.degrees(np.arccos(cosang)))
+        max_dev = max(max_dev, abs(ang - 90.0))
+    return max_dev
+
+
 # ─────────────────────────────────────────
 # Main API: find_main_edges
 # ─────────────────────────────────────────
@@ -120,6 +171,7 @@ def find_main_edges(
     debug: bool = False,
     use_enhanced_preprocessing: bool = True,  # kept for compatibility (ignored)
     polarity: str = "dark",                   # "dark" outer square, "bright" inner
+    metrics: dict = None,                     # optional out-param, see below
 ):
     """
     Find the best quadrilateral in a cropped region.
@@ -132,6 +184,11 @@ def find_main_edges(
         overlay_crop_bgr, num_contours, warped_square, corners_in_crop
 
     `corners_in_crop` are (x, y) in crop coordinates.
+
+    If a mutable ``metrics`` dict is passed, it is populated with
+    ``distortion_deg`` (perspective foreshortening of the winning contour, in
+    degrees). Backward compatible: existing callers pass nothing and are
+    unaffected.
     """
     cfg = EDGE_FINDER_CONFIG
     if warp_size is None:
@@ -163,6 +220,7 @@ def find_main_edges(
     overlay = crop.copy()
     best_quad = None
     best_score = 0.0
+    best_contour = None
 
     for c in contours:
         area = cv2.contourArea(c)
@@ -203,6 +261,14 @@ def find_main_edges(
         if score > best_score:
             best_score = score
             best_quad = ordered
+            best_contour = c
+
+    # Report perspective foreshortening of the winning contour (0.0 if none / not
+    # a clean quad) so callers can flag low-confidence calibration.
+    if metrics is not None:
+        metrics["distortion_deg"] = (
+            _perspective_distortion(best_contour) if best_contour is not None else 0.0
+        )
 
     if debug and DEBUG:
         print(f"[edge_finder] contours={len(contours)}, best_score={best_score:.1f}")
