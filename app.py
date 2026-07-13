@@ -202,7 +202,12 @@ def on_upload(contents, filename):
     safe = "".join(c for c in stem if c.isalnum() or c in ("-", "_")).strip("_") or "image"
     out_name = f"{safe}-{uuid.uuid4().hex[:8]}.jpg"
 
-    img = _decode_b64_image(contents)
+    # Decode defensively: a malformed data-URI (missing comma, bad base64 padding)
+    # would otherwise raise inside the callback and surface as an opaque HTTP 500.
+    try:
+        img = _decode_b64_image(contents)
+    except Exception:
+        return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
     if img is None:
         return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
 
@@ -236,7 +241,10 @@ def on_upload(contents, filename):
     except Exception as e:
         return f"⚠️ Processing error: {e}", no_update, no_update, None
 
-    json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
+    try:
+        json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
+    except Exception as e:
+        return f"⚠️ Failed to save results: {e}", no_update, no_update, None
 
     ts = int(time.time() * 1000)
     img_url_data = contents

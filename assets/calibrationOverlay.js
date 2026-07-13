@@ -266,7 +266,9 @@
         if(item.type==='rectangle'){
           const [x1,y1,x2,y2]=item.rect;
           const corners=[[x1,y1],[x2,y1],[x2,y2],[x1,y2]];
-          for(let i=0;i<4;i++) if(near(corners[i])) return {item, kind:'rect-corner', idx:i};
+          // Anchor the diagonally-opposite corner so the rectangle can be resized
+          // in any direction (including shrinking) from the grabbed corner.
+          for(let i=0;i<4;i++) if(near(corners[i])) return {item, kind:'rect-corner', idx:i, anchor:corners[(i+2)%4]};
           return {item, kind:'move-rect', start:p};
         }
         if(item.type==='polyline'){
@@ -299,11 +301,11 @@
         else if(d.kind==='move-seg'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; d.item.a=[d.item.a[0]+dx,d.item.a[1]+dy]; d.item.b=[d.item.b[0]+dx,d.item.b[1]+dy]; d.start=[p[0],p[1]]; }
         else if(d.kind==='move-note'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; d.item.p=[d.item.p[0]+dx,d.item.p[1]+dy]; d.start=[p[0],p[1]]; }
         else if(d.kind==='rect-corner'){
-          const [x1,y1,x2,y2]=d.item.rect; const cs=[[x1,y1],[x2,y1],[x2,y2],[x1,y2]];
-          cs[d.idx]=[p[0],p[1]];
-          const xs=[cs[0][0],cs[1][0],cs[2][0],cs[3][0]].sort((a,b)=>a-b);
-          const ys=[cs[0][1],cs[1][1],cs[2][1],cs[3][1]].sort((a,b)=>a-b);
-          d.item.rect=[xs[0],ys[0],xs[3],ys[3]];
+          // Resize from the grabbed corner toward `p`, keeping the opposite corner
+          // fixed. Math.min/max re-normalises so the rect stays valid even when the
+          // grabbed corner is dragged past the anchor.
+          const a=d.anchor||[d.item.rect[0],d.item.rect[1]];
+          d.item.rect=[Math.min(p[0],a[0]),Math.min(p[1],a[1]),Math.max(p[0],a[0]),Math.max(p[1],a[1])];
         }else if(d.kind==='move-rect'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; const r=d.item.rect; d.item.rect=[r[0]+dx,r[1]+dy,r[2]+dx,r[3]+dy]; d.start=[p[0],p[1]]; }
         else if(d.kind==='poly-vertex'){ d.item.pts[d.idx]=[p[0],p[1]]; }
         else if(d.kind==='move-poly'){ const dx=p[0]-d.start[0], dy=p[1]-d.start[1]; d.item.pts=d.item.pts.map(q=>[q[0]+dx,q[1]+dy]); d.start=[p[0],p[1]]; }
