@@ -71,20 +71,23 @@ def _avg_side_len(pts: List[Tuple[float,float]]) -> float:
     return d / 4.0
 
 
-def _marker_confidence(source: str, distortion_deg: float = 0.0) -> str:
+def _marker_confidence(source: str, distortion_deg: float = 0.0,
+                       has_homography: bool = False) -> str:
     """Trust level ("high"/"low") for a calibration marker, from how it was measured.
 
-    - "refined": precise edge_finder quad — trustworthy, UNLESS the underlying
-                 contour is strongly foreshortened (perspective tilt), in which
-                 case a single mm/px scale is unreliable → downgrade to "low".
+    - "refined": precise edge_finder quad — trustworthy. Perspective tilt no longer
+                 forces "low" WHEN a rectifying homography was produced (linear
+                 measurements are then corrected downstream). Only refined markers
+                 that are strongly foreshortened AND lack a homography stay "low".
     - "bbox":    rough rotated-bounding-box fallback used when edge refinement
                  failed (low-contrast/dark backgrounds); can be ~10%+ off → "low".
     - "plain":   a solid square found on the full frame as a last resort. Accurate
                  on a real target, but we are less certain the object we latched
                  onto IS the calibration square → "low" (nudge the user to verify).
     """
-    if source == "refined" and distortion_deg <= PERSPECTIVE_MAX_DEG:
-        return "high"
+    if source == "refined":
+        if has_homography or distortion_deg <= PERSPECTIVE_MAX_DEG:
+            return "high"
     return "low"
 
 
@@ -93,12 +96,18 @@ def _record_marker(overlay: np.ndarray,
                    edge_len_mm: float,
                    source: str,
                    distortion_deg: float,
-                   line_thickness: int) -> Optional[Dict[str, Any]]:
+                   line_thickness: int,
+                   homography_corners: Optional[List[Tuple[int, int]]] = None) -> Optional[Dict[str, Any]]:
     """Draw a calibration marker on the overlay and build its data dict.
 
     Shared by the refined-outer-square and plain-square-fallback paths so both
     always emit the same schema (incl. ``distortion_deg``) and identical overlay
     styling. Returns None when the corners don't yield a positive edge length.
+
+    ``homography_corners`` are the marker's TRUE projected corners (the trapezoid
+    from the raw contour, ordered TL,TR,BR,BL), used to build the rectifying
+    homography. ``mapped`` (minAreaRect) is still used for the drawn overlay,
+    edge_px and stored corners so existing measurements are unchanged.
     """
     px_edge = _avg_side_len(mapped)
     if px_edge <= 0:
@@ -111,15 +120,43 @@ def _record_marker(overlay: np.ndarray,
         cv2.circle(overlay, (gx, gy), 10, (0, 0, 0), -1)
         cv2.circle(overlay, (gx, gy), 7, (0, 255, 255), -1)
 
-    return {
+    # Perspective homography: image px -> UNIT square (the marker's TRUE corners
+    # map to the unit square). Multiplying its output by the real edge_mm gives
+    # plane coordinates in mm, so a tilted shot can be measured without
+    # foreshortening error, and changing the cube size later needs no recompute.
+    # Built from the trapezoidal contour corners; minAreaRect corners would hide
+    # the perspective and give a wrong transform.
+    homography = _unit_homography(homography_corners) if homography_corners else None
+
+    marker: Dict[str, Any] = {
         "edge_mm": float(edge_len_mm),
         "edge_px": float(px_edge),
         "mm_per_px": float(mm_per_px),
         "source": source,
-        "confidence": _marker_confidence(source, distortion_deg),
+        "confidence": _marker_confidence(source, distortion_deg, homography is not None),
         "distortion_deg": round(float(distortion_deg), 1),
         "corners": [{"x": int(a), "y": int(b)} for (a, b) in mapped],
     }
+    if homography is not None:
+        marker["homography"] = homography
+
+    return marker
+
+
+def _unit_homography(mapped: List[Tuple[int, int]]) -> Optional[List[List[float]]]:
+    """3x3 transform mapping the 4 image-space corners (TL,TR,BR,BL) to the unit
+    square [(0,0),(1,0),(1,1),(0,1)]. Returns a nested list, or None on failure."""
+    if len(mapped) != 4:
+        return None
+    src = np.array(mapped, dtype=np.float32)
+    dst = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+    try:
+        H = cv2.getPerspectiveTransform(src, dst)
+    except cv2.error:
+        return None
+    if not np.all(np.isfinite(H)):
+        return None
+    return [[float(v) for v in row] for row in H]
 
 
 def _fallback_square_corners(crop_bgr: np.ndarray, rect_local, polarity: str = "dark"):
@@ -412,7 +449,14 @@ def calibrate_image(img_bgr: np.ndarray,
             # yields a clean rectangle from minAreaRect, so its scale can be off
             # without the corners looking wrong; the distortion drives confidence.
             distortion = float(edge_metrics.get("distortion_deg", 0.0))
-            marker = _record_marker(overlay, mapped, edge_len_mm, corner_source, distortion, line_thickness)
+            # Map the TRUE trapezoid corners (crop coords) to the full frame for the
+            # rectifying homography — same offset/downscale mapping as `mapped`.
+            quad_crop = edge_metrics.get("quad")
+            homography_corners = (
+                [(ox + int(qx / denom), oy + int(qy / denom)) for (qx, qy) in quad_crop]
+                if quad_crop else None
+            )
+            marker = _record_marker(overlay, mapped, edge_len_mm, corner_source, distortion, line_thickness, homography_corners)
             if marker is not None:
                 markers.append(marker)
                 if marker["confidence"] == "low" and corner_source == "refined":
@@ -470,12 +514,18 @@ def calibrate_image(img_bgr: np.ndarray,
     # inner pads") so calibration still works when the pads are absent or unreadable.
     if len(markers) == 0:
         print(f"\n[Calibration] Fallback: plain dark-square detection on full frame")
+        plain_metrics: Dict[str, Any] = {}
         _v, _n, _w, corners_plain = find_main_edges(
-            img_bgr, MAX_EDGES, warp=True, polarity="dark"
+            img_bgr, MAX_EDGES, warp=True, polarity="dark", metrics=plain_metrics
         )
         if corners_plain:
             mapped = [(int(cx), int(cy)) for (cx, cy) in corners_plain]
-            marker = _record_marker(overlay, mapped, edge_len_mm, "plain", 0.0, line_thickness)
+            # Full-frame detection → no crop offset/downscale, so the true corners
+            # map with identity.
+            quad_plain = plain_metrics.get("quad")
+            homography_corners = [(int(qx), int(qy)) for (qx, qy) in quad_plain] if quad_plain else None
+            plain_distortion = float(plain_metrics.get("distortion_deg", 0.0))
+            marker = _record_marker(overlay, mapped, edge_len_mm, "plain", plain_distortion, line_thickness, homography_corners)
             if marker is not None:
                 markers.append(marker)
                 print(f"  ✅ Plain square calibrated: {marker['edge_px']:.1f}px = {edge_len_mm}mm → {marker['mm_per_px']:.4f} mm/px (verify)")
@@ -503,6 +553,10 @@ def calibrate_image(img_bgr: np.ndarray,
     else:
         calibration_confidence = "none"
 
+    # Primary perspective homography (image px -> unit square) for the viewer to
+    # rectify measurements. Uses the first marker that carries one.
+    homography = next((m["homography"] for m in markers if m.get("homography")), None)
+
     cal_data: Dict[str, Any] = {
         "image": None,  # filled in save_outputs() if original file exists
         "image_size": {"width": int(W), "height": int(H)},
@@ -510,6 +564,7 @@ def calibrate_image(img_bgr: np.ndarray,
         "mm_per_px": mm_per_px_avg,
         "pixels_per_mm": px_per_mm_avg,
         "calibration_confidence": calibration_confidence,
+        "homography": homography,
         "markers": markers
     }
 

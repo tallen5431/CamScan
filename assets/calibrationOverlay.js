@@ -4,7 +4,7 @@
     const t0=performance.now();
     (function tick(){
       if(window.CalibUnits && window.CalibGeom && window.CalibDraw && window.CalibAnn && window.CalibExport
-         && window.CalibViewport && window.CalibGestures && window.CalibUI) return ready();
+         && window.CalibViewport && window.CalibGestures && window.CalibUI && window.CalibMeasure) return ready();
       if(performance.now()-t0>maxMs){ console.error('[CalibrationOverlay] modules missing'); return; }
       setTimeout(tick, step);
     })();
@@ -22,7 +22,7 @@
   })();
 
   waitForDeps(6000, 80, function boot(){
-    const Units=window.CalibUnits, Draw=window.CalibDraw, Ann=window.CalibAnn;
+    const Units=window.CalibUnits, Draw=window.CalibDraw, Ann=window.CalibAnn, Measure=window.CalibMeasure;
     const { CalibViewport:VP, CalibGestures:G, CalibUI:UI, CalibExport:Xport } = window;
 
     class CalibrationOverlay{
@@ -340,9 +340,7 @@
         for(const a of this.ann.items){
           const sel=(a.id===this.ann.selectedId);
           if(a.type==='segment'){
-            const mm=a.mm_per_px||this.getScale()||0;
-            const dx=a.b[0]-a.a[0], dy=a.b[1]-a.a[1];
-            const val=unit.fromMM(Math.hypot(dx,dy)*mm);
+            const val=unit.fromMM(Measure.length(this._measureCtx(a), a.a[0],a.a[1], a.b[0],a.b[1]));
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"lime";
             c.beginPath(); c.moveTo(a.a[0],a.a[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
             c.fillStyle=sel?"rgba(255,170,0,1)":"lime";
@@ -361,8 +359,7 @@
             }
           } else if(a.type==='polyline'){
             const pts=a.pts||[]; if(pts.length<2) continue;
-            const mm=a.mm_per_px||this.getScale()||0; let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
-            const val=unit.fromMM(px*mm);
+            const val=unit.fromMM(Measure.polyline(this._measureCtx(a), pts));
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange";
             c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke();
             c.fillStyle=sel?"rgba(255,170,0,1)":"orange";
@@ -370,13 +367,13 @@
             const mid=pts[Math.floor(pts.length/2)]; Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
-            const mm=a.mm_per_px||this.getScale()||0; const wmm=(x2-x1)*mm, hmm=(y2-y1)*mm, amm=wmm*hmm;
+            const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2); const wmm=rm.w, hmm=rm.h, amm=rm.area;
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange"; c.strokeRect(x1,y1,x2-x1,y2-y1);
             Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale);
           } else if(a.type==='angle'){
             c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange";
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
-            const ang=window.CalibGeom.angleABC(a.a,a.v,a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale);
+            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale);
           } else if(a.type==='circle'){
             // Shared with the PNG exporter so the live canvas and the export never
             // drift (line thickness, label size/position all come from opts here).
@@ -401,7 +398,7 @@
           if(this.opts.mode==='setscale'){
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this.opts.labelScale);
           } else {
-            const sMM=this.getScale()||0, val=unit.fromMM(Math.hypot(b[0]-a[0], b[1]-a[1]) * sMM);
+            const val=unit.fromMM(Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]));
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
           }
         }
@@ -481,6 +478,14 @@
       }
 
       getScale(){ return this._scaleForPoint(this.hover || this.selectedPoints[0] || [0,0]); }
+
+      // Measurement context for an annotation: uses the calibration homography to
+      // rectify perspective when present, unless a manual scale is active (which is
+      // inherently uniform). Falls back to the annotation's own frozen mm/px.
+      _measureCtx(a){
+        const fallback = (a && a.mm_per_px) || this.getScale() || 0;
+        return Measure.context(this.data, fallback, !this.opts.manualMmPerPx);
+      }
 
       _annCentroid(a){
         if(a.type==='segment') return [(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
@@ -575,12 +580,14 @@
         // scale carries a confidence. Warn when it came from a rough fallback.
         const lowConf = !this.opts.manualMmPerPx && this.data && this.data.calibration_confidence === 'low';
         const warn = lowConf ? '⚠️ Approximate auto-cal — verify with “Set scale” • ' : '';
-        el.textContent = `${warn}Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
+        // Show when measurements are being rectified for camera tilt.
+        const persp = (!this.opts.manualMmPerPx && this.data && this.data.homography) ? ' • perspective-corrected' : '';
+        el.textContent = `${warn}Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src}${persp} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
       }
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
       _imgH(){ return this.img ? (this.img.naturalHeight || this.img.height) : 0; }
-      savePNG(){ Xport.exportPNG(this.img, this.data, this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx); }
+      savePNG(){ Xport.exportPNG(this.img, this.data, this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, !this.opts.manualMmPerPx); }
       saveJSON(){
         const payload=Ann.toExportJSON(this.imgSrc, {
           marker_size_mm:this.data?.marker_size_mm??null,
@@ -594,7 +601,7 @@
       _confirmUncalibrated(){
         return this.isCalibrated() || confirm('Not calibrated — exported values will be in pixels, not millimetres. Set a scale first for real measurements. Export anyway?');
       }
-      saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this.data, this._exportStore(), this.opts.units, this.getScale()); }
+      saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this.data, this._exportStore(), this.opts.units, this.getScale(), !this.opts.manualMmPerPx); }
       saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this.data, this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0 }); }
     }
 

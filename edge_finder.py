@@ -126,36 +126,40 @@ def _square_mask(gray: np.ndarray, polarity: str = "dark") -> np.ndarray:
     return mask
 
 
-def _perspective_distortion(contour) -> float:
-    """Max deviation (degrees) of the contour's 4-corner angles from 90°.
+def _contour_quad_and_distortion(contour):
+    """Return (ordered_quad, distortion_deg) from a contour's true 4-corner shape.
 
-    A fronto-parallel square projects to a square at any in-plane rotation
-    (deviation ≈ 0). Camera tilt projects it to a trapezoid, so the corner
-    angles move away from 90° — this grows with foreshortening, which is exactly
-    when a single mm/px scale becomes unreliable. Returns 0.0 when the contour
-    does not reduce to a clean quadrilateral (unknown → do not penalise).
+    ``ordered_quad`` is the contour's approxPolyDP quadrilateral ordered TL,TR,BR,BL
+    (a list of (x, y) floats in the contour's coordinate frame), or None when the
+    contour doesn't reduce to a clean 4-gon. ``distortion_deg`` is the max corner
+    angle deviation from 90°.
 
-    NOTE: computed from the raw contour, because the refined corners come from
-    minAreaRect and are always a perfect rectangle (they hide perspective).
+    This is the TRUE projected quad (a trapezoid under camera tilt), unlike the
+    minAreaRect corners used elsewhere which are always a perfect rectangle and so
+    hide perspective. It is what a rectifying homography must be built from, and it
+    drives the perspective-distortion confidence flag.
     """
     peri = cv2.arcLength(contour, True)
     if peri <= 0:
-        return 0.0
+        return None, 0.0
     approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
     if len(approx) != 4:
-        return 0.0
-    p = [approx[i][0].astype(np.float64) for i in range(4)]
+        return None, 0.0
+    try:
+        ordered = _order_quad(approx.reshape(-1, 2).astype(np.float32))
+    except ValueError:
+        return None, 0.0
     max_dev = 0.0
     for i in range(4):
-        a = p[(i - 1) % 4] - p[i]
-        b = p[(i + 1) % 4] - p[i]
+        a = ordered[(i - 1) % 4] - ordered[i]
+        b = ordered[(i + 1) % 4] - ordered[i]
         na = float(np.linalg.norm(a)); nb = float(np.linalg.norm(b))
         if na < 1e-6 or nb < 1e-6:
             continue
         cosang = float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))
-        ang = float(np.degrees(np.arccos(cosang)))
-        max_dev = max(max_dev, abs(ang - 90.0))
-    return max_dev
+        max_dev = max(max_dev, abs(float(np.degrees(np.arccos(cosang))) - 90.0))
+    quad = [(float(x), float(y)) for (x, y) in ordered]
+    return quad, max_dev
 
 
 # ─────────────────────────────────────────
@@ -263,12 +267,16 @@ def find_main_edges(
             best_quad = ordered
             best_contour = c
 
-    # Report perspective foreshortening of the winning contour (0.0 if none / not
-    # a clean quad) so callers can flag low-confidence calibration.
+    # Report the winning contour's true (trapezoidal) quad and its perspective
+    # foreshortening, so callers can build a rectifying homography and flag
+    # low-confidence calibration. Both are None/0.0 when there's no clean quad.
     if metrics is not None:
-        metrics["distortion_deg"] = (
-            _perspective_distortion(best_contour) if best_contour is not None else 0.0
-        )
+        if best_contour is not None:
+            quad, dist = _contour_quad_and_distortion(best_contour)
+        else:
+            quad, dist = None, 0.0
+        metrics["quad"] = quad
+        metrics["distortion_deg"] = dist
 
     if debug and DEBUG:
         print(f"[edge_finder] contours={len(contours)}, best_score={best_score:.1f}")

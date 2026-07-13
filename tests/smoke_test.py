@@ -83,6 +83,23 @@ def main():
         check("calibrate_image", False, repr(e))
         cal, overlay = {}, None
 
+    # 2b) Perspective homography present and sane: the marker's centroid must map
+    #     to the centre of the unit square.
+    try:
+        H = cal.get("homography")
+        ok = H is not None and len(H) == 3 and len(H[0]) == 3
+        if ok and cal.get("markers"):
+            cs = cal["markers"][0]["corners"]
+            cxp = sum(c["x"] for c in cs) / len(cs)
+            cyp = sum(c["y"] for c in cs) / len(cs)
+            w = H[2][0] * cxp + H[2][1] * cyp + H[2][2]
+            u = (H[0][0] * cxp + H[0][1] * cyp + H[0][2]) / w
+            v = (H[1][0] * cxp + H[1][1] * cyp + H[1][2]) / w
+            ok = abs(u - 0.5) < 0.1 and abs(v - 0.5) < 0.1
+        check("homography maps marker centre to unit-square centre", ok)
+    except Exception as e:
+        check("homography", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():
