@@ -65,6 +65,19 @@ def _avg_side_len(pts: List[Tuple[float,float]]) -> float:
     return d / 4.0
 
 
+def _confidence_for_source(source: str) -> str:
+    """Map how a marker's edge was measured to a trust level the UI can surface.
+
+    - "refined": precise edge_finder quad — trustworthy → "high".
+    - "bbox":    rough rotated-bounding-box fallback used when edge refinement
+                 failed (low-contrast/dark backgrounds); can be ~10%+ off → "low".
+    - "plain":   a solid square found on the full frame as a last resort. Accurate
+                 on a real target, but we are less certain the object we latched
+                 onto IS the calibration square → "low" (nudge the user to verify).
+    """
+    return "high" if source == "refined" else "low"
+
+
 def _fallback_square_corners(crop_bgr: np.ndarray, rect_local, polarity: str = "dark"):
     """Best-effort 4 corners for a square when precise edge refinement fails.
 
@@ -368,6 +381,7 @@ def calibrate_image(img_bgr: np.ndarray,
                     "edge_px": float(px_edge),
                     "mm_per_px": float(mm_per_px),
                     "source": corner_source,
+                    "confidence": _confidence_for_source(corner_source),
                     "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
                 })
                 print(f"  ✅ Outer square calibrated ({corner_source}): {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px")
@@ -417,6 +431,36 @@ def calibrate_image(img_bgr: np.ndarray,
             refinement_failures += 1
             print(f"  ⚠️  Inner square #{idx} failed corner refinement")
 
+    # Last-resort fallback: no bright-pad pattern yielded a usable scale. Try to
+    # detect a plain (unpadded) solid dark square directly on the full frame. This
+    # matches the documented target ("a solid black square, optionally with 4 white
+    # inner pads") so calibration still works when the pads are absent or unreadable.
+    if len(markers) == 0:
+        print(f"\n[Calibration] Fallback: plain dark-square detection on full frame")
+        _v, _n, _w, corners_plain = find_main_edges(
+            img_bgr, MAX_EDGES, warp=True, polarity="dark"
+        )
+        if corners_plain:
+            px_edge = _avg_side_len(corners_plain)
+            if px_edge > 0:
+                mm_per_px = float(edge_len_mm) / float(px_edge)
+                mapped = [(int(cx), int(cy)) for (cx, cy) in corners_plain]
+                cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0,255,255), line_thickness)
+                for (gx, gy) in mapped:
+                    cv2.circle(overlay, (gx, gy), 10, (0,0,0), -1)
+                    cv2.circle(overlay, (gx, gy), 7, (0,255,255), -1)
+                markers.append({
+                    "edge_mm": float(edge_len_mm),
+                    "edge_px": float(px_edge),
+                    "mm_per_px": float(mm_per_px),
+                    "source": "plain",
+                    "confidence": _confidence_for_source("plain"),
+                    "corners": [{"x": int(a), "y": int(b)} for (a,b) in mapped]
+                })
+                print(f"  ✅ Plain square calibrated: {px_edge:.1f}px = {edge_len_mm}mm → {mm_per_px:.4f} mm/px (verify)")
+        else:
+            print(f"  ⚠️  No plain square found either — image will be uncalibrated")
+
     elapsed = time.time() - start_time
     print(f"[Calibration] Processing complete:")
     print(f"  - Successfully calibrated: {len(markers)} marker(s)")
@@ -431,12 +475,20 @@ def calibrate_image(img_bgr: np.ndarray,
     mm_per_px_avg = float(np.mean(mm_per_px_vals))
     px_per_mm_avg = (1.0 / mm_per_px_avg) if mm_per_px_avg > 0 else 0.0
 
+    # Overall confidence: "high" only if a precisely-refined marker was found;
+    # "low" if we had to fall back (bbox/plain) — the UI warns and suggests Set Scale.
+    if markers:
+        calibration_confidence = "high" if any(m.get("confidence") == "high" for m in markers) else "low"
+    else:
+        calibration_confidence = "none"
+
     cal_data: Dict[str, Any] = {
         "image": None,  # filled in save_outputs() if original file exists
         "image_size": {"width": int(W), "height": int(H)},
         "marker_size_mm": float(edge_len_mm),   # <-- always the runtime value
         "mm_per_px": mm_per_px_avg,
         "pixels_per_mm": px_per_mm_avg,
+        "calibration_confidence": calibration_confidence,
         "markers": markers
     }
 

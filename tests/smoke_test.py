@@ -69,12 +69,16 @@ def main():
         with _quiet():
             cal, overlay = calibrate_image(img, edge_mm=30.0)
         ok = (isinstance(cal, dict) and "mm_per_px" in cal and "markers" in cal
+              and "calibration_confidence" in cal
               and overlay is not None and overlay.shape == img.shape)
         # 300 px square known to be 30 mm => ~0.1 mm/px when the marker is found.
         scale = cal.get("mm_per_px", 0)
         scale_ok = (len(cal.get("markers", [])) == 0) or (0.08 <= scale <= 0.12)
-        check("calibrate_image structure + scale", ok and scale_ok,
-              f"markers={len(cal.get('markers', []))}, mm_per_px={scale}")
+        # A clean, high-contrast target should refine precisely → high confidence.
+        conf = cal.get("calibration_confidence")
+        conf_ok = conf == "high"
+        check("calibrate_image structure + scale + confidence", ok and scale_ok and conf_ok,
+              f"markers={len(cal.get('markers', []))}, mm_per_px={scale}, confidence={conf}")
     except Exception as e:
         check("calibrate_image", False, repr(e))
         cal, overlay = {}, None

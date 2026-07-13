@@ -580,7 +580,11 @@
         }
         const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm square`;
         const unitPerPx=unit.fromMM(s);
-        el.textContent = `Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
+        // A manual scale is user-defined (trusted); only the auto-detected marker
+        // scale carries a confidence. Warn when it came from a rough fallback.
+        const lowConf = !this.opts.manualMmPerPx && this.data && this.data.calibration_confidence === 'low';
+        const warn = lowConf ? '⚠️ Approximate auto-cal — verify with “Set scale” • ' : '';
+        el.textContent = `${warn}Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
       }
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }

@@ -265,10 +265,15 @@ def on_upload(contents, filename):
     ], className="cal-wrap")
 
     marker_mm = cal.get("marker_size_mm", "—")
+    n_markers = len(cal.get("markers", []))
     status = (
-        f"✅ Processed '{filename}' — {len(cal.get('markers', []))} marker(s). "
+        f"✅ Processed '{filename}' — {n_markers} marker(s). "
         f"Marker size: {marker_mm} mm. Tap/click to annotate."
     )
+    # Warn when the auto-calibration had to fall back to a rough estimate, so the
+    # user knows to double-check the scale rather than trusting a wrong value.
+    if n_markers and cal.get("calibration_confidence") == "low":
+        status += " ⚠️ Auto-calibration is approximate — verify with the Set Scale tool (📐)."
     return status, viewer, {"display": "none"}, None  # Reset upload for next file
 
 
