@@ -44,3 +44,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code session-local artifacts (keep hooks/settings, drop runtime locks)
+.claude/scheduled_tasks.lock
