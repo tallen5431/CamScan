@@ -35,6 +35,12 @@
         this.selectedPoints=[]; this.hover=null; this.noteText='';
         this.drag=null; this._rAF=0; this._spacePan=false;
 
+        // Undo/redo history: snapshots of ann.items taken BEFORE each mutating op.
+        this._undoStack=[]; this._redoStack=[]; this._preDragSnapshot=null; this._dragPushed=false;
+        // True when the active marker size came from a remembered (localStorage) value
+        // rather than this photo's own calibration — surfaced in the KPI so it is never silent.
+        this._markerSizeFromMemory=false;
+
         this.opts = {
           mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','circle','circle3pt','note','setscale'
           units:'mm',
@@ -58,7 +64,7 @@
           // If the user picked a real cube size earlier this session, apply it now.
           try{
             const ms=parseFloat(localStorage.getItem('calib.markerSizeMM'));
-            if(ms>0 && this.data && this.data.markers && this.data.markers.length){ this.setMarkerSizeMM(ms); }
+            if(ms>0 && this.data && this.data.markers && this.data.markers.length){ this.setMarkerSizeMM(ms, true); }
           }catch(e){}
 
           this._wire();
@@ -101,18 +107,40 @@
       fitToContainer(){ this.vp.fit(this.canvas, this.img); this.requestDraw(); }
       fitToHeight(){ this.vp.fitHeight(this.canvas, this.img); this.requestDraw(); }
       resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this.requestDraw(); }
-      undo(){
-        if(this.selectedPoints.length){ this.selectedPoints.pop(); }
-        else if(this.ann.selectedId!=null){
-          this.ann.items=this.ann.items.filter(a=>a.id!==this.ann.selectedId);
-          this.ann.selectedId=null;   // clear so the next Undo isn't a no-op
-        }
-        this.hover=null; this.requestDraw();
+      // --- undo/redo history ---------------------------------------------------
+      // A deep clone of the current annotation list. Cheap for the dozens of items
+      // a user realistically draws, and makes every op trivially reversible.
+      _snapshot(){ return this.ann.items.map(a=>JSON.parse(JSON.stringify(a))); }
+      // Call BEFORE any mutation of ann.items. Pushes the pre-change state and
+      // invalidates the redo stack (a new edit forks history).
+      _pushHistory(){
+        this._undoStack.push(this._snapshot());
+        if(this._undoStack.length>100) this._undoStack.shift();
+        this._redoStack.length=0;
       }
-      clearAll(){ this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }
+      canUndo(){ return this._undoStack.length>0 || this.selectedPoints.length>0; }
+      canRedo(){ return this._redoStack.length>0; }
+      undo(){
+        // First peel back any in-progress (uncommitted) points.
+        if(this.selectedPoints.length){ this.selectedPoints.pop(); this.hover=null; return this.requestDraw(); }
+        if(this._undoStack.length){
+          this._redoStack.push(this._snapshot());
+          this.ann.items=this._undoStack.pop();
+          this.ann.selectedId=null; this.hover=null; this.requestDraw();
+        }
+      }
+      redo(){
+        if(this._redoStack.length){
+          this._undoStack.push(this._snapshot());
+          this.ann.items=this._redoStack.pop();
+          this.ann.selectedId=null; this.hover=null; this.requestDraw();
+        }
+      }
+      clearAll(){ this._pushHistory(); this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }
 
       deleteSelected(){
         if(this.ann && this.ann.selectedId!=null){
+          this._pushHistory();
           this.ann.items = this.ann.items.filter(a => a.id !== this.ann.selectedId);
           this.ann.selectedId = null;
           this.requestDraw();
@@ -138,10 +166,20 @@
             const hit = Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
             this.ann.selectedId = hit ? hit.id : this.ann.selectedId;
             this.drag = hit ? this._makeDragHandle(hit, pt) : null;
+            // Remember the pre-drag state; it is committed to history only if the
+            // drag actually moves the geometry (see _updateDrag), so a plain
+            // select-click doesn't pollute the undo stack.
+            if(this.drag){ this._preDragSnapshot=this._snapshot(); this._dragPushed=false; }
             this.requestDraw();
           },
           onDrag: (pt)=>{
             if(!this.drag) return;
+            if(!this._dragPushed && this._preDragSnapshot){
+              this._undoStack.push(this._preDragSnapshot);
+              if(this._undoStack.length>100) this._undoStack.shift();
+              this._redoStack.length=0;
+              this._dragPushed=true;
+            }
             this._updateDrag(this.opts.snap ? this._maybeSnap(pt) : pt);
             this.requestDraw();
           },
@@ -157,6 +195,7 @@
               return this.requestDraw();
             }
             if (this.opts.mode==='note'){
+              this._pushHistory();
               Ann.addNote(this.ann, p, this.noteText||'Note');
               return this.requestDraw();
             }
@@ -181,23 +220,23 @@
               return this.requestDraw();
             }
             if(this.opts.mode==='segment' && this.selectedPoints.length===2){
-              const [a,b]=this.selectedPoints; Ann.addSegment(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
+              const [a,b]=this.selectedPoints; this._pushHistory(); Ann.addSegment(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
             }
             if(this.opts.mode==='rectangle' && this.selectedPoints.length===2){
-              const [a,b]=this.selectedPoints; Ann.addRectangle(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
+              const [a,b]=this.selectedPoints; this._pushHistory(); Ann.addRectangle(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
             }
             if(this.opts.mode==='angle' && this.selectedPoints.length===3){
-              const [a,v,b]=this.selectedPoints; Ann.addAngle(this.ann, a,v,b, mm, this.opts.units, this.opts.lockMarkerId);
+              const [a,v,b]=this.selectedPoints; this._pushHistory(); Ann.addAngle(this.ann, a,v,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
             }
             if(this.opts.mode==='circle' && this.selectedPoints.length===2){
-              const [center,edge]=this.selectedPoints; Ann.addCircle(this.ann, center, edge, mm, this.opts.units, this.opts.lockMarkerId);
+              const [center,edge]=this.selectedPoints; this._pushHistory(); Ann.addCircle(this.ann, center, edge, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
             }
             if(this.opts.mode==='circle3pt' && this.selectedPoints.length===3){
-              Ann.addCircle3pt(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId);
+              this._pushHistory(); Ann.addCircle3pt(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
             }
             this.requestDraw();
@@ -214,6 +253,12 @@
         window.addEventListener('keydown', (e)=>{
           if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
           const k=e.key.toLowerCase();
+          // Undo/redo chords (handled before the modifier guard below).
+          if((e.ctrlKey||e.metaKey) && k==='z'){ e.preventDefault(); if(e.shiftKey) this.redo(); else this.undo(); return; }
+          if((e.ctrlKey||e.metaKey) && k==='y'){ e.preventDefault(); this.redo(); return; }
+          // Don't hijack native browser/OS shortcuts (Ctrl+0 reset-zoom, Cmd+1 tab
+          // switch, Ctrl+± page zoom, …). Only plain / Shift keys drive the tools.
+          if(e.ctrlKey||e.metaKey||e.altKey) return;
           if(k===' ') { this._spacePan = true; e.preventDefault(); }
           if(k==='0') this.setMode('pan');
           if(k==='1') this.setMode('select');
@@ -226,6 +271,7 @@
           if(k==='8') this.setMode('note');
           if(k==='enter') this.finishPolyline();
           if(k==='escape'){ this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
+          if(k==='delete' || k==='backspace'){ e.preventDefault(); this.deleteSelected(); }
           if(k==='+' || k==='=') this.zoomStep(1.2);
           if(k==='-' || k==='_') this.zoomStep(1/1.2);
         });
@@ -512,9 +558,13 @@
       // Re-scale every detected marker to a new real cube edge length (mm). Because
       // detection is purely pixel-based, mm_per_px = size_mm / edge_px is exact and
       // instant — no server round-trip needed.
-      setMarkerSizeMM(mm){
+      setMarkerSizeMM(mm, fromMemory){
         mm = parseFloat(mm);
         if(!(mm>0)) return;
+        // Distinguish a size the user typed for THIS photo from one restored across
+        // photos, so the KPI can flag the remembered case instead of silently
+        // rescaling an unrelated image (see updateKPI).
+        this._markerSizeFromMemory = !!fromMemory;
         this.opts.manualMmPerPx = null; // markers become the source of truth again
         const vals=[];
         for(const m of (this.data?.markers||[])){
@@ -535,6 +585,7 @@
       setManualScaleFromPixels(pixelLength, knownMM){
         knownMM = parseFloat(knownMM);
         if(!(pixelLength>0) || !(knownMM>0)) return;
+        this._markerSizeFromMemory = false;
         this.opts.manualMmPerPx = knownMM/pixelLength;
         this._rescaleAnnotations();
         this.requestDraw();
@@ -546,6 +597,7 @@
       finishPolyline(){
         if(this.opts.mode==='polyline' && this.selectedPoints.length>=2){
           const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
+          this._pushHistory();
           Ann.addPolyline(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId);
         }
         this.selectedPoints=[]; this.hover=null; this.requestDraw();
@@ -565,16 +617,38 @@
         else apply(prompt(`Enter the real length of this line in ${unit.label}:`, ''));
       }
 
+      // Live guidance for the active tool, e.g. "Angle — click point 2 of 3", so a
+      // user (especially on mobile, where hover tooltips don't exist) always knows
+      // how many clicks the current tool needs and where they are in the sequence.
+      _toolHint(){
+        const m=this.opts.mode;
+        const defs={ segment:['Measure',2], setscale:['Set scale',2], rectangle:['Area',2],
+                     circle:['Circle',2], angle:['Angle',3], circle3pt:['3-pt circle',3],
+                     note:['Note',1], polyline:['Path',0], pan:['Pan',0], select:['Select',0] };
+        const d=defs[m]; if(!d) return '';
+        const [name,total]=d, n=this.selectedPoints.length;
+        if(m==='pan') return '';
+        if(m==='select') return this.ann.selectedId!=null ? '✏️ Select — item selected (Delete removes it)' : '✏️ Select — tap a measurement';
+        if(m==='note') return '✏️ Note — tap to place';
+        if(m==='polyline') return n ? `✏️ Path — ${n} point(s) · double-tap or Enter to finish` : '✏️ Path — tap to start';
+        return `✏️ ${name} — click point ${Math.min(n+1,total)} of ${total}`;
+      }
+
       updateKPI(){
         const el=document.getElementById('cal-kpi'); if(!el) return;
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
         const zoom=`Zoom: ${Math.round(this.vp.k*100)}%`;
         const anns=`Annotations: ${this.ann.items.length}`;
+        const hint=this._toolHint();
+        const hintPart = hint ? `${hint} | ` : '';
         if(s<=0){
-          el.innerHTML = `⚠️ <b>Not calibrated</b> — no reference square found. Use “Set scale” to draw a line of known length. &nbsp;|&nbsp; ${zoom} &nbsp;|&nbsp; ${anns}`;
+          el.innerHTML = `${hintPart}⚠️ <b>Not calibrated</b> — no reference square found. Use “Set scale” to draw a line of known length. &nbsp;|&nbsp; ${zoom} &nbsp;|&nbsp; ${anns}`;
           return;
         }
-        const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm square`;
+        // Flag a marker size restored from a previous photo so a stale remembered
+        // value can't silently rescale an unrelated image without the user noticing.
+        const remembered = (!this.opts.manualMmPerPx && this._markerSizeFromMemory) ? ' (remembered)' : '';
+        const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm square${remembered}`;
         const unitPerPx=unit.fromMM(s);
         // A manual scale is user-defined (trusted); only the auto-detected marker
         // scale carries a confidence. Warn when it came from a rough fallback.
@@ -582,7 +656,7 @@
         const warn = lowConf ? '⚠️ Approximate auto-cal — verify with “Set scale” • ' : '';
         // Show when measurements are being rectified for camera tilt.
         const persp = (!this.opts.manualMmPerPx && this.data && this.data.homography) ? ' • perspective-corrected' : '';
-        el.textContent = `${warn}Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src}${persp} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
+        el.textContent = `${hintPart}${warn}Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src}${persp} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
       }
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
@@ -594,6 +668,10 @@
           mm_per_px:this.getScale()||(this.data?.mm_per_px??null),
           pixels_per_mm:this.data?.pixels_per_mm??null,
           manual_scale:this.opts.manualMmPerPx||null,
+          // Include the rectifying homography (unless a manual scale overrides it) so a
+          // JSON consumer can reproduce the SAME perspective-corrected mm the app showed,
+          // instead of getting foreshortened values from mm_per_px alone on tilted shots.
+          homography:(!this.opts.manualMmPerPx && this.data?.homography) ? this.data.homography : null,
           markers:this.data?.markers??[]
         }, this._exportStore(), this.opts.units);
         Xport.exportJSON(payload);

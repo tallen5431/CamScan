@@ -666,6 +666,9 @@ window.CalibUI = (function(){
       b.type = 'button';
       b.className = 'cal-icon';
       b.setAttribute('data-tooltip', tooltip);
+      // Accessible name for screen readers and touch users (the visible label is
+      // hidden on mobile and the hover tooltip only exists for mouse/desktop).
+      b.setAttribute('aria-label', tooltip);
       b.innerHTML = `<span class="cal-icon-emoji">${emoji}</span><span class="cal-icon-text">${text}</span>`;
       if (pressed) b.setAttribute('aria-pressed','true');
       b.onclick = () => {
@@ -716,11 +719,16 @@ window.CalibUI = (function(){
     const editSection = document.createElement('div');
     editSection.className = 'cal-toolbar-section';
 
-    const undo = btn('↶', 'Undo', 'Undo Last Action', () => {
+    const undo = btn('↶', 'Undo', 'Undo (Ctrl+Z)', () => {
       if (overlay.undo) overlay.undo();
     });
 
-    const del = btn('🗑', 'Delete', 'Delete Selected', () => {
+    const redo = btn('↷', 'Redo', 'Redo (Ctrl+Shift+Z)', () => {
+      if (overlay.redo) overlay.redo();
+    });
+    redo.disabled = !(overlay.canRedo && overlay.canRedo());
+
+    const del = btn('🗑', 'Delete', 'Delete Selected (Del)', () => {
       if (overlay.deleteSelected) overlay.deleteSelected();
     });
     del.disabled = !(overlay.ann && overlay.ann.selectedId != null);
@@ -731,12 +739,12 @@ window.CalibUI = (function(){
     finish.disabled = true;
 
     const clearAll = btn('🗑✖', 'Clear', 'Clear All Annotations', () => {
-      if (confirm('Delete all annotations? This cannot be undone.')) {
+      if (confirm('Delete all annotations? (You can undo this.)')) {
         if (overlay.clearAll) overlay.clearAll();
       }
     });
 
-    editSection.append(undo, finish, del, clearAll);
+    editSection.append(undo, redo, finish, del, clearAll);
     top.appendChild(editSection);
 
     // Divider
@@ -872,6 +880,8 @@ window.CalibUI = (function(){
       });
       del.disabled = !(overlay.ann && overlay.ann.selectedId != null);
       finish.disabled = !(mode === 'polyline' && overlay.selectedPoints && overlay.selectedPoints.length >= 2);
+      undo.disabled = !(overlay.canUndo && overlay.canUndo());
+      redo.disabled = !(overlay.canRedo && overlay.canRedo());
     }
 
     // Keep UI in sync with overlay redraws

@@ -63,10 +63,12 @@ window.CalibGestures = (function () {
       pointers.set(e.pointerId, { cx: cx, cy: cy });
 
       const img = toImageXY(cx, cy);
-      onDown(img, e);
 
-      // Track primary pointer for click / drag
-      if (primaryId === null) {
+      // Only the FIRST pointer is a real interaction. Firing onDown for a second
+      // finger would hit-test wherever it lands — changing the selection and starting
+      // a drag — while the user is only trying to pinch-zoom. Restrict it to size===1.
+      if (pointers.size === 1) {
+        onDown(img, e);
         primaryId = e.pointerId;
         dragId = e.pointerId;
         downInfo = { id: e.pointerId, cx: cx, cy: cy, imgX: img[0], imgY: img[1], time: Date.now() };
@@ -74,6 +76,10 @@ window.CalibGestures = (function () {
 
       // Check for pinch start
       if (pointers.size === 2) {
+        // A second finger promotes the gesture to a pinch: cancel any drag the first
+        // finger began (onUp lets the overlay drop its drag handle) so a placed
+        // measurement isn't dragged out of position mid-pinch.
+        onUp(img, e);
         const ids = Array.from(pointers.keys());
         const p1 = pointers.get(ids[0]);
         const p2 = pointers.get(ids[1]);

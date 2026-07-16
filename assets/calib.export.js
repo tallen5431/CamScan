@@ -11,6 +11,15 @@ window.CalibExport = (function(){
     return a.mm_per_px || fallback || (data && data.mm_per_px) || 0;
   }
 
+  // Neutralize spreadsheet formula injection: a cell beginning with = + - @ (or a
+  // leading tab/CR) is executed as a formula by Excel/Sheets/LibreOffice on open, so
+  // prefix a single quote. Also RFC-4180 double-quote escaping for the quoted field.
+  function _csvSafe(s){
+    s = String(s == null ? '' : s);
+    if(/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return s.replace(/"/g, '""');
+  }
+
   // Resolve the app's request path prefix (from Dash config) so API calls work whether
   // the app is served at "/" or behind a reverse proxy at "/somepath/".
   function _apiUrl(path){
@@ -126,7 +135,7 @@ window.CalibExport = (function(){
         csv += `Angle,${label},${ang.toFixed(2)},degrees,,,\n`;
 
       }else if(a.type === 'note'){
-        const text = (a.text || '').replace(/"/g, '""');  // Escape quotes
+        const text = _csvSafe(a.text);  // escape quotes + block formula injection
         csv += `Note,${label},,,,,"${text}"\n`;
       }
     }
@@ -165,10 +174,13 @@ window.CalibExport = (function(){
         else geometry.push({ type:'line', x1:a.a[0], y1:a.a[1], x2:a.b[0], y2:a.b[1], mm_per_px:s });
       }else if(a.type === 'circle'){
         if(plane){
-          // Project the centre; approximate the planar radius from a projected rim
-          // point (a circle on a tilted plane is an ellipse — this is first-order).
-          const c=P(a.center[0], a.center[1]), rim=P(a.center[0]+a.radius, a.center[1]);
-          geometry.push({ type:'circle', center_x:c[0], center_y:c[1], radius_px:Math.hypot(rim[0]-c[0], rim[1]-c[1]), mm_per_px:1 });
+          // Position the centre on the rectified plane (so it sits correctly among the
+          // perspective-projected lines), but size the radius with the SAME uniform
+          // scale used everywhere the circle is shown and measured (canvas, PNG, CSV,
+          // JSON). This keeps the exported diameter equal to the number the user saw.
+          // (A true tilt-corrected hole is an ellipse — that is a separate enhancement.)
+          const c=P(a.center[0], a.center[1]);
+          geometry.push({ type:'circle', center_x:c[0], center_y:c[1], radius_px:a.radius*s, mm_per_px:1 });
         }else if(Circles){ const c = Circles.circleToJSON(a, data, 'mm'); c.mm_per_px = s; geometry.push(c); }
       }else if(a.type === 'rectangle'){
         const [x1, y1, x2, y2] = a.rect;
