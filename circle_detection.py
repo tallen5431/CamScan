@@ -314,8 +314,28 @@ def export_to_dxf(
     doc.units = ezdxf.units.MM
     doc.header['$INSUNITS'] = 4  # 4 = millimeters in AutoCAD
 
+    # Create layers up front with distinct ACI colors so entities are filterable and
+    # visually separable by type in CAD (they defaulted to white/color-7 before).
+    layer_colors = {
+        'LINES': 3,       # green
+        'CIRCLES': 1,     # red (holes)
+        'ELLIPSES': 1,    # red (holes)
+        'RECTANGLES': 5,  # blue
+        'POLYLINES': 4,   # cyan
+        'ANGLES': 6,      # magenta
+        'NOTES': 2,       # yellow
+        'DIMTEXT': 2,     # yellow
+        'MARKER': 8,      # grey (reference)
+    }
+    for _name, _color in layer_colors.items():
+        if _name not in doc.layers:
+            doc.layers.add(_name, color=_color)
+
     def _flip_y(y_px: float) -> float:
         return (image_height_px - y_px) if image_height_px else y_px
+
+    def _layer(item, default):
+        return item.get('layer') or default
 
     for item in geometry:
         # Per-item scale wins over the request default so multi-marker exports are correct.
@@ -334,27 +354,44 @@ def export_to_dxf(
                 cx = item["center_x"] * s
                 cy = _flip_y(item["center_y"]) * s
                 r = item["radius_px"] * s
-                msp.add_circle((cx, cy), r, dxfattribs={'layer': 'CIRCLES'})
+                msp.add_circle((cx, cy), r, dxfattribs={'layer': _layer(item, 'CIRCLES')})
 
             elif itype == "line":
                 x1 = item["x1"] * s
                 y1 = _flip_y(item["y1"]) * s
                 x2 = item["x2"] * s
                 y2 = _flip_y(item["y2"]) * s
-                msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': 'LINES'})
+                msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': _layer(item, 'LINES')})
 
             elif itype == "rectangle":
                 x1 = item["x1"] * s
                 x2 = item["x2"] * s
                 y1 = _flip_y(item["y1"]) * s
                 y2 = _flip_y(item["y2"]) * s
-                points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)]
-                msp.add_lwpolyline(points, dxfattribs={'layer': 'RECTANGLES'})
+                # Closed LWPOLYLINE so the profile is directly extrudable in CAD
+                # (a duplicate coincident vertex is NOT a closed profile).
+                points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+                msp.add_lwpolyline(points, close=True, dxfattribs={'layer': _layer(item, 'RECTANGLES')})
 
             elif itype == "polyline":
                 points = [(p[0] * s, _flip_y(p[1]) * s) for p in item.get("points", [])]
                 if points:
-                    msp.add_lwpolyline(points, dxfattribs={'layer': 'POLYLINES'})
+                    msp.add_lwpolyline(points, close=bool(item.get("closed")),
+                                       dxfattribs={'layer': _layer(item, 'POLYLINES')})
+
+            elif itype == "text":
+                tx = item["x"] * s
+                ty = _flip_y(item["y"]) * s
+                h = float(item.get("height", 3.0)) * s
+                if h <= 0:
+                    h = 2.5
+                t = msp.add_text(str(item.get("text", "")),
+                                 dxfattribs={'layer': _layer(item, 'DIMTEXT'), 'height': h})
+                # set_placement across ezdxf versions; fall back to the raw insert point.
+                try:
+                    t.set_placement((tx, ty))
+                except Exception:
+                    t.dxf.insert = (tx, ty)
         except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"[DXF Export] Skipping malformed {item.get('type', '?')} item: {e}")
             continue

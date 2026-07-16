@@ -40,17 +40,23 @@ Tools (toolbar):
   - Path: click points, then double-click or press Enter (or the ✓ button) to finish.
   - Circle: drag the centre to move, drag the ring to resize.
 Keyboard: 0 Pan · 1 Select · 2 Measure · 3 Path · 4 Area · 5 Angle · 6 Circle ·
-  7 3-Point · 8 Note · Enter finish path · Esc cancel · +/- zoom · Space to pan.
+  7 3-Point · 8 Note · Enter finish path · Esc cancel · +/- zoom · Space to pan ·
+  Ctrl+Z undo · Ctrl+Shift+Z redo · Delete remove selected · C copy selected value.
 
 --------------------------------------------------------------------------------
 EXPORT (for models)
 --------------------------------------------------------------------------------
 Download menu:
   PNG   annotated image
-  JSON  full calibration + measurement data
+  JSON  full calibration + measurement data (incl. the perspective homography)
   CSV   spreadsheet of every measurement (mm + selected unit)
   DXF   CAD geometry (mm, Y-axis oriented like the photo) for AutoCAD / FreeCAD /
-        Fusion 360 / etc. Requires the ezdxf package.
+        Fusion 360 / etc. Requires the ezdxf package. Rectangles/areas export as
+        CLOSED (directly extrudable) profiles; every measurement's value is written
+        as text; angles and notes are included; entities are split onto colored
+        layers (CIRCLES / LINES / RECTANGLES / POLYLINES / ANGLES / NOTES / DIMTEXT).
+  SVG   vector geometry in real millimetres — imports into Illustrator / Inkscape /
+        Fusion and most laser cutters. Generated in-browser (no ezdxf needed).
 
 --------------------------------------------------------------------------------
 ARTIFACTS in /uploads

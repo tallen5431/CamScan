@@ -824,7 +824,11 @@ window.CalibUI = (function(){
     saveDXF.innerHTML = '<span class="icon">📐</span><span>Save DXF (CAD Format)</span>';
     saveDXF.onclick = async () => { if (overlay.saveDXF) await overlay.saveDXF(); saveMenu.classList.remove('active'); };
 
-    saveMenu.append(savePNG, saveJSON, saveCSV, saveDXF, saveBoth);
+    const saveSVG = document.createElement('button');
+    saveSVG.innerHTML = '<span class="icon">🖋️</span><span>Save SVG (Vector, mm)</span>';
+    saveSVG.onclick = () => { if (overlay.saveSVG) overlay.saveSVG(); saveMenu.classList.remove('active'); };
+
+    saveMenu.append(savePNG, saveJSON, saveCSV, saveDXF, saveSVG, saveBoth);
     downloadSection.append(quickDownload, download, saveMenu);
 
     download.onclick = () => {

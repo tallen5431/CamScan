@@ -169,11 +169,20 @@ window.CalibExport = (function(){
     // Image point -> DXF coord in plane mm, CAD Y-up (negate the image-down Y).
     const P = (x, y) => { const m = M.project(ctx, x, y); return [m[0], -m[1]]; };
 
+    const fmt = v => String(Math.round(v*1000)/1000);
+    // Emit a DIMTEXT value label at an image-space anchor (projected in plane mode).
+    // Height is authored so it lands ~3 mm tall after the backend applies mm_per_px.
+    const emitText = (ix, iy, text, s, layer) => {
+      if(plane){ const m = M.project(ctx, ix, iy); geometry.push({ type:'text', x:m[0], y:-m[1], text, height:3, mm_per_px:1, layer: layer||'DIMTEXT' }); }
+      else { const sc = s || fallback || 1; geometry.push({ type:'text', x:ix, y:iy, text, height: 3/sc, mm_per_px:sc, layer: layer||'DIMTEXT' }); }
+    };
+
     for(const a of store.items){
       const s = _scaleFor(a, data, fallback) || fallback;
       if(a.type === 'segment'){
         if(plane){ const A=P(a.a[0],a.a[1]), B=P(a.b[0],a.b[1]); geometry.push({ type:'line', x1:A[0], y1:A[1], x2:B[0], y2:B[1], mm_per_px:1 }); }
         else geometry.push({ type:'line', x1:a.a[0], y1:a.a[1], x2:a.b[0], y2:a.b[1], mm_per_px:s });
+        emitText((a.a[0]+a.b[0])/2, (a.a[1]+a.b[1])/2, `${fmt(M.length(ctx, a.a[0],a.a[1], a.b[0],a.b[1]))} mm`, s);
       }else if(a.type === 'circle'){
         if(plane){
           // Position the centre on the rectified plane (so it sits correctly among the
@@ -184,13 +193,27 @@ window.CalibExport = (function(){
           const c=P(a.center[0], a.center[1]);
           geometry.push({ type:'circle', center_x:c[0], center_y:c[1], radius_px:a.radius*s, mm_per_px:1 });
         }else if(Circles){ const c = Circles.circleToJSON(a, data, 'mm'); c.mm_per_px = s; geometry.push(c); }
+        emitText(a.center[0], a.center[1], `⌀ ${fmt(2*a.radius*s)} mm`, s);
       }else if(a.type === 'rectangle'){
         const [x1, y1, x2, y2] = a.rect;
-        if(plane){ const q=[[x1,y1],[x2,y1],[x2,y2],[x1,y2]].map(p=>P(p[0],p[1])); geometry.push({ type:'polyline', points:[...q, q[0]], mm_per_px:1 }); }
+        // Closed profile so CAD can extrude it directly.
+        if(plane){ const q=[[x1,y1],[x2,y1],[x2,y2],[x1,y2]].map(p=>P(p[0],p[1])); geometry.push({ type:'polyline', points:q, closed:true, mm_per_px:1 }); }
         else geometry.push({ type:'rectangle', x1, y1, x2, y2, mm_per_px:s });
+        const rm=M.rect(ctx, x1,y1,x2,y2);
+        emitText((x1+x2)/2, y1, `${fmt(rm.w)}×${fmt(rm.h)} mm`, s);
       }else if(a.type === 'polyline'){
-        if(plane){ geometry.push({ type:'polyline', points:(a.pts||[]).map(p=>P(p[0],p[1])), mm_per_px:1 }); }
-        else geometry.push({ type:'polyline', points:a.pts || [], mm_per_px:s });
+        const pts = a.pts || [];
+        if(plane){ geometry.push({ type:'polyline', points:pts.map(p=>P(p[0],p[1])), mm_per_px:1 }); }
+        else geometry.push({ type:'polyline', points:pts, mm_per_px:s });
+        if(pts.length){ const mid=pts[Math.floor(pts.length/2)]; emitText(mid[0], mid[1], `${fmt(M.polyline(ctx, pts))} mm`, s); }
+      }else if(a.type === 'angle'){
+        // Two legs as lines on the ANGLES layer + the angle value as text at the vertex.
+        const leg=(p,q)=>{ if(plane){ const A=P(p[0],p[1]), B=P(q[0],q[1]); geometry.push({ type:'line', x1:A[0],y1:A[1],x2:B[0],y2:B[1], mm_per_px:1, layer:'ANGLES' }); }
+                           else geometry.push({ type:'line', x1:p[0],y1:p[1],x2:q[0],y2:q[1], mm_per_px:s, layer:'ANGLES' }); };
+        leg(a.v, a.a); leg(a.v, a.b);
+        emitText(a.v[0], a.v[1], `${Math.round(M.angle(ctx, a.a, a.v, a.b)*100)/100}°`, s, 'ANGLES');
+      }else if(a.type === 'note'){
+        emitText(a.p[0], a.p[1], String(a.text||'Note'), s, 'NOTES');
       }
     }
     return { geometry, mm_per_px: plane ? 1 : fallback, image_height: plane ? 0 : (opts.image_height || 0), plane };
@@ -230,5 +253,63 @@ window.CalibExport = (function(){
     }
   }
 
-  return { exportPNG, exportJSON, exportCSV, exportDXF, _buildDXFRequest };
+  // Client-side SVG export in real millimetres. Reuses the same perspective-aware
+  // projection as the DXF path (plane-mm when a homography is active), needs no backend,
+  // and imports directly into Illustrator/Inkscape/Fusion and most laser cutters.
+  // Build the SVG string. Exposed for testing.
+  function _buildSVG(data, store, opts){
+    opts = opts || {};
+    const fallback = opts.mm_per_px || (data && data.mm_per_px) || 1.0;
+    const M = window.CalibMeasure;
+    const ctx = M.context(data, fallback, opts.allowHomography !== false);
+    const plane = ctx.corrected;
+    const C = (window.CalibDraw && window.CalibDraw.colors) || {};
+    // Point -> mm, SVG orientation (Y down). Plane mode uses the homography (which is
+    // already X-right/Y-down); pixel mode is px*scale. No CAD Y-flip here.
+    const P = (x, y, s) => { if(plane){ const m = M.project(ctx, x, y); return [m[0], m[1]]; } return [x*s, y*s]; };
+    const els = []; let minX=1e18, minY=1e18, maxX=-1e18, maxY=-1e18;
+    const bump = (x,y) => { if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; };
+    const n = v => (Math.round(v*1000)/1000);
+
+    for(const a of store.items){
+      const s = _scaleFor(a, data, fallback) || fallback;
+      if(a.type === 'segment'){
+        const A=P(a.a[0],a.a[1],s), B=P(a.b[0],a.b[1],s); bump(A[0],A[1]); bump(B[0],B[1]);
+        els.push(`<line x1="${n(A[0])}" y1="${n(A[1])}" x2="${n(B[0])}" y2="${n(B[1])}" stroke="${C.segment||'#009e73'}" stroke-width="0.3"/>`);
+      }else if(a.type === 'rectangle'){
+        const [x1,y1,x2,y2]=a.rect; const q=[[x1,y1],[x2,y1],[x2,y2],[x1,y2]].map(p=>P(p[0],p[1],s)); q.forEach(p=>bump(p[0],p[1]));
+        els.push(`<polygon points="${q.map(p=>n(p[0])+','+n(p[1])).join(' ')}" fill="none" stroke="${C.rectangle||'#0072b2'}" stroke-width="0.3"/>`);
+      }else if(a.type === 'polyline'){
+        const q=(a.pts||[]).map(p=>P(p[0],p[1],s)); if(!q.length) continue; q.forEach(p=>bump(p[0],p[1]));
+        els.push(`<polyline points="${q.map(p=>n(p[0])+','+n(p[1])).join(' ')}" fill="none" stroke="${C.polyline||'#e69f00'}" stroke-width="0.3"/>`);
+      }else if(a.type === 'angle'){
+        const V=P(a.v[0],a.v[1],s), A=P(a.a[0],a.a[1],s), B=P(a.b[0],a.b[1],s); [V,A,B].forEach(p=>bump(p[0],p[1]));
+        els.push(`<polyline points="${n(A[0])+','+n(A[1])} ${n(V[0])+','+n(V[1])} ${n(B[0])+','+n(B[1])}" fill="none" stroke="${C.angle||'#cc79a7'}" stroke-width="0.3"/>`);
+      }else if(a.type === 'circle'){
+        const c=P(a.center[0],a.center[1],s), r=a.radius*s; bump(c[0]-r,c[1]-r); bump(c[0]+r,c[1]+r);
+        els.push(`<circle cx="${n(c[0])}" cy="${n(c[1])}" r="${n(r)}" fill="none" stroke="${C.circle||'#56b4e9'}" stroke-width="0.3"/>`);
+      }
+    }
+    if(!els.length) return null;
+    const pad=5; minX-=pad; minY-=pad; maxX+=pad; maxY+=pad;
+    const w=n(maxX-minX), h=n(maxY-minY);
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>\n`+
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="${n(minX)} ${n(minY)} ${w} ${h}">\n`+
+      els.join('\n') + `\n</svg>\n`;
+    return svg;
+  }
+
+  function exportSVG(data, store, opts){
+    const svg = _buildSVG(data, store, opts);
+    if(!svg){ alert('Nothing to export to SVG — draw a line, rectangle, circle or polyline first.'); return false; }
+    const blob = new Blob([svg], {type:'image/svg+xml'});
+    const link = document.createElement('a');
+    link.download = 'geometry.svg';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    return true;
+  }
+
+  return { exportPNG, exportJSON, exportCSV, exportDXF, exportSVG, _buildDXFRequest, _buildSVG };
 })();
