@@ -373,6 +373,7 @@
         c.drawImage(this.img,0,0);
         if(this.opts.showGrid) Draw.drawGrid(c, this.img.width, this.img.height);
         if(this.opts.showMarkers) Draw.drawMarkers(c, this.canvas, this.data, this.opts.linePx);
+        if(Draw.resetLabels) Draw.resetLabels();   // start a fresh label-placement frame
         this._drawAnnotations();
         this._drawPreview();
 
@@ -382,44 +383,49 @@
       _drawAnnotations(){
         if(!this.opts.showAnn) return;
         const c=this.ctx, unit=Units.get(this.opts.units);
+        const C=Draw.colors;
         const dotR = Draw.px(this.canvas,8), linePx=Draw.px(this.canvas,this.opts.linePx);
+        // Selected shapes render in a high-contrast white and a bolder line so the
+        // selection is unmistakable regardless of the base tool color.
+        const selW = linePx*1.7;
         for(const a of this.ann.items){
           const sel=(a.id===this.ann.selectedId);
           if(a.type==='segment'){
             const val=unit.fromMM(Measure.length(this._measureCtx(a), a.a[0],a.a[1], a.b[0],a.b[1]));
-            c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"lime";
+            c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.segment;
             c.beginPath(); c.moveTo(a.a[0],a.a[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
-            c.fillStyle=sel?"rgba(255,170,0,1)":"lime";
+            c.fillStyle=sel?C.selected:C.segment;
             for(const [x,y] of [a.a,a.b]){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
             const mid=[(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale, C.segment);
           } else if(a.type==='note'){
-            const [tx,ty]=a.p; c.fillStyle=sel?"rgba(255,170,0,1)":"deepskyblue";
+            const [tx,ty]=a.p; c.fillStyle=sel?C.selected:C.note;
             c.beginPath(); c.arc(tx,ty,Draw.px(this.canvas,9),0,Math.PI*2); c.fill();
             c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
             if(a.text){ const f=Math.round(18*this.opts.labelScale); const pad=8*this.opts.labelScale; const lx=tx+14;
               c.font=Draw.font(f); c.textAlign="left"; c.textBaseline="middle";
               const boxW=c.measureText(a.text).width + 2*pad, boxH=f+2*pad, ly=ty-boxH/2;
-              c.fillStyle="rgba(0,0,0,.7)"; c.fillRect(lx,ly,boxW,boxH);
+              c.fillStyle="rgba(0,0,0,.72)"; c.fillRect(lx,ly,boxW,boxH);
+              c.strokeStyle="rgba(255,255,255,.35)"; c.lineWidth=Draw.px(this.canvas,1.5); c.strokeRect(lx,ly,boxW,boxH);
               c.fillStyle="#fff"; c.fillText(a.text, lx+pad, ty);
             }
           } else if(a.type==='polyline'){
             const pts=a.pts||[]; if(pts.length<2) continue;
             const val=unit.fromMM(Measure.polyline(this._measureCtx(a), pts));
-            c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange";
+            c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.polyline;
             c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke();
-            c.fillStyle=sel?"rgba(255,170,0,1)":"orange";
+            c.fillStyle=sel?C.selected:C.polyline;
             for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,Draw.px(this.canvas,8),0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
-            const mid=pts[Math.floor(pts.length/2)]; Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+            const mid=pts[Math.floor(pts.length/2)]; Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale, C.polyline);
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
             const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2); const wmm=rm.w, hmm=rm.h, amm=rm.area;
-            c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange"; c.strokeRect(x1,y1,x2-x1,y2-y1);
-            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale);
+            c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.rectangle; c.strokeRect(x1,y1,x2-x1,y2-y1);
+            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale, C.rectangle);
           } else if(a.type==='angle'){
-            c.lineWidth=linePx; c.strokeStyle=sel?"rgba(255,170,0,1)":"orange";
+            c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.angle;
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
-            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale);
+            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale, C.angle);
           } else if(a.type==='circle'){
             // Shared with the PNG exporter so the live canvas and the export never
             // drift (line thickness, label size/position all come from opts here).

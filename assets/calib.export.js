@@ -32,20 +32,22 @@ window.CalibExport = (function(){
   function _drawAnnotations(ctx, canvas, data, store, unitsKey, labelScale=1.4, linePx=3, fallbackScale=0, allowHomography=true){
     const unit = U().get(unitsKey);
     const Draw = D();
+    const C = Draw.colors || {};
     const M = window.CalibMeasure;
     const dotR = Draw.px(canvas, 8), line = Draw.px(canvas, linePx);
     const Circles = window.CalibCircles;
     // Same perspective-aware measurement as the live canvas, so exports match.
     const mctx = a => M.context(data, _scaleFor(a, data, fallbackScale), allowHomography);
+    if(Draw.resetLabels) Draw.resetLabels();   // fresh label-placement frame for the export
 
     for(const a of store.items){
       if(a.type==='segment'){
         const val = unit.fromMM(M.length(mctx(a), a.a[0],a.a[1], a.b[0],a.b[1]));
-        ctx.lineWidth=line; ctx.strokeStyle="lime";
+        ctx.lineWidth=line; ctx.strokeStyle=C.segment;
         ctx.beginPath(); ctx.moveTo(a.a[0],a.a[1]); ctx.lineTo(a.b[0],a.b[1]); ctx.stroke();
-        ctx.fillStyle="lime"; for(const [x,y] of [a.a,a.b]){ ctx.beginPath(); ctx.arc(x,y,dotR,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke(); }
+        ctx.fillStyle=C.segment; for(const [x,y] of [a.a,a.b]){ ctx.beginPath(); ctx.arc(x,y,dotR,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke(); }
         const mid=[(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
-        Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale);
+        Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale, C.segment);
       }else if(a.type==='circle'){
         if(Circles){
           Circles.drawCircle(ctx, canvas, a, data, unitsKey,
@@ -53,21 +55,21 @@ window.CalibExport = (function(){
         }
       }else if(a.type==='note'){
         const tx=a.p[0], ty=a.p[1];
-        ctx.fillStyle="deepskyblue"; ctx.beginPath(); ctx.arc(tx,ty,Draw.px(canvas,9),0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke();
-        if(a.text){ const pad=8*labelScale, f=Math.round(18*labelScale); ctx.font=Draw.font(f); ctx.textAlign="left"; ctx.textBaseline="middle"; const boxW=ctx.measureText(a.text).width + 2*pad, boxH=f+2*pad; const lx=tx+14, ly=ty-boxH/2; ctx.fillStyle="rgba(0,0,0,.7)"; ctx.fillRect(lx,ly,boxW,boxH); ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.lineWidth=Draw.px(canvas,1.5); ctx.strokeRect(lx,ly,boxW,boxH); ctx.fillStyle="#fff"; ctx.fillText(a.text, lx+pad, ly+boxH/2); }
+        ctx.fillStyle=C.note; ctx.beginPath(); ctx.arc(tx,ty,Draw.px(canvas,9),0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke();
+        if(a.text){ const pad=8*labelScale, f=Math.round(18*labelScale); ctx.font=Draw.font(f); ctx.textAlign="left"; ctx.textBaseline="middle"; const boxW=ctx.measureText(a.text).width + 2*pad, boxH=f+2*pad; const lx=tx+14, ly=ty-boxH/2; ctx.fillStyle="rgba(0,0,0,.72)"; ctx.fillRect(lx,ly,boxW,boxH); ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.lineWidth=Draw.px(canvas,1.5); ctx.strokeRect(lx,ly,boxW,boxH); ctx.fillStyle="#fff"; ctx.fillText(a.text, lx+pad, ly+boxH/2); }
       }else if(a.type==='polyline'){
         const pts=a.pts||[]; if(pts.length<2) continue;
         const val=unit.fromMM(M.polyline(mctx(a), pts));
-        ctx.lineWidth=line; ctx.strokeStyle="orange"; ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke();
-        ctx.fillStyle="orange"; for(const [x,y] of pts){ ctx.beginPath(); ctx.arc(x,y,dotR,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke(); }
-        const mid = pts[Math.floor(pts.length/2)]; Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale);
+        ctx.lineWidth=line; ctx.strokeStyle=C.polyline; ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke();
+        ctx.fillStyle=C.polyline; for(const [x,y] of pts){ ctx.beginPath(); ctx.arc(x,y,dotR,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke(); }
+        const mid = pts[Math.floor(pts.length/2)]; Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale, C.polyline);
       }else if(a.type==='rectangle'){
         const [x1,y1,x2,y2]=a.rect; const rm=M.rect(mctx(a), x1,y1,x2,y2); const wmm=rm.w, hmm=rm.h, amm=rm.area;
-        ctx.lineWidth=line; ctx.strokeStyle="orange"; ctx.strokeRect(x1,y1,x2-x1,y2-y1);
-        Draw.boxLabel(ctx, canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, labelScale);
+        ctx.lineWidth=line; ctx.strokeStyle=C.rectangle; ctx.strokeRect(x1,y1,x2-x1,y2-y1);
+        Draw.boxLabel(ctx, canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, labelScale, C.rectangle);
       }else if(a.type==='angle'){
-        ctx.lineWidth=line; ctx.strokeStyle="orange"; ctx.beginPath(); ctx.moveTo(a.v[0],a.v[1]); ctx.lineTo(a.a[0],a.a[1]); ctx.moveTo(a.v[0],a.v[1]); ctx.lineTo(a.b[0],a.b[1]); ctx.stroke();
-        const ang=M.angle(mctx(a), a.a, a.v, a.b); Draw.boxLabel(ctx, canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, labelScale);
+        ctx.lineWidth=line; ctx.strokeStyle=C.angle; ctx.beginPath(); ctx.moveTo(a.v[0],a.v[1]); ctx.lineTo(a.a[0],a.a[1]); ctx.moveTo(a.v[0],a.v[1]); ctx.lineTo(a.b[0],a.b[1]); ctx.stroke();
+        const ang=M.angle(mctx(a), a.a, a.v, a.b); Draw.boxLabel(ctx, canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, labelScale, C.angle);
       }
     }
   }

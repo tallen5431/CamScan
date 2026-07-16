@@ -61,11 +61,13 @@ window.CalibCircles = (function(){
     const selected = !!opts.selected;
     const labelScale = opts.labelScale || 1.35;
     const linePx = (opts.linePx != null) ? opts.linePx : 3;
-    const color = selected ? 'rgba(255, 170, 0, 1)' : 'cyan';
+    const C = D().colors || {};
+    const color = selected ? (C.selected || '#fff') : (C.circle || 'cyan');
 
-    // Circle outline + solid diameter line (honors the Line-Thickness slider).
+    // Circle outline + solid diameter line (honors the Line-Thickness slider). A
+    // selected circle draws bolder so the selection reads clearly.
     ctx.strokeStyle = color;
-    ctx.lineWidth = D().px(canvas, linePx);
+    ctx.lineWidth = D().px(canvas, selected ? linePx*1.7 : linePx);
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.stroke();
 
@@ -78,8 +80,8 @@ window.CalibCircles = (function(){
     // Labels stacked above the circle (honors the Text-Size slider). Offset the
     // second label by a full box height so they never overlap.
     const boxH = Math.round(22 * labelScale) + 20 * labelScale;
-    D().boxLabel(ctx, canvas, cx, cy - r - 15, `⌀ ${diameter_display.toFixed(3)} ${unit.label}`, labelScale);
-    D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, `A ${area_display.toFixed(3)} ${unit.areaLabel}`, labelScale);
+    D().boxLabel(ctx, canvas, cx, cy - r - 15, `⌀ ${diameter_display.toFixed(3)} ${unit.label}`, labelScale, C.circle);
+    D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, `A ${area_display.toFixed(3)} ${unit.areaLabel}`, labelScale, C.circle);
   }
 
   // Export circle to JSON
