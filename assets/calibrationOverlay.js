@@ -215,8 +215,10 @@
             if(this.opts.mode==='setscale' && this.selectedPoints.length===2){
               const [a,b]=this.selectedPoints;
               const px=Math.hypot(b[0]-a[0], b[1]-a[1]);
-              this.selectedPoints=[];
-              this._promptScale(px);
+              const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
+              // Keep the two points drawn while the user types the real length so the
+              // line stays visible behind the inline input (the old prompt() covered it).
+              this._promptScale(px, mid);
               return this.requestDraw();
             }
             if(this.opts.mode==='segment' && this.selectedPoints.length===2){
@@ -256,6 +258,7 @@
           // Undo/redo chords (handled before the modifier guard below).
           if((e.ctrlKey||e.metaKey) && k==='z'){ e.preventDefault(); if(e.shiftKey) this.redo(); else this.undo(); return; }
           if((e.ctrlKey||e.metaKey) && k==='y'){ e.preventDefault(); this.redo(); return; }
+          if((e.ctrlKey||e.metaKey) && k==='c'){ if(this.ann && this.ann.selectedId!=null){ e.preventDefault(); this._copySelected(); return; } }
           // Don't hijack native browser/OS shortcuts (Ctrl+0 reset-zoom, Cmd+1 tab
           // switch, Ctrl+± page zoom, …). Only plain / Shift keys drive the tools.
           if(e.ctrlKey||e.metaKey||e.altKey) return;
@@ -272,6 +275,7 @@
           if(k==='enter') this.finishPolyline();
           if(k==='escape'){ this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
           if(k==='delete' || k==='backspace'){ e.preventDefault(); this.deleteSelected(); }
+          if(k==='c') this._copySelected();
           if(k==='+' || k==='=') this.zoomStep(1.2);
           if(k==='-' || k==='_') this.zoomStep(1/1.2);
         });
@@ -287,15 +291,22 @@
       }
 
       // --- helpers -------------------------------------------------------------
+      // Snap the point to the nearest marker corner OR existing annotation vertex
+      // within snapPx. Snapping to annotation endpoints is what makes chained /
+      // continuous dimensioning possible (start a new measurement exactly where a
+      // previous one ended). Returns the snapped point, or the original if none near.
       _maybeSnap(pt){
-        // Keep in case you want to re-enable later; default is precision (no snap)
         const tol = this.vp.pxToImg(this.opts.snapPx);
         let best=null, bestD=tol;
-        for(const m of (this.data?.markers||[])){
-          for(const p of (m.corners||[])){
-            const d=Math.hypot(pt[0]-p.x, pt[1]-p.y);
-            if(d<bestD){ bestD=d; best=[p.x,p.y]; }
-          }
+        const consider=(x,y)=>{ const d=Math.hypot(pt[0]-x, pt[1]-y); if(d<bestD){ bestD=d; best=[x,y]; } };
+        for(const m of (this.data?.markers||[])) for(const p of (m.corners||[])) consider(p.x, p.y);
+        for(const a of this.ann.items){
+          if(a.type==='segment'){ consider(a.a[0],a.a[1]); consider(a.b[0],a.b[1]); }
+          else if(a.type==='polyline'){ for(const q of (a.pts||[])) consider(q[0],q[1]); }
+          else if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; consider(x1,y1); consider(x2,y1); consider(x2,y2); consider(x1,y2); }
+          else if(a.type==='angle'){ consider(a.a[0],a.a[1]); consider(a.v[0],a.v[1]); consider(a.b[0],a.b[1]); }
+          else if(a.type==='circle'){ consider(a.center[0],a.center[1]); }
+          else if(a.type==='note'){ consider(a.p[0],a.p[1]); }
         }
         return best || pt;
       }
@@ -441,6 +452,13 @@
         if(this.selectedPoints.length===0 && !this.hover) return;
         const c=this.ctx, unit=Units.get(this.opts.units);
         const linePx=Draw.px(this.canvas,this.opts.linePx), dotR=Draw.px(this.canvas,8);
+        // Snap cursor: when snapping is on, ring the point the next click will land on
+        // (marker corner or an existing measurement's endpoint) so chaining is visible.
+        if(this.opts.snap && this.hover && this.opts.mode!=='pan' && this.opts.mode!=='select'){
+          c.save(); c.strokeStyle='rgba(0,212,255,.95)'; c.lineWidth=Draw.px(this.canvas,2);
+          c.beginPath(); c.arc(this.hover[0], this.hover[1], Draw.px(this.canvas,10), 0, Math.PI*2); c.stroke();
+          c.restore();
+        }
         c.fillStyle='orange'; c.strokeStyle='rgba(255,200,0,.9)'; c.lineWidth=linePx;
         for(const [x,y] of this.selectedPoints){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle='#000'; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
         const H=this.hover;
@@ -549,6 +567,25 @@
         return [0,0];
       }
 
+      // Precise value(s) of the currently-selected annotation, for the status readout
+      // and copy-to-clipboard. Reuses the same perspective-aware measurement path as
+      // the on-canvas labels so the readout matches exactly. Returns {label,text,copy}.
+      _selectedReadout(){
+        const a=this.ann.items.find(it=>it.id===this.ann.selectedId); if(!a) return null;
+        const unit=Units.get(this.opts.units), ctx=this._measureCtx(a);
+        if(a.type==='segment'){ const v=unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])); return {label:'Length', text:`${v.toFixed(3)} ${unit.label}`, copy:v.toFixed(3)}; }
+        if(a.type==='polyline'){ const v=unit.fromMM(Measure.polyline(ctx,a.pts||[])); return {label:'Path', text:`${v.toFixed(3)} ${unit.label}`, copy:v.toFixed(3)}; }
+        if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; const rm=Measure.rect(ctx,x1,y1,x2,y2); const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); return {label:'Rect', text:`${w.toFixed(3)}×${h.toFixed(3)} ${unit.label} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
+        if(a.type==='angle'){ const ang=Measure.angle(ctx,a.a,a.v,a.b); return {label:'Angle', text:`${ang.toFixed(2)}°`, copy:ang.toFixed(2)}; }
+        if(a.type==='circle'){ const scale=(a.mm_per_px||this.getScale()||0); const d=unit.fromMM(2*a.radius*scale); return {label:'⌀', text:`${d.toFixed(3)} ${unit.label}`, copy:d.toFixed(3)}; }
+        if(a.type==='note'){ return {label:'Note', text:(a.text||''), copy:(a.text||'')}; }
+        return null;
+      }
+      _copySelected(){
+        const rd=this._selectedReadout(); if(!rd) return;
+        try{ if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(rd.copy); }catch(e){}
+      }
+
       // After the calibration changes (cube size or manual scale), refresh the frozen
       // per-annotation scale so existing measurements update to the new reference.
       _rescaleAnnotations(){
@@ -612,15 +649,45 @@
       // Ask for the real length of a just-drawn line and set the working scale from it.
       // The UI may provide onNeedScaleInput(pixelLen, apply) for an inline field; otherwise
       // we fall back to a prompt(). The entered value is in the current display unit.
-      _promptScale(pixelLen){
+      _promptScale(pixelLen, mid){
         const unit=Units.get(this.opts.units);
-        const apply=(valStr)=>{
-          if(valStr==null) return;
-          const v=parseFloat(valStr);
-          if(v>0){ this.setManualScaleFromPixels(pixelLen, unit.toMM(v)); this.setMode('select'); }
+        const done=(valStr)=>{
+          this.selectedPoints=[]; this.hover=null;
+          if(valStr!=null){ const v=parseFloat(valStr); if(v>0){ this.setManualScaleFromPixels(pixelLen, unit.toMM(v)); this.setMode('select'); } }
+          this.requestDraw();
         };
-        if(typeof this.onNeedScaleInput==='function') this.onNeedScaleInput(pixelLen, apply, unit);
-        else apply(prompt(`Enter the real length of this line in ${unit.label}:`, ''));
+        if(typeof this.onNeedScaleInput==='function'){ this.onNeedScaleInput(pixelLen, done, unit, mid); return; }
+        this._inlineScaleInput(pixelLen, done, unit, mid);
+      }
+
+      // Floating inline field near the drawn line's midpoint for entering its real
+      // length. Replaces the native prompt(), which covered the line and was clumsy on
+      // mobile. done(valueStringOrNull) applies the value or cancels.
+      _inlineScaleInput(pixelLen, done, unit, mid){
+        const prev=document.getElementById('cal-scale-input'); if(prev) prev.remove();
+        const box=document.createElement('div'); box.id='cal-scale-input';
+        box.style.cssText='position:fixed;z-index:40;background:#0e0e0e;border:2px solid #00d4ff;border-radius:8px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;gap:6px;align-items:center;font:14px Segoe UI,system-ui,sans-serif;color:#eee;';
+        const lab=document.createElement('span'); lab.textContent='Line length:';
+        const inp=document.createElement('input'); inp.type='number'; inp.step='0.01'; inp.min='0'; inp.inputMode='decimal'; inp.placeholder='e.g. 25.4';
+        inp.style.cssText='width:96px;padding:6px;background:#181818;border:1px solid #2a2a2a;border-radius:6px;color:#eee;font:14px inherit;';
+        const us=document.createElement('span'); us.textContent=unit.label;
+        const ok=document.createElement('button'); ok.type='button'; ok.textContent='Set'; ok.style.cssText='padding:6px 12px;background:#00d4ff;color:#000;border:none;border-radius:6px;font-weight:600;cursor:pointer;';
+        const cancel=document.createElement('button'); cancel.type='button'; cancel.textContent='✕'; cancel.style.cssText='padding:6px 9px;background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:6px;cursor:pointer;';
+        box.append(lab,inp,us,ok,cancel); document.body.appendChild(box);
+        // Position near the line midpoint (fall back to the viewport centre).
+        try{
+          const r=this.canvas.getBoundingClientRect();
+          const [dx,dy]=this.vp.imageToCanvas(mid[0],mid[1]);
+          const cssX=r.left + dx*(r.width/Math.max(1,this.canvas.width));
+          const cssY=r.top  + dy*(r.height/Math.max(1,this.canvas.height));
+          box.style.left=Math.max(8, Math.min(window.innerWidth-box.offsetWidth-8, cssX-box.offsetWidth/2))+'px';
+          box.style.top =Math.max(8, Math.min(window.innerHeight-box.offsetHeight-8, cssY+16))+'px';
+        }catch(e){ box.style.left='50%'; box.style.top='40%'; box.style.transform='translate(-50%,-50%)'; }
+        const finish=(val)=>{ box.remove(); done(val); };
+        ok.onclick=()=>finish(inp.value);
+        cancel.onclick=()=>finish(null);
+        inp.addEventListener('keydown',(e)=>{ e.stopPropagation(); if(e.key==='Enter'){ e.preventDefault(); finish(inp.value); } else if(e.key==='Escape'){ e.preventDefault(); finish(null); } });
+        setTimeout(()=>{ inp.focus(); if(inp.select) inp.select(); },0);
       }
 
       // Live guidance for the active tool, e.g. "Angle — click point 2 of 3", so a
@@ -645,10 +712,14 @@
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
         const zoom=`Zoom: ${Math.round(this.vp.k*100)}%`;
         const anns=`Annotations: ${this.ann.items.length}`;
-        const hint=this._toolHint();
-        const hintPart = hint ? `${hint} | ` : '';
+        // When an item is selected, lead with its precise value (+ copy hint) instead
+        // of the generic tool step-hint.
+        const rd=this._selectedReadout();
+        const lead = rd ? `🔎 ${rd.label}: ${rd.text} · C to copy` : this._toolHint();
+        const hintPart = lead ? `${lead} | ` : '';
         if(s<=0){
-          el.innerHTML = `${hintPart}⚠️ <b>Not calibrated</b> — no reference square found. Use “Set scale” to draw a line of known length. &nbsp;|&nbsp; ${zoom} &nbsp;|&nbsp; ${anns}`;
+          el.innerHTML = `${hintPart}⚠️ <b>Not calibrated</b> — no reference square found. <a href="#" id="cal-cal-link" style="color:#00d4ff;font-weight:600">Set a scale</a> by drawing a line of known length. &nbsp;|&nbsp; ${zoom} &nbsp;|&nbsp; ${anns}`;
+          const lnk=el.querySelector('#cal-cal-link'); if(lnk) lnk.onclick=(e)=>{ e.preventDefault(); this.setMode('setscale'); };
           return;
         }
         // Flag a marker size restored from a previous photo so a stale remembered
