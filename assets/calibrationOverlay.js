@@ -100,7 +100,7 @@
       }
 
       // --- wiring --------------------------------------------------------------
-      requestDraw(){ if(this._rAF) return; this._rAF=requestAnimationFrame(()=>{ this._rAF=0; this.redraw(); }); }
+      requestDraw(){ if(this._destroyed || this._rAF) return; this._rAF=requestAnimationFrame(()=>{ this._rAF=0; if(!this._destroyed) this.redraw(); }); }
       setMode(m){ this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
@@ -157,7 +157,7 @@
           this.opts.mode==='pan' || this._spacePan || ev.shiftKey || ev.button===1 || ev.button===2
         );
 
-        G.attach(this.canvas, this.vp, {
+        this._gestureDetach = G.attach(this.canvas, this.vp, {
           canPanStart,
           onTransform: ()=>this.requestDraw(),
           onHover: (pt)=>{ this.hover = this.opts.snap ? this._maybeSnap(pt) : pt; if(this.selectedPoints.length) this.requestDraw(); },
@@ -180,7 +180,7 @@
               this._redoStack.length=0;
               this._dragPushed=true;
             }
-            this._updateDrag(this.opts.snap ? this._maybeSnap(pt) : pt);
+            this._updateDrag(this.opts.snap ? this._maybeSnap(pt, this.drag && this.drag.item) : pt);
             this.requestDraw();
           },
           onUp: ()=>{ this.drag=null; },
@@ -246,13 +246,15 @@
         });
 
         // Double-click / double-tap finishes an in-progress polyline.
-        this.canvas.addEventListener('dblclick', (e)=>{
+        this._onDblClick = (e)=>{
           e.preventDefault();
           if(this.opts.mode==='polyline') this.finishPolyline();
-        });
+        };
+        this.canvas.addEventListener('dblclick', this._onDblClick);
 
-        // keyboard: add Space-to-pan
-        window.addEventListener('keydown', (e)=>{
+        // keyboard: add Space-to-pan. Handlers are stored on `this` so destroy() can
+        // remove them — otherwise every replaced overlay leaks 4 live window listeners.
+        this._onKeyDown = (e)=>{
           if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
           const k=e.key.toLowerCase();
           // Undo/redo chords (handled before the modifier guard below).
@@ -278,16 +280,38 @@
           if(k==='c') this._copySelected();
           if(k==='+' || k==='=') this.zoomStep(1.2);
           if(k==='-' || k==='_') this.zoomStep(1/1.2);
-        });
-        window.addEventListener('keyup', (e)=>{ if(e.key===' ') this._spacePan=false; });
+        };
+        window.addEventListener('keydown', this._onKeyDown);
+
+        this._onKeyUp = (e)=>{ if(e.key===' ') this._spacePan=false; };
+        window.addEventListener('keyup', this._onKeyUp);
 
         // Orientation change → re-fit (the aspect changed). Plain resize → keep the
         // user's zoom/pan, just refresh the backing store so drawing stays crisp.
-        window.addEventListener('resize', ()=>{
+        this._onResize = ()=>{
           this.vp._updateBackingStore();
           this.requestDraw();
-        }, {passive:true});
-        window.addEventListener('orientationchange', ()=>{ this._layout(); }, {passive:true});
+        };
+        window.addEventListener('resize', this._onResize, {passive:true});
+        this._onOrient = ()=>{ this._layout(); };
+        window.addEventListener('orientationchange', this._onOrient, {passive:true});
+      }
+
+      // Tear down all global listeners + the gesture handlers and stop any pending
+      // redraw. The app's core loop replaces the #viewer subtree on every new upload,
+      // so without this each prior overlay (its decoded image, undo stacks and 4 window
+      // listeners) would leak permanently and keep reacting to keystrokes/resize.
+      destroy(){
+        if(this._destroyed) return;
+        this._destroyed=true;
+        try{ this._gestureDetach && this._gestureDetach(); }catch(e){}
+        window.removeEventListener('keydown', this._onKeyDown);
+        window.removeEventListener('keyup', this._onKeyUp);
+        window.removeEventListener('resize', this._onResize);
+        window.removeEventListener('orientationchange', this._onOrient);
+        if(this._onDblClick && this.canvas) this.canvas.removeEventListener('dblclick', this._onDblClick);
+        if(this._rAF){ cancelAnimationFrame(this._rAF); this._rAF=0; }
+        const box=document.getElementById('cal-scale-input'); if(box) box.remove();
       }
 
       // --- helpers -------------------------------------------------------------
@@ -295,12 +319,17 @@
       // within snapPx. Snapping to annotation endpoints is what makes chained /
       // continuous dimensioning possible (start a new measurement exactly where a
       // previous one ended). Returns the snapped point, or the original if none near.
-      _maybeSnap(pt){
+      // `excludeItem` (optional): the annotation currently being dragged. Its vertices are
+      // skipped so a grabbed endpoint never snaps back onto its own stale pre-drag
+      // coordinates — which otherwise froze fine (<snapPx) vertex adjustments while snap
+      // was on, the exact mode snapping is meant to serve.
+      _maybeSnap(pt, excludeItem){
         const tol = this.vp.pxToImg(this.opts.snapPx);
         let best=null, bestD=tol;
         const consider=(x,y)=>{ const d=Math.hypot(pt[0]-x, pt[1]-y); if(d<bestD){ bestD=d; best=[x,y]; } };
         for(const m of (this.data?.markers||[])) for(const p of (m.corners||[])) consider(p.x, p.y);
         for(const a of this.ann.items){
+          if(a===excludeItem) continue;
           if(a.type==='segment'){ consider(a.a[0],a.a[1]); consider(a.b[0],a.b[1]); }
           else if(a.type==='polyline'){ for(const q of (a.pts||[])) consider(q[0],q[1]); }
           else if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; consider(x1,y1); consider(x2,y1); consider(x2,y2); consider(x1,y2); }
@@ -402,13 +431,14 @@
         for(const a of this.ann.items){
           const sel=(a.id===this.ann.selectedId);
           if(a.type==='segment'){
-            const val=unit.fromMM(Measure.length(this._measureCtx(a), a.a[0],a.a[1], a.b[0],a.b[1]));
+            const mm=Measure.length(this._measureCtx(a), a.a[0],a.a[1], a.b[0],a.b[1]);
+            const pxLen=Math.hypot(a.b[0]-a.a[0], a.b[1]-a.a[1]);
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.segment;
             c.beginPath(); c.moveTo(a.a[0],a.a[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
             c.fillStyle=sel?C.selected:C.segment;
             for(const [x,y] of [a.a,a.b]){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
             const mid=[(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale, C.segment);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this.opts.labelScale, C.segment);
           } else if(a.type==='note'){
             const [tx,ty]=a.p; c.fillStyle=sel?C.selected:C.note;
             c.beginPath(); c.arc(tx,ty,Draw.px(this.canvas,9),0,Math.PI*2); c.fill();
@@ -422,17 +452,25 @@
             }
           } else if(a.type==='polyline'){
             const pts=a.pts||[]; if(pts.length<2) continue;
-            const val=unit.fromMM(Measure.polyline(this._measureCtx(a), pts));
+            const mm=Measure.polyline(this._measureCtx(a), pts);
+            let pxLen=0; for(let i=1;i<pts.length;i++) pxLen+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.polyline;
             c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke();
             c.fillStyle=sel?C.selected:C.polyline;
             for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,Draw.px(this.canvas,8),0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
-            const mid=pts[Math.floor(pts.length/2)]; Draw.boxLabel(c, this.canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, this.opts.labelScale, C.polyline);
+            const mid=pts[Math.floor(pts.length/2)]; Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this.opts.labelScale, C.polyline);
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
-            const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2); const wmm=rm.w, hmm=rm.h, amm=rm.area;
+            const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2);
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.rectangle; c.strokeRect(x1,y1,x2-x1,y2-y1);
-            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, `${unit.fromMM(wmm).toFixed(3)}×${unit.fromMM(hmm).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(amm).toFixed(3)} ${unit.areaLabel}`, this.opts.labelScale, C.rectangle);
+            let rlabel;
+            if(this.isCalibrated()){
+              rlabel = `${unit.fromMM(rm.w).toFixed(3)}×${unit.fromMM(rm.h).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(rm.area).toFixed(3)} ${unit.areaLabel}`;
+            }else{
+              const pw=Math.abs(x2-x1), ph=Math.abs(y2-y1);
+              rlabel = `${Math.round(pw)}×${Math.round(ph)} px • A ${Math.round(pw*ph)} px²`;
+            }
+            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, rlabel, this.opts.labelScale, C.rectangle);
           } else if(a.type==='angle'){
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.angle;
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
@@ -468,8 +506,8 @@
           if(this.opts.mode==='setscale'){
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this.opts.labelScale);
           } else {
-            const val=unit.fromMM(Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]));
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+            const mm=Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this.opts.labelScale);
           }
         }
         else if(this.opts.mode==='polyline' && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
@@ -489,12 +527,12 @@
         else if(this.opts.mode==='circle' && this.selectedPoints.length===1 && H){
           const center=this.selectedPoints[0], edge=H;
           const radius=Math.hypot(edge[0]-center[0], edge[1]-center[1]);
-          const sMM=this.getScale()||0, diam_mm=2*radius*sMM, diam_val=unit.fromMM(diam_mm);
+          const sMM=this.getScale()||0;
           c.save(); c.setLineDash([10,8]); c.strokeStyle='cyan'; c.lineWidth=linePx;
           c.beginPath(); c.arc(center[0],center[1],radius,0,Math.PI*2); c.stroke();
           c.setLineDash([]); c.beginPath(); c.moveTo(center[0]-radius,center[1]); c.lineTo(center[0]+radius,center[1]); c.stroke();
           c.restore();
-          Draw.boxLabel(c, this.canvas, center[0], center[1]-radius-15, `⌀ ~${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+          Draw.boxLabel(c, this.canvas, center[0], center[1]-radius-15, `⌀ ~${this._fmtLen(2*radius*sMM, 2*radius)}`, this.opts.labelScale);
         }
         else if(this.opts.mode==='circle3pt' && this.selectedPoints.length>=2 && H){
           const pts=(this.selectedPoints.length===2)?[...this.selectedPoints,H]:this.selectedPoints;
@@ -502,12 +540,12 @@
             const fitted=window.CalibCircles.fitCircleFromPoints(pts);
             if(fitted){
               const [cx,cy]=fitted.center, r=fitted.radius;
-              const sMM=this.getScale()||0, diam_mm=2*r*sMM, diam_val=unit.fromMM(diam_mm);
+              const sMM=this.getScale()||0;
               c.save(); c.setLineDash([10,8]); c.strokeStyle='cyan'; c.lineWidth=linePx;
               c.beginPath(); c.arc(cx,cy,r,0,Math.PI*2); c.stroke();
               c.setLineDash([]); c.beginPath(); c.moveTo(cx-r,cy); c.lineTo(cx+r,cy); c.stroke();
               c.restore();
-              Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ~${diam_val.toFixed(3)} ${unit.label}`, this.opts.labelScale);
+              Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ~${this._fmtLen(2*r*sMM, 2*r)}`, this.opts.labelScale);
             }
           }
         }
@@ -573,11 +611,14 @@
       _selectedReadout(){
         const a=this.ann.items.find(it=>it.id===this.ann.selectedId); if(!a) return null;
         const unit=Units.get(this.opts.units), ctx=this._measureCtx(a);
-        if(a.type==='segment'){ const v=unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])); return {label:'Length', text:`${v.toFixed(3)} ${unit.label}`, copy:v.toFixed(3)}; }
-        if(a.type==='polyline'){ const v=unit.fromMM(Measure.polyline(ctx,a.pts||[])); return {label:'Path', text:`${v.toFixed(3)} ${unit.label}`, copy:v.toFixed(3)}; }
-        if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; const rm=Measure.rect(ctx,x1,y1,x2,y2); const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); return {label:'Rect', text:`${w.toFixed(3)}×${h.toFixed(3)} ${unit.label} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
+        const cal=this.isCalibrated();
+        if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]); const t=this._fmtLen(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]),px); return {label:'Length', text:t, copy:cal?unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])).toFixed(3):String(Math.round(px))}; }
+        if(a.type==='polyline'){ const pts=a.pts||[]; let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); const mm=Measure.polyline(ctx,pts); return {label:'Path', text:this._fmtLen(mm,px), copy:cal?unit.fromMM(mm).toFixed(3):String(Math.round(px))}; }
+        if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; const rm=Measure.rect(ctx,x1,y1,x2,y2);
+          if(cal){ const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); return {label:'Rect', text:`${w.toFixed(3)}×${h.toFixed(3)} ${unit.label} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
+          const pw=Math.abs(x2-x1),ph=Math.abs(y2-y1); return {label:'Rect', text:`${Math.round(pw)}×${Math.round(ph)} px · A ${Math.round(pw*ph)} px²`, copy:`${Math.round(pw)}x${Math.round(ph)}`}; }
         if(a.type==='angle'){ const ang=Measure.angle(ctx,a.a,a.v,a.b); return {label:'Angle', text:`${ang.toFixed(2)}°`, copy:ang.toFixed(2)}; }
-        if(a.type==='circle'){ const scale=(a.mm_per_px||this.getScale()||0); const d=unit.fromMM(2*a.radius*scale); return {label:'⌀', text:`${d.toFixed(3)} ${unit.label}`, copy:d.toFixed(3)}; }
+        if(a.type==='circle'){ const scale=(a.mm_per_px||this.getScale()||0); const t=this._fmtLen(2*a.radius*scale, 2*a.radius); return {label:'⌀', text:t, copy:cal?unit.fromMM(2*a.radius*scale).toFixed(3):String(Math.round(2*a.radius))}; }
         if(a.type==='note'){ return {label:'Note', text:(a.text||''), copy:(a.text||'')}; }
         return null;
       }
@@ -597,6 +638,18 @@
       }
 
       isCalibrated(){ return this.getScale() > 0; }
+
+      // Format a length/area for a label: real units when calibrated, raw PIXELS
+      // otherwise — so an uncalibrated measurement reads as "128 px", never a fake
+      // "0.000 mm" that looks like a genuine zero-length result.
+      _fmtLen(mm, pxDist){
+        if(this.isCalibrated()){ const u=Units.get(this.opts.units); return `${u.fromMM(mm).toFixed(3)} ${u.label}`; }
+        return `${Math.round(pxDist)} px`;
+      }
+      _fmtArea(mm2, pxArea){
+        if(this.isCalibrated()){ const u=Units.get(this.opts.units); return `${u.areaFromMM2(mm2).toFixed(3)} ${u.areaLabel}`; }
+        return `${Math.round(pxArea)} px²`;
+      }
 
       // Re-scale every detected marker to a new real cube edge length (mm). Because
       // detection is purely pixel-based, mm_per_px = size_mm / edge_px is exact and
@@ -777,7 +830,22 @@
         el.__overlay = new CalibrationOverlay(canvas, img, json);
       });
     }
+    // Destroy overlays whose .cal-view was removed from the DOM (the upload callback
+    // swaps out #viewer's subtree on every new photo), then init any new ones. Without
+    // the destroy pass, each replaced overlay leaks its window listeners forever.
+    function reapRemoved(nodes){
+      for(const n of nodes){
+        if(!n || n.nodeType!==1) continue;
+        const views=[];
+        if(n.matches && n.matches('.cal-view')) views.push(n);
+        if(n.querySelectorAll) n.querySelectorAll('.cal-view').forEach(v=>views.push(v));
+        for(const v of views){ if(v.__overlay && v.__overlay.destroy){ try{ v.__overlay.destroy(); }catch(e){} v.__overlay=null; } }
+      }
+    }
     if(document.readyState!=='loading') initScan(); else document.addEventListener('DOMContentLoaded', initScan);
-    new MutationObserver(initScan).observe(document.documentElement,{childList:true,subtree:true});
+    new MutationObserver((mutations)=>{
+      for(const m of mutations) if(m.removedNodes && m.removedNodes.length) reapRemoved(m.removedNodes);
+      initScan();
+    }).observe(document.documentElement,{childList:true,subtree:true});
   });
 })();

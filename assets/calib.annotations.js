@@ -46,11 +46,15 @@ window.CalibAnn = (function(){
       }else if(it.type==='angle'){
         const ln=[[it.v,it.a],[it.v,it.b]]; for(const [p,q] of ln){ const d=distPtLine(x,y,p[0],p[1],q[0],q[1]); if(d<bestD){bestD=d;best=it;} }
       }else if(it.type==='circle'){
-        // Hit test on circle perimeter
+        // Perimeter → select/resize. Also register a hit at the CENTER dot so a large
+        // circle (whose interior never comes within tolerance of the ring) can still be
+        // grabbed and moved — previously only the ring hit, so big circles could be
+        // resized but never repositioned.
         const [cx,cy]=it.center;
         const distFromCenter=Math.hypot(x-cx,y-cy);
         const distFromPerimeter=Math.abs(distFromCenter-it.radius);
         if(distFromPerimeter<bestD){bestD=distFromPerimeter;best=it;}
+        if(distFromCenter<bestD){bestD=distFromCenter;best=it;}
       }else if(it.type==='note'){
         const d=Math.hypot(x-it.p[0],y-it.p[1]); if(d<bestD){bestD=d;best=it;}
       }

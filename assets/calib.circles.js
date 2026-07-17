@@ -55,8 +55,15 @@ window.CalibCircles = (function(){
     const [cx, cy] = circle.center;
     const r = circle.radius;
 
-    const diameter_display = unit.fromMM(2 * r * mm_per_px);
-    const area_display = unit.areaFromMM2(Math.PI * r * r * mm_per_px * mm_per_px);
+    // When there's no scale yet, label in raw pixels rather than a fake "⌀ 0.000 mm"
+    // that reads like a real zero-diameter result.
+    const calibrated = mm_per_px > 0;
+    const diamLabel = calibrated
+      ? `⌀ ${unit.fromMM(2 * r * mm_per_px).toFixed(3)} ${unit.label}`
+      : `⌀ ${Math.round(2 * r)} px`;
+    const areaLabel = calibrated
+      ? `A ${unit.areaFromMM2(Math.PI * r * r * mm_per_px * mm_per_px).toFixed(3)} ${unit.areaLabel}`
+      : `A ${Math.round(Math.PI * r * r)} px²`;
 
     const selected = !!opts.selected;
     const labelScale = opts.labelScale || 1.35;
@@ -80,8 +87,8 @@ window.CalibCircles = (function(){
     // Labels stacked above the circle (honors the Text-Size slider). Offset the
     // second label by a full box height so they never overlap.
     const boxH = Math.round(22 * labelScale) + 20 * labelScale;
-    D().boxLabel(ctx, canvas, cx, cy - r - 15, `⌀ ${diameter_display.toFixed(3)} ${unit.label}`, labelScale, C.circle);
-    D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, `A ${area_display.toFixed(3)} ${unit.areaLabel}`, labelScale, C.circle);
+    D().boxLabel(ctx, canvas, cx, cy - r - 15, diamLabel, labelScale, C.circle);
+    D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, areaLabel, labelScale, C.circle);
   }
 
   // Export circle to JSON

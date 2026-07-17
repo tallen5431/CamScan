@@ -41,10 +41,13 @@ window.CalibDraw = (function(){
   function drawMarkers(ctx, canvas, data, linePx){
     if(!data || !Array.isArray(data.markers)) return;
     const dotR = px(canvas, 10);
-    ctx.lineWidth = px(canvas, linePx);
     for(const m of data.markers){
       if(!m.corners || m.corners.length<4) continue;
       const pts = m.corners.map(p=>[p.x,p.y]);
+      // Reset the outline width each iteration — the corner-dot loop below leaves
+      // lineWidth at the dot-stroke value, so without this every marker after the
+      // first would be outlined at the wrong thickness.
+      ctx.lineWidth = px(canvas, linePx);
       ctx.strokeStyle=colors.marker;
       ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
       for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);

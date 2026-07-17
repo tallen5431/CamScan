@@ -176,10 +176,12 @@ window.CalibGestures = (function () {
       const img = toImageXY(cx, cy);
       onUp(img, e);
 
-      // Click detection (before we clear primary/drag)
+      // Click detection (before we clear primary/drag). A pointercancel means the
+      // gesture was aborted by the UA/OS (palm rejection, edge-swipe/system takeover),
+      // NOT a completed tap — committing a click for it drops an unintended point/note.
       if (downInfo && e.pointerId === downInfo.id) {
         const moved = Math.hypot(cx - downInfo.cx, cy - downInfo.cy);
-        if (moved < CLICK_EPS) {
+        if (moved < CLICK_EPS && e.type !== "pointercancel") {
           onClick([downInfo.imgX, downInfo.imgY], e);
         }
         downInfo = null;
