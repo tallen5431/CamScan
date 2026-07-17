@@ -28,6 +28,15 @@ IMPORTANT — set your real square size:
   You can also set the CALIB_EDGE_MM environment variable to change the default
   used at upload time, e.g.  CALIB_EDGE_MM=47.5 python app.py
 
+Deployment / safety environment variables (all optional):
+  MAX_CONTENT_LENGTH_BYTES  max upload size in bytes (default 8 MiB)
+  MAX_IMAGE_PIXELS          reject images that DECODE larger than this (default
+                            50,000,000 px) — guards against decompression bombs
+  MAX_UPLOAD_FILES          cap on retained files in uploads/ (default 400; 0 = off)
+  MAX_UPLOAD_AGE_HOURS      drop uploads older than this (default 72)
+  CAMSCAN_DEBUG_IMAGES=1    write annotated detection debug images to ./debug_out
+                            (OFF by default; never writes into the served uploads dir)
+
 No square detected? Use the "Set Scale" tool (📐): draw a line across anything of
 known length and type in that length — CamScan calibrates from it.
 

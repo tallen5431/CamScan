@@ -176,6 +176,7 @@ def find_main_edges(
     use_enhanced_preprocessing: bool = True,  # kept for compatibility (ignored)
     polarity: str = "dark",                   # "dark" outer square, "bright" inner
     metrics: dict = None,                     # optional out-param, see below
+    allow_border: bool = False,               # skip the border-hugging rejection (full-frame pass)
 ):
     """
     Find the best quadrilateral in a cropped region.
@@ -243,8 +244,11 @@ def find_main_edges(
             or y + h >= h_img - margin_y
         ):
             # For inner squares we *allow* close to border, but this crop is tight,
-            # so only apply this margin for dark outer-square mode.
-            if polarity == "dark":
+            # so only apply this margin for dark outer-square mode. `allow_border`
+            # opts out entirely — used by the full-frame plain-square pass, where a
+            # square that (correctly) fills the frame must NOT be rejected for touching
+            # the edge.
+            if polarity == "dark" and not allow_border:
                 continue
 
         # Aspect filter

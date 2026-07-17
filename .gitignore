@@ -2,6 +2,7 @@
 uploads/
 *_overlay.jpg
 debug_detected_rects.jpg
+debug_out/
 circle_detection_result.jpg
 
 # Virtualenvs / envs

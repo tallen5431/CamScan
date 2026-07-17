@@ -188,6 +188,10 @@ def fit_circle_to_points(points: np.ndarray) -> Optional[Tuple[float, float, flo
     if len(points) < 3:
         return None
 
+    # cv2.minEnclosingCircle only accepts CV_32F/CV_32S point sets; a float64 array
+    # (the natural, documented Nx2 input) otherwise raises an uncaught cv2.error. Coerce.
+    points = np.asarray(points, dtype=np.float32)
+
     # Use OpenCV's minEnclosingCircle as initial estimate
     (x, y), r = cv2.minEnclosingCircle(points)
 

@@ -1,4 +1,4 @@
-import os, cv2, json, time, tempfile
+import os, cv2, json, time, tempfile, uuid
 import numpy as np
 from typing import Dict, Any, Tuple, List, Optional
 
@@ -23,7 +23,11 @@ PERSPECTIVE_MAX_DEG: float = 2.5
 
 # Artifacts policy
 SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs
-SAVE_DEBUG_IMAGES: bool = True      # Save annotated debug images showing detection results
+# Debug images are written into the web-served uploads/ dir under a FIXED name, so leaving
+# this on in production means every user's photo is copied to a constant, world-readable URL
+# (and concurrent uploads race on the one filename). Off by default; opt in for local
+# debugging with CAMSCAN_DEBUG_IMAGES=1.
+SAVE_DEBUG_IMAGES: bool = os.getenv("CAMSCAN_DEBUG_IMAGES", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # Cleanup policy
 DELETE_ALL_OTHER_UPLOADS: bool = False  # keep previous uploads; clean up with separate job
@@ -51,6 +55,19 @@ def _dedup_rects(rects: List[Tuple[int,int,int,int]], iou_thresh: float=0.6):
         if all(_iou(r, s) < iou_thresh for s in out):
             out.append(r)
     return out
+
+def _pattern_score(rlist: List[Tuple[int,int,int,int]]):
+    """Rank a strategy's candidate rects against the ideal 5-square calibration pattern
+    (1 outer + 4 pads). Higher is better. Used so a stricter fallback strategy that
+    returns FEWER/worse squares never silently replaces a better earlier detection.
+    Returns a tuple compared lexicographically:
+      (reached_five, closeness_to_five, count)."""
+    n = len(rlist)
+    if n == 0:
+        return (0, -99, 0)
+    # Reaching the full 5-pattern beats anything short of it; among sets that did, the
+    # one closest to exactly 5 wins; ties break toward more squares.
+    return (1 if n >= 5 else 0, -abs(n - 5), n)
 
 def _crop_region(img, x, y, w, h, pad: int):
     H, W = img.shape[:2]
@@ -276,10 +293,16 @@ def calibrate_image(img_bgr: np.ndarray,
         for (_score, x, y, w, h, _mean) in dets:
             rects.append((x, y, w, h))
 
-        # Strategy 2: Try "both" polarity if Strategy 1 found < 5 squares
-        if len(rects) < 5:
-            print(f"[Calibration] Strategy 2: Both polarities (got {len(rects)}, need 5)")
-            rects.clear()  # Clear and retry with different polarity
+        # Strategies 2/3 re-run detection with different/stricter params when Strategy 1
+        # fell short of the full 5-square pattern. They must NOT blindly overwrite a better
+        # earlier result: a stricter pass can return fewer or wrong squares, and rects[0]
+        # becomes the sole scale reference reported at high confidence. So we keep the best
+        # candidate set seen so far and only adopt a new one when it scores strictly higher.
+        best_rects = list(rects)
+
+        # Strategy 2: Try "both" polarity if the best so far is short of the 5-pattern
+        if len(best_rects) < 5:
+            print(f"[Calibration] Strategy 2: Both polarities (best so far {len(best_rects)}, need 5)")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
@@ -296,13 +319,13 @@ def calibrate_image(img_bgr: np.ndarray,
                 debug=True,
             )
             print(f"[Calibration] Strategy 2 found {len(dets)} detections")
-            for (_score, x, y, w, h, _mean) in dets:
-                rects.append((x, y, w, h))
+            cand = [(x, y, w, h) for (_score, x, y, w, h, _mean) in dets]
+            if _pattern_score(cand) > _pattern_score(best_rects):
+                best_rects = cand
 
         # Strategy 3: Very relaxed for distant/angled shots
-        if len(rects) < 5:
-            print(f"[Calibration] Strategy 3: Very relaxed (got {len(rects)}, need 5)")
-            rects.clear()
+        if len(best_rects) < 5:
+            print(f"[Calibration] Strategy 3: Very relaxed (best so far {len(best_rects)}, need 5)")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
@@ -319,8 +342,12 @@ def calibrate_image(img_bgr: np.ndarray,
                 debug=True,
             )
             print(f"[Calibration] Strategy 3 found {len(dets)} detections")
-            for (_score, x, y, w, h, _mean) in dets:
-                rects.append((x, y, w, h))
+            cand = [(x, y, w, h) for (_score, x, y, w, h, _mean) in dets]
+            if _pattern_score(cand) > _pattern_score(best_rects):
+                best_rects = cand
+
+        # Adopt the best candidate set the strategies produced.
+        rects[:] = best_rects
 
         # Strategy 4: Last resort - general square detection without pattern enforcement
         if len(rects) == 0:
@@ -385,7 +412,9 @@ def calibrate_image(img_bgr: np.ndarray,
     else:
         print(f"  ❌ No squares detected")
 
-    # Save debug image showing detected rectangles BEFORE edge refinement
+    # Save debug image showing detected rectangles BEFORE edge refinement.
+    # Written OUTSIDE the web-served uploads/ dir, under a unique name, so enabling debug
+    # never exposes a user's photo at a public URL and concurrent uploads don't collide.
     if SAVE_DEBUG_IMAGES and len(rects) > 0:
         debug_img = img_bgr.copy()
         for idx, (x, y, w, h) in enumerate(rects):
@@ -393,12 +422,11 @@ def calibrate_image(img_bgr: np.ndarray,
             cv2.rectangle(debug_img, (x, y), (x+w, y+h), color, 3)
             cv2.putText(debug_img, f"#{idx}", (x+5, y+25),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
-        os.makedirs(uploads_dir, exist_ok=True)
-        debug_path = os.path.join(uploads_dir, "debug_detected_rects.jpg")
+        debug_dir = os.path.join(os.path.dirname(__file__), "debug_out")
+        os.makedirs(debug_dir, exist_ok=True)
+        debug_path = os.path.join(debug_dir, f"debug_detected_rects_{uuid.uuid4().hex[:8]}.jpg")
         cv2.imwrite(debug_path, debug_img)
         print(f"  💾 Debug image saved: {debug_path}")
-        print(f"     View at: http://localhost:8050/uploads/debug_detected_rects.jpg")
 
     # Process outer black square for calibration measurement
     print(f"\n[Calibration] Processing squares for overlay:")
@@ -516,7 +544,8 @@ def calibrate_image(img_bgr: np.ndarray,
         print(f"\n[Calibration] Fallback: plain dark-square detection on full frame")
         plain_metrics: Dict[str, Any] = {}
         _v, _n, _w, corners_plain = find_main_edges(
-            img_bgr, MAX_EDGES, warp=True, polarity="dark", metrics=plain_metrics
+            img_bgr, MAX_EDGES, warp=True, polarity="dark", metrics=plain_metrics,
+            allow_border=True,  # a full-frame square legitimately touches the edge
         )
         if corners_plain:
             mapped = [(int(cx), int(cy)) for (cx, cy) in corners_plain]

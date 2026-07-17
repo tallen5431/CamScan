@@ -1,5 +1,13 @@
 # CamScan — Calibration Exporter (single-page viewer)
 import os, base64, uuid, time, tempfile
+
+# Cap the pixels OpenCV will decode BEFORE importing cv2 (the env var is read at import
+# time). A tiny, highly-compressible upload can otherwise decode to hundreds of megapixels
+# and OOM-kill the process — a classic decompression bomb. 50 MP comfortably covers real
+# phone/DSLR photos while refusing pathological inputs. Override with MAX_IMAGE_PIXELS.
+MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", 50 * 1000 * 1000))
+os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(MAX_IMAGE_PIXELS))
+
 from flask import Flask, send_from_directory, url_for
 from dash import Dash, html, dcc, Input, Output, State, no_update
 import cv2, numpy as np
@@ -25,6 +33,54 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"}
 
 # Maximum upload size in bytes (default 8 MiB) — override with env MAX_CONTENT_LENGTH_BYTES
 MAX_CONTENT_BYTES = int(os.getenv("MAX_CONTENT_LENGTH_BYTES", 8 * 1024 * 1024))
+
+# Retention caps for the uploads/ dir. Every upload persists a .jpg + .calibration.json
+# and nothing deleted them, so the dir grew without bound. Keep at most this many recent
+# artifacts and drop anything older than the age cap. Set MAX_UPLOAD_FILES=0 to disable.
+MAX_UPLOAD_FILES = int(os.getenv("MAX_UPLOAD_FILES", 400))
+MAX_UPLOAD_AGE_HOURS = float(os.getenv("MAX_UPLOAD_AGE_HOURS", 72))
+# Extensions this reaper is allowed to remove (upload artifacts only — never .tmp/.dxf
+# in flight, never dot-prefixed atomic-write temp files).
+_REAPABLE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".json")
+
+
+def _reap_uploads(keep_paths=()):
+    """Bound the uploads/ dir by count and age so disk can't grow without limit.
+    Only removes finished upload artifacts; never the paths in keep_paths (the pair we
+    just wrote) or in-flight temp files. Best-effort: any error is swallowed so reaping
+    can never break an upload."""
+    if MAX_UPLOAD_FILES <= 0 and MAX_UPLOAD_AGE_HOURS <= 0:
+        return
+    keep = {os.path.abspath(p) for p in keep_paths}
+    try:
+        entries = []
+        for name in os.listdir(UPLOAD_DIR):
+            if name.startswith("."):
+                continue  # atomic-write temp files (.<name>.tmp)
+            if not name.lower().endswith(_REAPABLE_SUFFIXES):
+                continue
+            path = os.path.join(UPLOAD_DIR, name)
+            ap = os.path.abspath(path)
+            if ap in keep or not os.path.isfile(path):
+                continue
+            try:
+                entries.append((path, os.path.getmtime(path)))
+            except OSError:
+                continue
+        entries.sort(key=lambda e: e[1], reverse=True)  # newest first
+
+        now = time.time()
+        age_limit = MAX_UPLOAD_AGE_HOURS * 3600 if MAX_UPLOAD_AGE_HOURS > 0 else None
+        for idx, (path, mtime) in enumerate(entries):
+            too_many = MAX_UPLOAD_FILES > 0 and idx >= MAX_UPLOAD_FILES
+            too_old = age_limit is not None and (now - mtime) > age_limit
+            if too_many or too_old:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def _resolve_edge_mm_from_env():
@@ -147,11 +203,22 @@ app.index_string = """
 """
 
 
+class ImageTooLarge(Exception):
+    """Decoded image exceeds MAX_IMAGE_PIXELS (decompression-bomb guard)."""
+
+
 def _decode_b64_image(contents: str):
     header, b64data = contents.split(",", 1)
     img_bytes = base64.b64decode(b64data)
     np_arr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    # Defense in depth: OPENCV_IO_MAX_IMAGE_PIXELS makes imdecode return None on an
+    # over-cap image, but re-check explicitly so oversized inputs are rejected with a
+    # clear message rather than a generic "not a valid image".
+    if img is not None:
+        h, w = img.shape[:2]
+        if w * h > MAX_IMAGE_PIXELS:
+            raise ImageTooLarge(f"{w}x{h} = {w * h:,}px exceeds cap {MAX_IMAGE_PIXELS:,}")
     return img
 
 
@@ -206,6 +273,9 @@ def on_upload(contents, filename):
     # would otherwise raise inside the callback and surface as an opaque HTTP 500.
     try:
         img = _decode_b64_image(contents)
+    except ImageTooLarge:
+        return (f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
+                "Resize it and try again."), no_update, no_update, None
     except Exception:
         return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
     if img is None:
@@ -245,6 +315,9 @@ def on_upload(contents, filename):
         json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
     except Exception as e:
         return f"⚠️ Failed to save results: {e}", no_update, no_update, None
+
+    # Keep the uploads dir bounded, preserving the pair we just wrote.
+    _reap_uploads(keep_paths=(os.path.join(UPLOAD_DIR, out_name), json_path))
 
     ts = int(time.time() * 1000)
     img_url_data = contents
