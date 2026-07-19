@@ -132,7 +132,8 @@ REM Default HOST/PORT if not provided by caller
 REM (HTTP Server Manager can still override these)
 REM ─────────────────────────────────────
 if "%HOST%"=="" set "HOST=0.0.0.0"
-if "%PORT%"=="" set "PORT=8002"
+REM Match Start.sh / app.py / README (was 8002, which sent Windows users to the wrong URL)
+if "%PORT%"=="" set "PORT=8059"
 
 echo [INFO] APP_DIR=%APP_DIR%
 echo [INFO] Using Python: %PY_CMD%

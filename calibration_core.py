@@ -643,8 +643,11 @@ def save_outputs(image_name: str,
 
     cal["image"] = orig_any  # viewer can load the current file, or ignore if None
 
-    # Write JSON atomically
-    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f"{base}.calibration.", suffix=".json")
+    # Write JSON atomically. Dot-prefix the temp so the uploads reaper (which skips
+    # dot-prefixed in-flight files) can't unlink a concurrent request's temp before its
+    # os.replace — the visible ".calibration.<rand>.json" name otherwise matched its
+    # reapable .json suffix.
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{base}.calibration.", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cal, f, indent=2)
