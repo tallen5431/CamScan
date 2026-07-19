@@ -6,6 +6,7 @@
   st.textContent = `
     :root{
       --cal-topbar-h: 56px;
+      --cal-kpi-h: 28px;       /* height reserved at the bottom for the status strip */
       --cal-accent: #00d4ff;
       --cal-accent-hover: #00b8e6;
       --cal-bg-dark: #0e0e0e;
@@ -167,13 +168,41 @@
 
     .cal-icon .cal-icon-text{
       font-size: 13px;
-      display: none; /* Hidden on mobile */
+      display: none; /* Hidden on narrow mouse layouts (see below) */
     }
 
     @media (min-width: 640px){
       .cal-icon .cal-icon-text{
         display: inline; /* Show text on larger screens */
       }
+    }
+
+    /* On touch devices the hover tooltip never appears and the visible label was
+       hidden below 640px, leaving cryptic glyphs. Show the label on any coarse
+       pointer so the toolbar is legible on phones (it already scrolls horizontally). */
+    @media (pointer: coarse){
+      .cal-icon .cal-icon-text{ display: inline; }
+    }
+
+    /* Keyboard focus ring — the buttons are aria-labeled but had no visible focus
+       indicator, so keyboard/switch users couldn't see where they were. */
+    .cal-icon:focus-visible,
+    .cal-quick-save-menu button:focus-visible,
+    .cal-panel input:focus-visible,
+    .cal-panel select:focus-visible{
+      outline: 2px solid var(--cal-accent);
+      outline-offset: 2px;
+    }
+
+    /* Clear-All is destructive and was visually near-identical to Delete (both trash
+       glyphs). Give it a distinct danger tint so it isn't mistaken for Delete. */
+    .cal-icon.cal-btn-danger{
+      border-color: #7a2626;
+      color: #ff9b9b;
+    }
+    .cal-icon.cal-btn-danger:hover{
+      background: #2a1414;
+      border-color: #a33;
     }
 
     /* Tooltip - only on desktop with mouse */
@@ -223,10 +252,15 @@
       position: fixed;
       left: 0;
       right: 0;
-      bottom: 28px;            /* sit above the fixed KPI status strip */
+      bottom: var(--cal-kpi-h); /* sit directly above the fixed KPI status strip */
       z-index: 11;
       touch-action: pan-y pinch-zoom;
     }
+
+    /* The "More Settings" summary bar duplicated the ⋮ toolbar button (which opens the
+       same panel) while permanently covering a strip of the image. Hide it and open the
+       panel from ⋮; any tool tap still closes it. */
+    .cal-sheet > details > summary{ display: none; }
 
     .cal-sheet>details>summary{
       background: #111;
@@ -321,11 +355,19 @@
 
     .cal-view{
       height: 100dvh;
+      box-sizing: border-box;
+      padding-bottom: var(--cal-kpi-h);  /* reserve the status strip's row so bottom-edge
+                                            measurements aren't hidden (and untappable) under it */
       position: relative;
       display: flex;
       flex-direction: column;
       overflow: hidden;      /* the canvas fills the space; no page scroll under the toolbar */
     }
+
+    /* Focus mode hides the toolbar/sheet for an unobstructed view — reclaim the status
+       strip's reserved row too so the image truly fills the screen. (The KPI element is
+       a sibling of .cal-view, so it's hidden from JS in setCollapsed, not via CSS here.) */
+    .cal-view[data-tools="collapsed"]{ padding-bottom: 0; }
 
     /* The toolbar wrapper takes its natural (content) height; the canvas fills the rest,
        so the whole image is visible below the toolbar instead of being cut off. */
@@ -444,6 +486,15 @@ window.CalibUI = (function(){
     const old = rootEl.querySelector('.cal-tools');
     if (old) old.remove();
 
+    // Hoisted so the top-level "Calibrate" chip (built later) can focus the same input
+    // that lives in the settings panel.
+    let calInput = null;
+    // Opens the settings panel and focuses the calibration-square-size field.
+    function openCalibration(){
+      details.open = true;
+      setTimeout(() => { if (calInput) { calInput.focus(); if (calInput.select) calInput.select(); } }, 0);
+    }
+
     const wrap = document.createElement('div');
     wrap.className = 'cal-tools';
     rootEl.prepend(wrap);
@@ -457,6 +508,10 @@ window.CalibUI = (function(){
       } else {
         rootEl.removeAttribute('data-tools');
       }
+      // The KPI strip lives OUTSIDE .cal-view (it's a sibling of the viewer), so a
+      // descendant CSS selector can't reach it — toggle it directly for focus mode.
+      const kpi = document.getElementById('cal-kpi');
+      if (kpi) kpi.style.display = collapsed ? 'none' : '';
     }
 
     // --------- Bottom sheet ----------
@@ -483,7 +538,7 @@ window.CalibUI = (function(){
 
       const calLabel = document.createElement('label');
       calLabel.innerHTML = 'Calibration square size (mm):';
-      const calInput = document.createElement('input');
+      calInput = document.createElement('input');
       calInput.type = 'number'; calInput.min = '0.1'; calInput.step = '0.1';
       calInput.placeholder = 'e.g. 30';
       const curMM = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
@@ -647,6 +702,14 @@ window.CalibUI = (function(){
     // --------- Top bar ----------
     const top = document.createElement('div');
     top.className = 'cal-topbar';
+    top.setAttribute('role', 'toolbar');
+    top.setAttribute('aria-label', 'Measurement tools');
+
+    // Per-tool keyboard shortcut (matches the keydown handler). setscale has none, so
+    // map by tool name — NOT by array index, which would be off by one for every tool
+    // after setscale.
+    const modeKeys = { pan:'0', select:'1', segment:'2', polyline:'3', rectangle:'4',
+                       angle:'5', circle:'6', circle3pt:'7', note:'8' };
 
     const modes = [
       ['pan',       '🖐',  'Pan',        'Pan/Move Image'],
@@ -698,15 +761,55 @@ window.CalibUI = (function(){
     divNew.className = 'cal-toolbar-divider';
     top.appendChild(divNew);
 
+    // Calibration chip — the reference size was buried two taps deep in the settings
+    // sheet, so a wrong/default square silently scaled every measurement. Surface it as
+    // a top-level control that shows the active size and opens the field on tap.
+    const calSection = document.createElement('div');
+    calSection.className = 'cal-toolbar-section';
+    calSection.setAttribute('role', 'group');
+    calSection.setAttribute('aria-label', 'Calibration');
+    // Built directly (not via btn()) because btn()'s handler closes the settings panel
+    // after firing — which would immediately undo openCalibration()'s panel-open.
+    const calChip = document.createElement('button');
+    calChip.type = 'button';
+    calChip.className = 'cal-icon';
+    calChip.innerHTML = '<span class="cal-icon-emoji">📐</span><span class="cal-icon-text"></span>';
+    calChip.onclick = () => openCalibration();
+    calSection.appendChild(calChip);
+    top.appendChild(calSection);
+
+    // Updates the chip's visible size + accessible label from the current scale state.
+    function reflectCalChip(){
+      const mm = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
+      const manual = overlay.opts && overlay.opts.manualMmPerPx;
+      let text, label;
+      if (manual)      { text = 'manual';      label = 'Scale: manual (from a known line) — tap to change'; }
+      else if (mm)     { text = `${mm} mm`;     label = `Calibration square: ${mm} mm — tap to change`; }
+      else             { text = 'set size';     label = 'Calibration square size not set — tap to set'; }
+      const t = calChip.querySelector('.cal-icon-text');
+      if (t){ t.textContent = text; t.style.display = 'inline'; }  // always show the size, even on mobile
+      calChip.setAttribute('data-tooltip', label);
+      calChip.setAttribute('aria-label', label);
+    }
+    reflectCalChip();
+
+    // Divider
+    const divCal = document.createElement('div');
+    divCal.className = 'cal-toolbar-divider';
+    top.appendChild(divCal);
+
     // Mode buttons (annotation tools)
     const toolsSection = document.createElement('div');
     toolsSection.className = 'cal-toolbar-section';
 
-    const modeBtns = modes.map(([m, icon, text, tooltip]) =>
-      btn(icon, text, tooltip, () => overlay.setMode && overlay.setMode(m),
-          overlay.opts && overlay.opts.mode === m)
-    );
+    const modeBtns = modes.map(([m, icon, text, tooltip]) => {
+      const tip = modeKeys[m] ? `${tooltip} (key ${modeKeys[m]})` : tooltip;
+      return btn(icon, text, tip, () => overlay.setMode && overlay.setMode(m),
+                 overlay.opts && overlay.opts.mode === m);
+    });
 
+    toolsSection.setAttribute('role', 'group');
+    toolsSection.setAttribute('aria-label', 'Tools');
     toolsSection.append(...modeBtns);
     top.appendChild(toolsSection);
 
@@ -743,7 +846,10 @@ window.CalibUI = (function(){
         if (overlay.clearAll) overlay.clearAll();
       }
     });
+    clearAll.classList.add('cal-btn-danger');  // visually distinct from single Delete
 
+    editSection.setAttribute('role', 'group');
+    editSection.setAttribute('aria-label', 'Edit');
     editSection.append(undo, redo, finish, del, clearAll);
     top.appendChild(editSection);
 
@@ -768,6 +874,8 @@ window.CalibUI = (function(){
       if (overlay.fitToContainer) overlay.fitToContainer();
     });
 
+    zoomSection.setAttribute('role', 'group');
+    zoomSection.setAttribute('aria-label', 'Zoom');
     zoomSection.append(zoomOut, zoomIn, fit);
     top.appendChild(zoomSection);
 
@@ -794,11 +902,15 @@ window.CalibUI = (function(){
     download.type = 'button';
     download.className = 'cal-icon';
     download.setAttribute('data-tooltip', 'More Download Options');
+    download.setAttribute('aria-label', 'More download options');
+    download.setAttribute('aria-haspopup', 'menu');
+    download.setAttribute('aria-expanded', 'false');
     download.innerHTML = '<span class="cal-icon-emoji">⬇️</span><span class="cal-icon-text">Options</span>';
 
     // Quick save menu
     const saveMenu = document.createElement('div');
     saveMenu.className = 'cal-quick-save-menu';
+    saveMenu.setAttribute('role', 'menu');
 
     const savePNG = document.createElement('button');
     savePNG.innerHTML = '<span class="icon">🖼️</span><span>Save PNG Image</span>';
@@ -829,25 +941,38 @@ window.CalibUI = (function(){
     saveSVG.onclick = () => { if (overlay.saveSVG) overlay.saveSVG(); saveMenu.classList.remove('active'); };
 
     saveMenu.append(savePNG, saveJSON, saveCSV, saveDXF, saveSVG, saveBoth);
+    Array.from(saveMenu.children).forEach(b => b.setAttribute('role', 'menuitem'));
     downloadSection.append(quickDownload, download, saveMenu);
+    downloadSection.setAttribute('role', 'group');
+    downloadSection.setAttribute('aria-label', 'Download');
 
+    function closeSaveMenu(returnFocus){
+      saveMenu.classList.remove('active');
+      download.setAttribute('aria-expanded', 'false');
+      if (returnFocus) download.focus();
+    }
+    function openSaveMenu(){
+      // Anchor the fixed menu to the button, right-aligned, kept on-screen.
+      const r = download.getBoundingClientRect();
+      saveMenu.style.top = Math.round(r.bottom + 6) + 'px';
+      saveMenu.style.left = 'auto';
+      saveMenu.style.right = Math.max(6, Math.round(window.innerWidth - r.right)) + 'px';
+      saveMenu.classList.add('active');
+      download.setAttribute('aria-expanded', 'true');
+      const first = saveMenu.querySelector('button');
+      if (first) setTimeout(() => first.focus(), 0);
+    }
     download.onclick = () => {
-      const willOpen = !saveMenu.classList.contains('active');
-      if (willOpen) {
-        // Anchor the fixed menu to the button, right-aligned, kept on-screen.
-        const r = download.getBoundingClientRect();
-        saveMenu.style.top = Math.round(r.bottom + 6) + 'px';
-        saveMenu.style.left = 'auto';
-        saveMenu.style.right = Math.max(6, Math.round(window.innerWidth - r.right)) + 'px';
-      }
-      saveMenu.classList.toggle('active');
+      if (saveMenu.classList.contains('active')) closeSaveMenu(false); else openSaveMenu();
     };
 
     // Close menu when clicking outside
     document.addEventListener('click', (e) => {
-      if (!downloadSection.contains(e.target)) {
-        saveMenu.classList.remove('active');
-      }
+      if (!downloadSection.contains(e.target)) closeSaveMenu(false);
+    });
+    // Escape closes and returns focus to the trigger (keyboard users could not dismiss it before).
+    saveMenu.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape'){ e.preventDefault(); closeSaveMenu(true); }
     });
 
     top.appendChild(downloadSection);
@@ -886,6 +1011,7 @@ window.CalibUI = (function(){
       finish.disabled = !(mode === 'polyline' && overlay.selectedPoints && overlay.selectedPoints.length >= 2);
       undo.disabled = !(overlay.canUndo && overlay.canUndo());
       redo.disabled = !(overlay.canRedo && overlay.canRedo());
+      reflectCalChip();
     }
 
     // Keep UI in sync with overlay redraws

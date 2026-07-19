@@ -72,7 +72,34 @@
           this._layout();                  // size the canvas to the space under the toolbar + fit
           this.redraw();
         };
+        // On decode/load failure, try the server file URL (data-img-fallback) once — it
+        // survives HTTPS/proxy cases the base64 data-URI can trip on — then, if that
+        // also fails, show a visible error+retry card instead of a blank dead-end (the
+        // whole toolbar is built inside onload, so a silent failure left nothing).
+        this.img.onerror = ()=>{
+          const fb = wrap && wrap.getAttribute('data-img-fallback');
+          if(fb && !this._triedFallback && fb !== this.imgSrc){
+            this._triedFallback = true;
+            this.img.src = fb;
+            return;
+          }
+          this._renderLoadError(wrap);
+        };
         this.img.src = this.imgSrc;
+      }
+
+      _renderLoadError(wrap){
+        if(!wrap || wrap.querySelector('.cal-load-error')) return;
+        const box=document.createElement('div'); box.className='cal-load-error';
+        box.style.cssText='position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;background:#0e0e0e;color:#eee;font:14px Segoe UI,system-ui,sans-serif;z-index:20;';
+        const h=document.createElement('div'); h.textContent='⚠️ Could not load the image';
+        h.style.cssText='font-size:16px;font-weight:600;';
+        const p=document.createElement('div'); p.textContent='The uploaded image failed to load or decode. Please try uploading it again.';
+        p.style.cssText='color:#9aa;max-width:420px;';
+        const btn=document.createElement('button'); btn.type='button'; btn.textContent='↻ Upload a new image';
+        btn.style.cssText='padding:10px 16px;background:#00d4ff;color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer;';
+        btn.onclick=()=>{ try{ window.location.reload(); }catch(e){} };
+        box.append(h,p,btn); wrap.appendChild(box);
       }
 
       // Flexbox (CSS) makes the canvas fill the space beneath the sticky toolbar; here we
@@ -304,7 +331,8 @@
       destroy(){
         if(this._destroyed) return;
         this._destroyed=true;
-        try{ this._gestureDetach && this._gestureDetach(); }catch(e){}
+        // G.attach() returns { detach: fn } — call .detach(), not the object itself.
+        try{ this._gestureDetach && this._gestureDetach.detach && this._gestureDetach.detach(); }catch(e){}
         window.removeEventListener('keydown', this._onKeyDown);
         window.removeEventListener('keyup', this._onKeyUp);
         window.removeEventListener('resize', this._onResize);
