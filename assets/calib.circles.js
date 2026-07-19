@@ -4,17 +4,6 @@ window.CalibCircles = (function(){
   const U = () => window.CalibUnits;
   const D = () => window.CalibDraw;
 
-  // Circle annotation object
-  function createCircle(center, radius, mm_per_px){
-    return {
-      type: 'circle',
-      center: center,         // [x, y]
-      radius: radius,         // pixels
-      mm_per_px: mm_per_px || 0,
-      id: Date.now() + Math.random()
-    };
-  }
-
   // Three-point circle (user clicks 3 points on the circumference).
   // Uses the circumcircle determinant formula — orientation-independent and robust for
   // horizontal/vertical chords (the old slope-based version mis-handled those). Returns
@@ -32,14 +21,6 @@ window.CalibCircles = (function(){
     const uy = (a2 * (cx3 - bx) + b2 * (ax - cx3) + c2 * (bx - ax)) / d;
     const radius = Math.hypot(ux - ax, uy - ay);
     return { center: [ux, uy], radius };
-  }
-
-  // Detect circles automatically in the image
-  async function detectCirclesAuto(imageData, options = {}){
-    // This would call the Python backend via fetch
-    // For now, return empty array (backend integration needed)
-    console.log('[CircleDetect] Auto-detection requires backend integration');
-    return [];
   }
 
   // Draw circle annotation. Single implementation shared by the live canvas and
@@ -115,27 +96,9 @@ window.CalibCircles = (function(){
     };
   }
 
-  // Check if point is on circle perimeter
-  function isPointOnCircle(px, py, circle, tolerance = 10){
-    const [cx, cy] = circle.center;
-    const dist = Math.hypot(px - cx, py - cy);
-    return Math.abs(dist - circle.radius) < tolerance;
-  }
-
-  // Check if point is inside circle
-  function isPointInCircle(px, py, circle){
-    const [cx, cy] = circle.center;
-    const dist = Math.hypot(px - cx, py - cy);
-    return dist <= circle.radius;
-  }
-
   return {
-    createCircle,
     fitCircleFromPoints,
-    detectCirclesAuto,
     drawCircle,
-    circleToJSON,
-    isPointOnCircle,
-    isPointInCircle
+    circleToJSON
   };
 })();

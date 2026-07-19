@@ -11,7 +11,6 @@ EDGE_FINDER_CONFIG = {
     "warp_size": 512,
     "max_aspect": 2.0,     # how elongated a "square" can be
     "border_margin_frac": 0.02,  # reject blobs hugging image border
-    "roi_margin_frac": 0.15,     # used by fit_outer_square_on_full_image
 }
 
 
@@ -330,99 +329,3 @@ def find_main_edges(
             warped = None
 
     return overlay, len(contours), warped, corners
-
-
-# ─────────────────────────────────────────
-# Helper: refine outer square on full frame
-# ─────────────────────────────────────────
-
-def fit_outer_square_on_full_image(
-    full_img_bgr: np.ndarray,
-    outer_box: Tuple[int, int, int, int],
-    warp: bool = False,
-    warp_size: Optional[int] = None,
-    margin_frac: Optional[float] = None,
-    debug: bool = False,
-    use_enhanced_preprocessing: bool = True,  # kept for compat, ignored
-):
-    """
-    Refine the outer calibration square edges on the full frame.
-
-    Args:
-        full_img_bgr: Full original frame (BGR).
-        outer_box:    (x, y, w, h) bounding box of the outer square from detect_squares.
-        warp:         If True, also return a perspective-warped view of the square.
-        warp_size:    Warped size (defaults to EDGE_FINDER_CONFIG["warp_size"]).
-        margin_frac:  Extra margin around outer_box for the ROI (fraction of max(w, h)).
-
-    Returns:
-        overlay_full_bgr: Full image with refined quad drawn.
-        warped_roi:       Warped square (or None).
-        corners_full:     List of 4 (x, y) in full-image coordinates (or None).
-    """
-    if full_img_bgr is None or full_img_bgr.size == 0:
-        return full_img_bgr, None, None
-
-    h_img, w_img = full_img_bgr.shape[:2]
-    x, y, w, h = map(int, outer_box)
-
-    if warp_size is None:
-        warp_size = EDGE_FINDER_CONFIG["warp_size"]
-
-    if margin_frac is None:
-        margin_frac = EDGE_FINDER_CONFIG.get("roi_margin_frac", 0.15)
-
-    margin = int(max(w, h) * margin_frac)
-    x0 = max(0, x - margin)
-    y0 = max(0, y - margin)
-    x1 = min(w_img, x + w + margin)
-    y1 = min(h_img, y + h + margin)
-
-    if x1 <= x0 or y1 <= y0:
-        if debug:
-            print("[fit_outer_square_on_full_image] Degenerate ROI, using original.")
-        return full_img_bgr.copy(), None, None
-
-    roi = full_img_bgr[y0:y1, x0:x1]
-
-    # Use simplified edge finder on ROI (outer square is dark)
-    _, _, warped, corners_roi = find_main_edges(
-        roi,
-        max_edges=10,
-        warp=warp,
-        warp_size=warp_size,
-        min_area=None,
-        debug=debug,
-        polarity="dark",
-    )
-
-    overlay_full = full_img_bgr.copy()
-    corners_full = None
-
-    if corners_roi is not None and len(corners_roi) == 4:
-        corners_full = [(cx + x0, cy + y0) for (cx, cy) in corners_roi]
-        pts_full = np.array(corners_full, dtype=np.int32).reshape(-1, 1, 2)
-
-        cv2.polylines(
-            overlay_full,
-            [pts_full],
-            isClosed=True,
-            color=(0, 0, 255),  # red outline on full image
-            thickness=4,
-            lineType=cv2.LINE_AA,
-        )
-        for j, (cx, cy) in enumerate(corners_full):
-            cv2.circle(overlay_full, (cx, cy), 7, (0, 0, 0), -1)
-            cv2.circle(overlay_full, (cx, cy), 4, (0, 255, 0), -1)
-            cv2.putText(
-                overlay_full,
-                str(j),
-                (cx + 6, cy - 6),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
-
-    return overlay_full, warped, corners_full

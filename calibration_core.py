@@ -29,8 +29,8 @@ SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs
 # debugging with CAMSCAN_DEBUG_IMAGES=1.
 SAVE_DEBUG_IMAGES: bool = os.getenv("CAMSCAN_DEBUG_IMAGES", "0").strip().lower() in ("1", "true", "yes", "on")
 
-# Cleanup policy
-DELETE_ALL_OTHER_UPLOADS: bool = False  # keep previous uploads; clean up with separate job
+# Known upload image extensions (used to locate the original raw upload for the viewer).
+# Retention/cleanup of old uploads lives in the app-level reaper (app.py), not here.
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
 
 
@@ -212,31 +212,6 @@ def _fallback_square_corners(crop_bgr: np.ndarray, rect_local, polarity: str = "
         return None
     box = cv2.boxPoints(cv2.minAreaRect(c))  # 4 (x, y) points, in `sub` coords
     return [(float(px) + x0, float(py) + y0) for (px, py) in box]
-
-def _delete_other_uploads(out_dir: str, keep_base: str) -> None:
-    """
-    Delete all image files in out_dir whose base name != keep_base.
-    This keeps the folder tidy and avoids serving a previous run's image.
-    """
-    if not DELETE_ALL_OTHER_UPLOADS:
-        return
-    try:
-        for name in os.listdir(out_dir):
-            p = os.path.join(out_dir, name)
-            if not os.path.isfile(p):
-                continue
-            base, ext = os.path.splitext(name)
-            if ext.lower() not in IMAGE_EXTS:
-                continue
-            if base == keep_base:
-                continue
-            try:
-                os.remove(p)
-                print(f"[Calibration] Deleted old upload: {p}")
-            except Exception as e:
-                print(f"[Calibration] ⚠️ Failed to delete {p}: {e}")
-    except FileNotFoundError:
-        pass
 
 
 # ----------------------------
@@ -616,7 +591,7 @@ def save_outputs(image_name: str,
     - Writes ONLY the JSON (tiny), so the viewer can fetch it.
     - Overlay JPG remains disabled by default.
     - Keeps the current raw upload (so the browser can fetch it).
-    - Deletes ALL other images immediately to avoid "previous run" leftovers.
+    Retention of old uploads is handled by the app-level reaper (app.py), not here.
     """
     os.makedirs(out_dir, exist_ok=True)
 
@@ -672,8 +647,5 @@ def save_outputs(image_name: str,
             overlay_path = None
     else:
         overlay_path = None
-
-    # Delete ALL other uploads except the current one
-    _delete_other_uploads(out_dir, keep_base=base)
 
     return json_path, overlay_path
