@@ -133,12 +133,16 @@
 
     /* ===== Floating zoom cluster ===== placed in the canvas grid cell (bottom-right) so it
        overlays the image and never collides with the bottom tool dock on mobile. */
+    /* min-width/height:0 so this overlay never floors the 1fr canvas grid row on a short
+       viewport; pointer-events:none on the container (auto on the buttons) + a circular hit
+       shape so taps in the gaps/corners fall through to the canvas underneath. */
     .cal-zoom{
-      grid-area: canvas; align-self: end; justify-self: end; margin: 12px; z-index: 7;
+      grid-area: canvas; align-self: end; justify-self: end; min-width: 0; min-height: 0;
+      margin: 12px; z-index: 7; pointer-events: none;
       display: flex; flex-direction: column; gap: 6px;
     }
     .cal-zoom button{
-      width: 42px; height: 42px; border-radius: 50%;
+      pointer-events: auto; width: 42px; height: 42px; border-radius: 50%; clip-path: circle(50%);
       background: rgba(22,22,24,0.94); color: var(--cal-text);
       border: 1px solid var(--cal-border); font-size: 20px; line-height: 1; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
@@ -149,8 +153,8 @@
     /* ===== Contextual actions (bottom-left of the canvas cell): Delete appears with a
        selection, Finish during a path. Only shown when relevant — never a greyed button. */
     .cal-context{
-      grid-area: canvas; align-self: end; justify-self: start; margin: 12px; z-index: 7;
-      display: flex; gap: 8px; pointer-events: none;
+      grid-area: canvas; align-self: end; justify-self: start; min-width: 0; min-height: 0;
+      margin: 12px; z-index: 7; display: flex; gap: 8px; pointer-events: none;
     }
     .cal-context button{
       pointer-events: auto; display: none; align-items: center; gap: 6px;
@@ -164,15 +168,18 @@
     .cal-ctx-finish{ background: var(--cal-accent); color: #000; }
     .cal-ctx-finish:hover{ background: var(--cal-accent-hover); }
 
-    /* ===== First-run coach ===== overlays just the canvas cell so the tools it points to
-       stay visible. */
+    /* ===== First-run coach ===== a fixed viewport overlay (not confined to the canvas grid
+       cell) so it is never clipped by .cal-view's overflow:hidden on a short/landscape phone
+       and never leaves the top bar's gear tappable to open a sheet behind it. The card uses
+       margin:auto inside an overflow:auto flex box so it centres when there's room and scrolls
+       from the top when there isn't (the align-items:center + overflow trap avoided). */
     .cal-coach{
-      grid-area: canvas; z-index: 14; padding: 20px; box-sizing: border-box;
-      display: flex; align-items: center; justify-content: center;
+      position: fixed; inset: 0; z-index: 40; padding: 16px; box-sizing: border-box;
+      display: flex; overflow: auto;
       background: rgba(7,7,9,0.72); backdrop-filter: blur(2px);
     }
     .cal-coach-card{
-      max-width: 360px; width: 100%; box-sizing: border-box;
+      margin: auto; max-width: 360px; width: 100%; box-sizing: border-box;
       background: var(--cal-bg-1); border: 1px solid var(--cal-border); border-radius: 16px;
       padding: 22px; box-shadow: 0 16px 48px rgba(0,0,0,0.6); color: var(--cal-text);
     }
@@ -326,6 +333,10 @@
 })();
 
 window.CalibUI = (function(){
+  // In-memory "coach already seen" fallback so the first-run coach still shows only once
+  // per session when localStorage is unavailable (private mode / storage disabled).
+  let coachSeenMem = false;
+
   function build(rootEl, overlay){
     // Remove any chrome from a previous build on this view (defensive — one build per
     // upload in practice). The <canvas> is a direct grid child and is left in place.
@@ -498,7 +509,7 @@ window.CalibUI = (function(){
     // ---- Top bar ----
     const top = document.createElement('div');
     top.className = 'cal-topbar';
-    top.setAttribute('role', 'toolbar');
+    top.setAttribute('role', 'group');
     top.setAttribute('aria-label', 'Calibration and file actions');
     const left = document.createElement('div');  left.className = 'cal-tb-left';
     const right = document.createElement('div'); right.className = 'cal-tb-right';
@@ -590,7 +601,7 @@ window.CalibUI = (function(){
     settingsBtn.setAttribute('data-tooltip', 'Settings'); settingsBtn.setAttribute('aria-label', 'Settings');
     settingsBtn.setAttribute('aria-haspopup', 'dialog'); settingsBtn.setAttribute('aria-expanded', 'false');
     settingsBtn.innerHTML = '<span class="cal-icon-emoji">⚙️</span>';
-    settingsBtn.onclick = () => { details.open = !details.open; };
+    settingsBtn.onclick = () => { details.open = !details.open; if (details.open) dismissCoach(); };
     details.addEventListener('toggle', () => { settingsBtn.setAttribute('aria-expanded', String(details.open)); });
 
     const focusBtn = iconBtn('⛶', '', 'Focus mode (hide tools)', () => setCollapsed(true));
@@ -619,7 +630,7 @@ window.CalibUI = (function(){
 
     const rail = document.createElement('div');
     rail.className = 'cal-rail';
-    rail.setAttribute('role', 'toolbar'); rail.setAttribute('aria-label', 'Measuring tools');
+    rail.setAttribute('role', 'group'); rail.setAttribute('aria-label', 'Measuring tools');
 
     const modeBtns = modes.map(([m, icon, label, tooltip]) => {
       const b = document.createElement('button');
@@ -679,13 +690,26 @@ window.CalibUI = (function(){
 
     // ---- First-run coach ----
     let coach = null;
-    function dismissCoach(){ if (coach && coach.parentNode) coach.remove(); coach = null; try { localStorage.setItem('calib.coachSeen', '1'); } catch (e) {} }
+    function dismissCoach(){
+      // If focus was inside the coach (e.g. "Got it"), move it somewhere sensible rather than
+      // stranding it on <body>. If a tool click triggered the dismissal, focus is already on
+      // that tool — leave it alone.
+      const hadFocus = coach && coach.contains(document.activeElement);
+      if (coach && coach.parentNode) coach.remove();
+      coach = null; coachSeenMem = true;
+      try { localStorage.setItem('calib.coachSeen', '1'); } catch (e) {}
+      if (hadFocus) { try { calChip.focus(); } catch (e) {} }
+    }
     function maybeShowCoach(){
+      if (coachSeenMem) return;
       let seen = false; try { seen = localStorage.getItem('calib.coachSeen') === '1'; } catch (e) {}
       if (seen) return;
       coach = document.createElement('div'); coach.className = 'cal-coach';
+      // Tapping the dimmed backdrop dismisses (so a user who follows "tap the photo" isn't
+      // blocked by an inert overlay); taps on the card itself do not.
+      coach.addEventListener('click', (e) => { if (e.target === coach) dismissCoach(); });
       const card = document.createElement('div'); card.className = 'cal-coach-card';
-      card.setAttribute('role', 'dialog'); card.setAttribute('aria-label', 'Getting started');
+      card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-label', 'Getting started');
       card.innerHTML =
         '<h3>📏 Measure in three steps</h3>' +
         '<div class="cal-coach-step"><span class="n">1</span><span>Set your <b>calibration square size</b> (the 📐 chip up top) — or use the <b>Set&nbsp;scale</b> tool if there is no square.</span></div>' +
