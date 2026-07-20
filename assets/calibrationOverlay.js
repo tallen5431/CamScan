@@ -15,7 +15,7 @@
     if(document.getElementById(ID)) return;
     const st=document.createElement('style'); st.id=ID;
     st.textContent = `
-      .cal-view{max-width:1000px;margin:0 auto}
+      .cal-view{max-width:1400px;margin:0 auto}
       .cal-view canvas{display:block; width:100%; touch-action:none}
     `;
     document.head.appendChild(st);
@@ -40,6 +40,14 @@
         // True when the active marker size came from a remembered (localStorage) value
         // rather than this photo's own calibration — surfaced in the KPI so it is never silent.
         this._markerSizeFromMemory=false;
+        // Scale (vp.k) captured right after each fit. The ResizeObserver uses it to tell
+        // "user is still at fit" (re-fit when the canvas box changes so reclaimed toolbar
+        // space grows the IMAGE, not the letterbox) from "user has manually zoomed" (keep
+        // their zoom, just refresh the backing store). See _onBoxResize.
+        this._fitK=1;
+        // Last measured KPI height written into --cal-kpi-h, so we only touch the CSS var
+        // (and trigger a reflow) when the status strip's wrapped height actually changes.
+        this._kpiH=0;
 
         this.opts = {
           mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','circle','circle3pt','note','setscale'
@@ -107,6 +115,24 @@
       // so nothing is hidden behind the toolbar or cut off at the bottom.
       _layout(){
         this.vp.fit(this.canvas, this.img);
+        this._fitK = this.vp.k;   // remember "fitted" scale so resize can detect manual zoom
+        this.requestDraw();
+      }
+
+      // The canvas CSS box changed (toolbar wrapped/shrank, window resized, focus mode
+      // toggled, status strip grew a line). Always refresh the backing store so the image
+      // stays crisp and taps stay aligned. Then, if the user hasn't manually zoomed away
+      // from the last fit, re-fit so the freed space enlarges the IMAGE instead of just
+      // growing the letterbox bars — otherwise preserve their zoom/pan untouched.
+      _onBoxResize(){
+        if(this._destroyed || !this.img) return;
+        const atFit = Math.abs(this.vp.k - this._fitK) < 1e-4;
+        if(atFit){
+          this.vp.fit(this.canvas, this.img);
+          this._fitK = this.vp.k;
+        }else{
+          this.vp._updateBackingStore();
+        }
         this.requestDraw();
       }
 
@@ -131,9 +157,9 @@
       setMode(m){ this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
-      fitToContainer(){ this.vp.fit(this.canvas, this.img); this.requestDraw(); }
-      fitToHeight(){ this.vp.fitHeight(this.canvas, this.img); this.requestDraw(); }
-      resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this.requestDraw(); }
+      fitToContainer(){ this.vp.fit(this.canvas, this.img); this._fitK=this.vp.k; this.requestDraw(); }
+      fitToHeight(){ this.vp.fitHeight(this.canvas, this.img); this._fitK=this.vp.k; this.requestDraw(); }
+      resetView(){ this.vp.reset(); this.vp.fit(this.canvas, this.img); this._fitK=this.vp.k; this.requestDraw(); }
       // --- undo/redo history ---------------------------------------------------
       // A deep clone of the current annotation list. Cheap for the dozens of items
       // a user realistically draws, and makes every op trivially reversible.
@@ -313,15 +339,26 @@
         this._onKeyUp = (e)=>{ if(e.key===' ') this._spacePan=false; };
         window.addEventListener('keyup', this._onKeyUp);
 
-        // Orientation change → re-fit (the aspect changed). Plain resize → keep the
-        // user's zoom/pan, just refresh the backing store so drawing stays crisp.
-        this._onResize = ()=>{
-          this.vp._updateBackingStore();
-          this.requestDraw();
-        };
+        // Orientation change → re-fit (the aspect changed). Plain resize / any CSS-driven
+        // change to the canvas box → _onBoxResize (keeps the user's zoom unless they're
+        // still at fit, in which case it re-fits so reclaimed space grows the image).
+        this._onResize = ()=>{ this._onBoxResize(); };
         window.addEventListener('resize', this._onResize, {passive:true});
         this._onOrient = ()=>{ this._layout(); };
         window.addEventListener('orientationchange', this._onOrient, {passive:true});
+
+        // A ResizeObserver catches box changes that 'resize' never fires for: the toolbar
+        // wrapping to a different number of rows, focus mode hiding it, or the status strip
+        // growing a line. Debounced through rAF so a burst of layout ticks coalesces into
+        // one re-fit. This is what makes the compact toolbar actually enlarge the image
+        // instead of just widening the letterbox bars.
+        if(typeof ResizeObserver!=='undefined'){
+          this._ro = new ResizeObserver(()=>{
+            if(this._roRAF) return;
+            this._roRAF = requestAnimationFrame(()=>{ this._roRAF=0; this._onBoxResize(); });
+          });
+          try{ this._ro.observe(this.canvas); }catch(e){}
+        }
       }
 
       // Tear down all global listeners + the gesture handlers and stop any pending
@@ -338,6 +375,8 @@
         window.removeEventListener('resize', this._onResize);
         window.removeEventListener('orientationchange', this._onOrient);
         if(this._onDblClick && this.canvas) this.canvas.removeEventListener('dblclick', this._onDblClick);
+        if(this._ro){ try{ this._ro.disconnect(); }catch(e){} this._ro=null; }
+        if(this._roRAF){ cancelAnimationFrame(this._roRAF); this._roRAF=0; }
         if(this._rAF){ cancelAnimationFrame(this._rAF); this._rAF=0; }
         const box=document.getElementById('cal-scale-input'); if(box) box.remove();
       }
@@ -433,9 +472,12 @@
       redraw(){
         this.ann.hitTolPx = this.vp.pxToImg(18);
         const c=this.ctx;
-        // clear & set transform
+        // Paint the whole backing store with the base surface tone before drawing the
+        // image, so the letterbox bars match the app's chrome instead of the hard pure
+        // black an {alpha:false} clearRect leaves.
         c.setTransform(1,0,0,1,0,0);
-        c.clearRect(0,0,this.canvas.width,this.canvas.height);
+        c.fillStyle='#0d0d0f';
+        c.fillRect(0,0,this.canvas.width,this.canvas.height);
         this.vp.applyToContext(c);
 
         c.drawImage(this.img,0,0);
@@ -756,23 +798,33 @@
       _inlineScaleInput(pixelLen, done, unit, mid){
         const prev=document.getElementById('cal-scale-input'); if(prev) prev.remove();
         const box=document.createElement('div'); box.id='cal-scale-input';
-        box.style.cssText='position:fixed;z-index:40;background:#0e0e0e;border:2px solid #00d4ff;border-radius:8px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;gap:6px;align-items:center;font:14px Segoe UI,system-ui,sans-serif;color:#eee;';
-        const lab=document.createElement('span'); lab.textContent='Line length:';
+        box.style.cssText='position:fixed;z-index:40;background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
+        const lab=document.createElement('span'); lab.textContent='Line length:'; lab.style.cssText='font-weight:600;';
+        // 16px font stops iOS from auto-zooming on focus; 44px min-height meets the touch
+        // target the rest of the UI enforces (this input is the ONLY calibration path when
+        // no marker is detected, so it must be comfortable on a phone).
         const inp=document.createElement('input'); inp.type='number'; inp.step='0.01'; inp.min='0'; inp.inputMode='decimal'; inp.placeholder='e.g. 25.4';
-        inp.style.cssText='width:96px;padding:6px;background:#181818;border:1px solid #2a2a2a;border-radius:6px;color:#eee;font:14px inherit;';
+        inp.setAttribute('enterkeyhint','done');
+        inp.style.cssText='flex:1 1 96px;min-width:96px;min-height:44px;padding:8px 10px;background:#181818;border:1px solid #2a2a2a;border-radius:8px;color:#eee;font:16px Segoe UI,system-ui,sans-serif;';
         const us=document.createElement('span'); us.textContent=unit.label;
-        const ok=document.createElement('button'); ok.type='button'; ok.textContent='Set'; ok.style.cssText='padding:6px 12px;background:#00d4ff;color:#000;border:none;border-radius:6px;font-weight:600;cursor:pointer;';
-        const cancel=document.createElement('button'); cancel.type='button'; cancel.textContent='✕'; cancel.style.cssText='padding:6px 9px;background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:6px;cursor:pointer;';
+        const ok=document.createElement('button'); ok.type='button'; ok.textContent='Set'; ok.style.cssText='min-height:44px;padding:8px 18px;background:#00d4ff;color:#000;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;';
+        const cancel=document.createElement('button'); cancel.type='button'; cancel.textContent='✕'; cancel.setAttribute('aria-label','Cancel'); cancel.style.cssText='min-height:44px;min-width:44px;padding:8px 12px;background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:8px;font-size:15px;cursor:pointer;';
         box.append(lab,inp,us,ok,cancel); document.body.appendChild(box);
-        // Position near the line midpoint (fall back to the viewport centre).
+        // Anchor ABOVE the drawn line (never below): the soft keyboard opens from the
+        // bottom, so a box placed under the finger/midpoint gets covered on phones. Fall
+        // back below only if there's no room above, and keep it out of the lower ~45%.
         try{
           const r=this.canvas.getBoundingClientRect();
           const [dx,dy]=this.vp.imageToCanvas(mid[0],mid[1]);
           const cssX=r.left + dx*(r.width/Math.max(1,this.canvas.width));
           const cssY=r.top  + dy*(r.height/Math.max(1,this.canvas.height));
-          box.style.left=Math.max(8, Math.min(window.innerWidth-box.offsetWidth-8, cssX-box.offsetWidth/2))+'px';
-          box.style.top =Math.max(8, Math.min(window.innerHeight-box.offsetHeight-8, cssY+16))+'px';
-        }catch(e){ box.style.left='50%'; box.style.top='40%'; box.style.transform='translate(-50%,-50%)'; }
+          const bw=box.offsetWidth, bh=box.offsetHeight;
+          let top = cssY - bh - 16;
+          if(top < 8) top = cssY + 16;                       // no room above → drop below
+          top = Math.max(8, Math.min(top, window.innerHeight*0.45)); // stay clear of the keyboard band
+          box.style.left=Math.max(8, Math.min(window.innerWidth-bw-8, cssX-bw/2))+'px';
+          box.style.top =top+'px';
+        }catch(e){ box.style.left='50%'; box.style.top='24%'; box.style.transform='translateX(-50%)'; }
         const finish=(val)=>{ box.remove(); done(val); };
         ok.onclick=()=>finish(inp.value);
         cancel.onclick=()=>finish(null);
@@ -797,35 +849,61 @@
         return `✏️ ${name} — click point ${Math.min(n+1,total)} of ${total}`;
       }
 
+      // The bottom status strip. Built as wrapping chips (a single DOM path for the
+      // calibrated and uncalibrated cases) so nothing truncates the way the old
+      // white-space:nowrap line did — critically, the "Set a scale" recovery action is a
+      // real <button> that always stays tappable on a phone. After building, the strip's
+      // measured height is fed back into --cal-kpi-h so the space reserved for it at the
+      // bottom of the view tracks its real (possibly two-line) height.
       updateKPI(){
         const el=document.getElementById('cal-kpi'); if(!el) return;
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
-        const zoom=`Zoom: ${Math.round(this.vp.k*100)}%`;
-        const anns=`Annotations: ${this.ann.items.length}`;
-        // When an item is selected, lead with its precise value (+ copy hint) instead
-        // of the generic tool step-hint.
+        const narrow = window.innerWidth < 480;
+
+        el.textContent=''; // clear previous chips
+        const chip=(text,cls)=>{ const sp=document.createElement('span'); sp.className='cal-chip'+(cls?' '+cls:''); sp.textContent=text; el.appendChild(sp); return sp; };
+
+        // Lead: the selected item's precise value (+ copy hint), else the active tool's
+        // step-by-step hint. This is the most useful thing on the strip, so it comes first.
         const rd=this._selectedReadout();
-        const lead = rd ? `🔎 ${rd.label}: ${rd.text} · C to copy` : this._toolHint();
-        const hintPart = lead ? `${lead} | ` : '';
+        if(rd){ chip(`🔎 ${rd.label}: ${rd.text}`, 'cal-chip--lead'); chip('C to copy','cal-chip--muted'); }
+        else { const h=this._toolHint(); if(h) chip(h, 'cal-chip--lead'); }
+
         if(s<=0){
-          el.innerHTML = `${hintPart}⚠️ <b>Not calibrated</b> — no reference square found. <a href="#" id="cal-cal-link" style="color:#00d4ff;font-weight:600">Set a scale</a> by drawing a line of known length. &nbsp;|&nbsp; ${zoom} &nbsp;|&nbsp; ${anns}`;
-          const lnk=el.querySelector('#cal-cal-link'); if(lnk) lnk.onclick=(e)=>{ e.preventDefault(); this.setMode('setscale'); };
-          return;
+          chip('⚠️ Not calibrated','cal-chip--warn');
+          const b=document.createElement('button'); b.type='button'; b.className='cal-chip cal-chip--action';
+          b.textContent='📐 Set a scale';
+          b.setAttribute('aria-label','Set a scale by drawing a line of known length');
+          b.onclick=()=>{ this.setMode('setscale'); };
+          el.appendChild(b);
+        }else{
+          // A manual scale is user-defined (trusted); only auto-detected marker scale
+          // carries a confidence, so only it can be flagged approximate.
+          const lowConf = !this.opts.manualMmPerPx && this.data && this.data.calibration_confidence==='low';
+          if(lowConf) chip('⚠️ Approximate — verify with Set scale','cal-chip--warn');
+          // Flag a marker size restored from a previous photo so a stale remembered value
+          // can't silently rescale an unrelated image without the user noticing.
+          const remembered = (!this.opts.manualMmPerPx && this._markerSizeFromMemory) ? ' (remembered)' : '';
+          const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm sq${remembered}`;
+          const unitPerPx=unit.fromMM(s);
+          chip(narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
+                      : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`);
+          if(!narrow) chip(`ref ${src}`);
+          // Only linear measurements (lengths/areas/angles) are rectified for tilt;
+          // circles stay on the uniform scale (see _selectedReadout).
+          if(!narrow && this._perspectiveActive()) chip('⟂ perspective-corrected', 'cal-chip--ok');
         }
-        // Flag a marker size restored from a previous photo so a stale remembered
-        // value can't silently rescale an unrelated image without the user noticing.
-        const remembered = (!this.opts.manualMmPerPx && this._markerSizeFromMemory) ? ' (remembered)' : '';
-        const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm square${remembered}`;
-        const unitPerPx=unit.fromMM(s);
-        // A manual scale is user-defined (trusted); only the auto-detected marker
-        // scale carries a confidence. Warn when it came from a rough fallback.
-        const lowConf = !this.opts.manualMmPerPx && this.data && this.data.calibration_confidence === 'low';
-        const warn = lowConf ? '⚠️ Approximate auto-cal — verify with “Set scale” • ' : '';
-        // Show when measurements are being rectified for camera tilt.
-        // Scope the claim honestly: only linear measurements (lengths/areas/angles) are
-        // rectified; circles stay on the uniform scale (see _selectedReadout).
-        const persp = this._perspectiveActive() ? ' • perspective-corrected (lines & areas)' : '';
-        el.textContent = `${hintPart}${warn}Scale: ${unitPerPx.toFixed(6)} ${unit.label}/px (${(s*1000).toFixed(1)} µm/px) • ref: ${src}${persp} | ${zoom} | Snap: ${this.opts.snap?'on':'off'} | ${anns}`;
+        // On a phone, keep the strip to ~two lines: the lead + calibration state (both
+        // load-bearing) plus zoom, dropping the secondary status chips that would push it
+        // to four lines and steal image height. All of it stays on wider screens.
+        chip(`Zoom ${Math.round(this.vp.k*100)}%`);
+        if(!narrow){ const n=this.ann.items.length; chip(`Snap ${this.opts.snap?'on':'off'}`); chip(`${n} item${n===1?'':'s'}`); }
+
+        // Feed the real height back into --cal-kpi-h (only on change, to avoid churn) so
+        // the .cal-view bottom reservation and the settings sheet offset track a strip
+        // that may have wrapped to two lines.
+        const h=Math.round(el.offsetHeight);
+        if(h>0 && h!==this._kpiH){ this._kpiH=h; document.documentElement.style.setProperty('--cal-kpi-h', h+'px'); }
       }
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }

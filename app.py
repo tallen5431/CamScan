@@ -146,9 +146,26 @@ app.index_string = """
     {%css%}
     <style>
       /* Subtle mobile-friendly defaults */
-      html,body{margin:0;padding:0;background:#0f0f10;color:#e6e6e6;font-family: Segoe UI, system-ui, sans-serif;}
-      .container{max-width:1000px;margin:0 auto;padding:10px;}
-      @media (max-width:768px){ .container{padding:8px;} }
+      :root{ --cal-accent:#00d4ff; }
+      html,body{margin:0;padding:0;background:#0d0d0f;color:#e6e6e6;font-family: Segoe UI, system-ui, sans-serif;}
+      .container{max-width:1400px;margin:0 auto;}
+
+      /* Landing / upload screen — a centered card instead of a bare dashed box floating
+         in a big empty void. (#top-panel is the container the upload callback hides once
+         an image is loaded.) */
+      #top-panel{ min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box; }
+      .landing-card{ width:100%; max-width:460px; background:#161618; border:1px solid #262629; border-radius:16px; padding:26px 24px 22px; box-shadow:0 12px 40px rgba(0,0,0,.5); box-sizing:border-box; }
+      .landing-logo{ font-size:34px; line-height:1; }
+      .landing-title{ font-size:22px; font-weight:700; margin:8px 0 2px; }
+      .landing-sub{ color:#9a9aa4; font-size:14px; margin:0; }
+      .landing-how{ color:#c9c9d0; font-size:13px; line-height:1.5; background:rgba(0,212,255,.06); border:1px solid rgba(0,212,255,.18); border-radius:10px; padding:10px 12px; margin:16px 0; }
+      .landing-how b{ color:var(--cal-accent); }
+      .landing-formats{ color:#76767e; font-size:12px; text-align:center; margin-top:12px; }
+      #status{ margin-top:12px; text-align:center; }
+      /* The uploader is a real drop zone with an accent-tinted, interactive affordance
+         (it inherited a plain gray currentColor dashed border before). */
+      #uploader{ margin:0 !important; transition:border-color .15s ease, background .15s ease; }
+      #uploader:hover{ border-color:var(--cal-accent) !important; background:rgba(0,212,255,.06); cursor:pointer; }
 
       /* Scrollable wrapper for the viewer so tall images don't block the page */
       .cal-wrap{
@@ -156,21 +173,6 @@ app.index_string = """
         height: 100dvh;             /* fill dynamic viewport height on mobile */
         overflow: auto;
         -webkit-overflow-scrolling: touch; /* iOS momentum scroll */
-      }
-
-      /* Keep toolbar visible while scrolling the image (matches JS styling) */
-      .cal-toolbar{
-        position: sticky;
-        top: 0;
-        z-index: 10;
-        background: #111;
-        padding-top: 6px;
-        border-bottom: 1px solid #2a2a2a;
-      }
-
-      /* Make the upload zone a bit shorter on phones */
-      @media (max-width:768px){
-        #uploader{height:96px !important; line-height:96px !important;}
       }
     </style>
   </head>
@@ -224,23 +226,34 @@ def _decode_b64_image(contents: str):
 
 app.layout = html.Div([
     html.Div([
-        html.H2("📸 CamScan — Calibration Exporter"),
-        dcc.Upload(
-            id="uploader",
-            children=html.Div(["Tap ", html.B("to snap a photo"), " or drop an image"]),
-            multiple=False,
-            style={
-                "width": "100%", "height": "120px", "lineHeight": "120px", "borderWidth": "2px",
-                "borderStyle": "dashed", "borderRadius": "8px", "textAlign": "center", "margin": "10px 0"
-            },
-            accept="image/*",
-        ),
-        html.Div(id="status", style={"margin": "8px 0"}),
+        html.Div([
+            html.Div("📸", className="landing-logo"),
+            html.Div("CamScan", className="landing-title"),
+            html.P("Measure real-world millimeters from a photo.", className="landing-sub"),
+            html.Div([
+                "Print the calibration square, photograph your part beside it, then ",
+                html.B("measure in real mm"), ".",
+            ], className="landing-how"),
+            dcc.Upload(
+                id="uploader",
+                children=html.Div(["Tap ", html.B("to take a photo"), " or drop an image"]),
+                multiple=False,
+                style={
+                    "width": "100%", "minHeight": "120px", "display": "flex",
+                    "alignItems": "center", "justifyContent": "center",
+                    "borderWidth": "2px", "borderStyle": "dashed",
+                    "borderColor": "rgba(0,212,255,0.35)", "borderRadius": "12px",
+                    "textAlign": "center", "padding": "18px", "boxSizing": "border-box",
+                },
+                accept="image/*",
+            ),
+            html.Div("PNG · JPG · WebP · BMP · TIFF — up to 8 MB", className="landing-formats"),
+            html.Div(id="status"),
+        ], className="landing-card"),
     ], id="top-panel"),
     html.Div(id="viewer", style={"position": "relative"}),
     html.Div(id="cal-kpi", className="cal-kpi"),
-    html.Div("", style={"height": "12px"})
-], style={"maxWidth": "1000px", "margin": "0 auto", "fontFamily": "Segoe UI, sans-serif"})
+], id="landing-root", style={"fontFamily": "Segoe UI, sans-serif"})
 
 
 @app.callback(

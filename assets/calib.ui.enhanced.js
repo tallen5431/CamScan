@@ -5,107 +5,78 @@
   const st = document.createElement('style'); st.id = ID;
   st.textContent = `
     :root{
-      --cal-topbar-h: 56px;
       --cal-kpi-h: 28px;       /* height reserved at the bottom for the status strip */
       --cal-accent: #00d4ff;
       --cal-accent-hover: #00b8e6;
-      --cal-bg-dark: #0e0e0e;
-      --cal-bg-medium: #181818;
-      --cal-border: #2a2a2a;
+      /* A 3-step surface scale so the chrome reads as one deliberate elevation system
+         instead of five slightly-different near-blacks. bg-0 is the base/letterbox. */
+      --cal-bg-0: #0d0d0f;
+      --cal-bg-1: #161618;
+      --cal-bg-2: #1f1f23;
+      /* Back-compat aliases (older rules referenced these names). */
+      --cal-bg-dark: var(--cal-bg-1);
+      --cal-bg-medium: var(--cal-bg-2);
+      --cal-border: #2c2c31;
       --cal-text: #eee;
     }
-    @media (min-width:900px){ :root{ --cal-topbar-h: 60px; } }
+
+    /* ---- Toolbar: two clusters (tools left, actions right). On a wide viewport it is
+       one tidy row; when it can't fit, the right cluster drops cleanly to a second row
+       (tools / actions) instead of the old 3-4 ragged rows with orphaned dividers. On a
+       touch device it becomes a single horizontally-scrollable row (kept short) with a
+       position-aware fade cue. ---- */
+    .cal-topbar-scroll{ position: relative; }
 
     .cal-topbar{
       position: sticky;
       top: 0;
       z-index: 10;
-      min-height: var(--cal-topbar-h);
-      background: var(--cal-bg-dark);
-      border-bottom: 2px solid var(--cal-border);
+      background: var(--cal-bg-1);
+      border-bottom: 1px solid var(--cal-border);
+      box-shadow: 0 1px 0 #000, 0 2px 8px rgba(0,0,0,0.35);
       display: flex;
       align-items: center;
-      gap: 0.6rem;
-      padding: 0.8rem 1rem;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-      scrollbar-width: thin;
-      flex-wrap: nowrap; /* Don't wrap on mobile - allow horizontal scroll */
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.6rem;
+      padding: 0.4rem 0.6rem;
     }
 
-    /* Scroll hint gradient on mobile */
-    @media (max-width: 767px){
-      .cal-topbar::after{
-        content: '';
-        position: sticky;
-        right: 0;
-        width: 40px;
-        height: 100%;
-        background: linear-gradient(to left, var(--cal-bg-dark) 0%, transparent 100%);
-        pointer-events: none;
-        flex-shrink: 0;
-        margin-left: auto;
-      }
+    .cal-tb-left, .cal-tb-right{
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.25rem 0.4rem;
     }
-
-    /* On desktop, allow wrapping into grouped rows (kept compact to preserve image space) */
-    @media (min-width: 768px){
-      .cal-topbar{
-        flex-wrap: wrap;
-        gap: 0.5rem 0.8rem;
-        padding: 0.5rem 1rem;
-      }
-    }
+    .cal-tb-right{ justify-content: flex-end; }
 
     .cal-toolbar-section{
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      padding: 0.4rem 0;
-      flex-shrink: 0; /* Prevent sections from shrinking */
-    }
-
-    @media (min-width: 768px){
-      .cal-toolbar-section{
-        gap: 0.4rem;
-        padding: 0;
-      }
-    }
-
-    .cal-toolbar-divider{
-      width: 1px;
-      height: 28px;
-      background: var(--cal-border);
-      margin: 0 0.15rem;
+      gap: 0.25rem;
       flex-shrink: 0;
     }
-
-    @media (min-width: 768px){
-      .cal-toolbar-divider{
-        height: 32px;
-        margin: 0 0.25rem;
-      }
-    }
-
-    /* Hide dividers on very small screens to save space */
-    @media (max-width: 480px){
-      .cal-toolbar-divider{
-        display: none;
-      }
+    /* Group separator that travels WITH the group when it wraps (a standalone 1px
+       divider element used to orphan onto its own row — the ragged-look culprit). */
+    .cal-tb-left .cal-toolbar-section + .cal-toolbar-section,
+    .cal-tb-right .cal-toolbar-section + .cal-toolbar-section{
+      border-left: 1px solid var(--cal-border);
+      padding-left: 0.45rem;
+      margin-left: 0.1rem;
     }
 
     .cal-icon{
-      background: var(--cal-bg-medium);
+      background: var(--cal-bg-2);
       color: var(--cal-text);
       border: 1px solid var(--cal-border);
-      border-radius: 8px;
-      padding: 0.5rem;
+      border-radius: 9px;
+      padding: 0.4rem 0.55rem;
       min-width: 44px;
       min-height: 44px;
       font: 14px/1.2 Segoe UI, system-ui, sans-serif;
       white-space: nowrap;
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -114,106 +85,95 @@
       flex-shrink: 0;
     }
 
-    @media (min-width: 640px){
-      .cal-icon{
-        padding: 0.5rem 0.75rem;
-      }
-    }
-
-    .cal-icon:hover{
-      background: #222;
-      border-color: #3a3a3a;
-    }
+    .cal-icon:hover{ background: #26262c; border-color: #3a3a42; }
+    .cal-icon:active{ transform: translateY(1px); }
 
     .cal-icon[aria-pressed="true"]{
       background: var(--cal-accent);
       color: #000;
       border-color: var(--cal-accent);
       font-weight: 600;
+      box-shadow: 0 0 0 1px var(--cal-accent);
     }
+    .cal-icon[aria-pressed="true"]:hover{ background: var(--cal-accent-hover); }
+    .cal-icon:disabled{ opacity: 0.4; cursor: not-allowed; }
 
-    .cal-icon[aria-pressed="true"]:hover{
-      background: var(--cal-accent-hover);
-    }
-
-    .cal-icon:disabled{
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-
+    /* Primary export button: a flat accent fill (not the lone gradient it used to be),
+       clearly primary but distinct from the solid-accent aria-pressed active tool. */
     .cal-icon.cal-btn-download{
-      background: linear-gradient(135deg, #00d4ff 0%, #0099ff 100%);
+      background: var(--cal-accent);
       color: #000;
       font-weight: 600;
-      border: none;
-      box-shadow: 0 2px 8px rgba(0, 212, 255, 0.3);
+      border-color: var(--cal-accent);
     }
+    .cal-icon.cal-btn-download:hover{ background: var(--cal-accent-hover); }
 
-    .cal-icon.cal-btn-download:hover{
-      background: linear-gradient(135deg, #00b8e6 0%, #0088e6 100%);
-      box-shadow: 0 3px 12px rgba(0, 212, 255, 0.4);
-      transform: translateY(-1px);
-    }
+    /* Clear-All is destructive and was visually near-identical to Delete. Danger tint. */
+    .cal-icon.cal-btn-danger{ border-color: #7a2626; color: #ff9b9b; }
+    .cal-icon.cal-btn-danger:hover{ background: #2a1414; border-color: #a33; }
 
+    /* A fixed square metric box for the glyph so full-color emoji (🖐📐🗑💾) and thin
+       Unicode symbols (⌖ ∠ ◎ 〰 ➖ ⋮ …) share one footprint and stop rendering ragged. */
     .cal-icon .cal-icon-emoji{
-      font-size: 18px;
-      line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px; font-size: 18px; line-height: 1;
+    }
+    .cal-icon .cal-icon-text{ font-size: 13px; display: inline; }
+
+    /* Desktop mouse: icon-only glyph groups (labels only where flagged), smaller targets
+       — this is what actually lets the whole bar collapse onto one row. Discoverability is
+       preserved via the hover tooltip + aria-label. */
+    @media (hover: hover) and (pointer: fine){
+      .cal-icon{ min-width: 38px; min-height: 38px; padding: 0.35rem 0.45rem; }
+      .cal-icon .cal-icon-text{ display: none; }
+      .cal-icon--label .cal-icon-text{ display: inline; }
     }
 
-    @media (min-width: 640px){
-      .cal-icon .cal-icon-emoji{
-        font-size: 16px;
-      }
-    }
-
-    .cal-icon .cal-icon-text{
-      font-size: 13px;
-      display: none; /* Hidden on narrow mouse layouts (see below) */
-    }
-
-    @media (min-width: 640px){
-      .cal-icon .cal-icon-text{
-        display: inline; /* Show text on larger screens */
-      }
-    }
-
-    /* On touch devices the hover tooltip never appears and the visible label was
-       hidden below 640px, leaving cryptic glyphs. Show the label on any coarse
-       pointer so the toolbar is legible on phones (it already scrolls horizontally). */
+    /* Touch: keep 44px targets; icon-only for the glyph tools (labels only on flagged
+       primary controls) so the single scroll row stays short; the active tool is named in
+       the status strip and every button keeps its aria-label. */
     @media (pointer: coarse){
-      .cal-icon .cal-icon-text{ display: inline; }
+      .cal-topbar{ flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start;
+                   -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+      .cal-topbar::-webkit-scrollbar{ display: none; }
+      .cal-tb-left, .cal-tb-right{ flex-wrap: nowrap; }
+      .cal-icon .cal-icon-text{ display: none; }
+      .cal-icon--label .cal-icon-text{ display: inline; }
     }
 
-    /* Keyboard focus ring — the buttons are aria-labeled but had no visible focus
-       indicator, so keyboard/switch users couldn't see where they were. */
+    /* Position-aware scroll cue (touch only): fades appear on the side(s) that have more
+       toolbar off-screen and vanish at each end — unlike the old sticky gradient that was
+       pinned permanently to the right edge and never told you where you were. */
+    .cal-scroll-cue{
+      position: absolute; top: 0; width: 30px;
+      pointer-events: none; z-index: 11; opacity: 0; transition: opacity 0.15s ease;
+    }
+    .cal-scroll-cue--l{ left: 0; background: linear-gradient(to right, var(--cal-bg-1), transparent); }
+    .cal-scroll-cue--r{ right: 0; background: linear-gradient(to left, var(--cal-bg-1), transparent); }
+    .cal-topbar-scroll[data-ov-left]  .cal-scroll-cue--l{ opacity: 1; }
+    .cal-topbar-scroll[data-ov-right] .cal-scroll-cue--r{ opacity: 1; }
+    @media (hover: hover) and (pointer: fine){ .cal-scroll-cue{ display: none; } }
+
+    /* Keyboard focus ring. */
     .cal-icon:focus-visible,
     .cal-quick-save-menu button:focus-visible,
     .cal-panel input:focus-visible,
-    .cal-panel select:focus-visible{
+    .cal-panel select:focus-visible,
+    .cal-kpi button:focus-visible{
       outline: 2px solid var(--cal-accent);
       outline-offset: 2px;
     }
 
-    /* Clear-All is destructive and was visually near-identical to Delete (both trash
-       glyphs). Give it a distinct danger tint so it isn't mistaken for Delete. */
-    .cal-icon.cal-btn-danger{
-      border-color: #7a2626;
-      color: #ff9b9b;
-    }
-    .cal-icon.cal-btn-danger:hover{
-      background: #2a1414;
-      border-color: #a33;
-    }
-
-    /* Tooltip - only on desktop with mouse */
+    /* Tooltip - mouse only. Opens DOWNWARD so a top-row button's tip isn't clipped
+       off the top of the viewport (the bar is now a single top row on desktop). */
     @media (hover: hover) and (pointer: fine) {
       .cal-icon::after{
         content: attr(data-tooltip);
         position: absolute;
-        bottom: calc(100% + 8px);
+        top: calc(100% + 8px);
         left: 50%;
         transform: translateX(-50%);
-        background: rgba(0, 0, 0, 0.9);
+        background: rgba(0, 0, 0, 0.92);
         color: #fff;
         padding: 0.4rem 0.6rem;
         border-radius: 6px;
@@ -224,28 +184,7 @@
         transition: opacity 0.2s ease;
         z-index: 100;
       }
-
-      .cal-icon:hover::after{
-        opacity: 1;
-      }
-    }
-
-    /* Scrollbar styling for toolbar */
-    .cal-topbar::-webkit-scrollbar{
-      height: 4px;
-    }
-
-    .cal-topbar::-webkit-scrollbar-track{
-      background: var(--cal-bg-dark);
-    }
-
-    .cal-topbar::-webkit-scrollbar-thumb{
-      background: var(--cal-border);
-      border-radius: 2px;
-    }
-
-    .cal-topbar::-webkit-scrollbar-thumb:hover{
-      background: #3a3a3a;
+      .cal-icon:hover::after{ opacity: 1; }
     }
 
     .cal-sheet{
@@ -459,23 +398,81 @@
       font-size: 16px;
     }
 
-    /* Always-visible status strip pinned to the very bottom (carries the
-       "not calibrated" warning), with the settings sheet stacked just above it. */
+    /* Always-visible status strip pinned to the very bottom. Now a flex row of wrapping
+       chips (single DOM path for calibrated + uncalibrated), so the load-bearing
+       calibration warning and its "Set a scale" recovery button never truncate the way
+       the old white-space:nowrap ellipsized line did. Its measured height feeds back into
+       --cal-kpi-h (see updateKPI) so the reserved space below tracks a two-line strip. */
     .cal-kpi{
       position: fixed;
       left: 0; right: 0; bottom: 0;
       z-index: 12;
       margin: 0;
       padding: 5px 10px;
-      color: #ddd;
-      text-align: center;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      background: rgba(10,10,10,0.9);
+      min-height: 24px;
+      box-sizing: border-box;
+      color: #cfcfd6;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+      gap: 5px 7px;
+      white-space: normal;
+      background: rgba(13,13,15,0.94);
       border-top: 1px solid var(--cal-border);
-      font: 12px/1.35 Segoe UI, system-ui, sans-serif;
+      backdrop-filter: blur(4px);
+      font: 12px/1.3 Segoe UI, system-ui, sans-serif;
     }
+    /* Before the first measurement view is built the strip has no chips (e.g. on the
+       landing page); collapse it so it doesn't show as a stray empty bar. */
+    .cal-kpi:empty{ display: none; }
+    .cal-chip{
+      display: inline-flex; align-items: center;
+      padding: 2px 9px; border-radius: 999px;
+      background: var(--cal-bg-2); border: 1px solid var(--cal-border);
+      color: #cfcfd6; font-size: 12px;
+    }
+    .cal-chip--lead{ background: transparent; border-color: transparent; color: #f2f2f4; font-weight: 600; padding-left: 0; }
+    .cal-chip--muted{ background: transparent; border-color: transparent; color: #8a8a92; }
+    .cal-chip--ok{ background: rgba(0,212,255,0.12); color: #8fe6ff; border-color: rgba(0,212,255,0.35); }
+    .cal-chip--warn{ background: rgba(255,180,0,0.14); color: #ffcf6b; border-color: rgba(255,180,0,0.42); font-weight: 600; }
+    .cal-chip.cal-chip--action{
+      background: var(--cal-accent); color: #000; border-color: var(--cal-accent);
+      font-weight: 700; cursor: pointer; min-height: 30px; padding: 2px 12px;
+    }
+    .cal-chip.cal-chip--action:hover{ background: var(--cal-accent-hover); }
+
+    /* Settings panel sticky header with an explicit Done/close (the bare <details> had no
+       discoverable dismissal — you had to tap a tool, which side-effects a tool change). */
+    .cal-panel-head{
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 1;
+      margin: -1rem -1rem 0.75rem; padding: 0.75rem 1rem;
+      background: var(--cal-panel-bg, #0f0f12);
+      border-bottom: 1px solid var(--cal-border);
+    }
+    .cal-panel-head strong{ font-size: 15px; }
+    .cal-panel-head .cal-panel-done{
+      background: var(--cal-bg-2); color: var(--cal-text);
+      border: 1px solid var(--cal-border); border-radius: 8px;
+      min-height: 40px; padding: 0 16px; font: 600 14px Segoe UI, system-ui, sans-serif; cursor: pointer;
+    }
+    .cal-panel-head .cal-panel-done:hover{ background: #26262c; border-color: var(--cal-accent); }
+
+    /* Fixed primary Save button for touch: export is the app's headline output, so it is
+       one thumb-tap regardless of scroll position or active tool. Mouse users have the
+       toolbar Save PNG button instead. Hidden in focus mode. */
+    .cal-save-fab{
+      position: fixed; right: 1rem; bottom: calc(var(--cal-kpi-h) + 1rem); z-index: 12;
+      background: var(--cal-accent); color: #000; border: none; border-radius: 999px;
+      padding: 0.7rem 1.15rem; font: 600 14px/1 Segoe UI, system-ui, sans-serif;
+      display: none; align-items: center; gap: 0.45rem; cursor: pointer;
+      box-shadow: 0 4px 16px rgba(0,212,255,0.4); white-space: nowrap;
+    }
+    .cal-save-fab:hover{ background: var(--cal-accent-hover); }
+    .cal-save-fab .cal-icon-emoji{ font-size: 18px; }
+    @media (pointer: coarse){ .cal-save-fab{ display: inline-flex; } }
+    .cal-view[data-tools="collapsed"] .cal-save-fab{ display: none; }
   `;
   document.head.appendChild(st);
 })();
@@ -512,6 +509,15 @@ window.CalibUI = (function(){
       // descendant CSS selector can't reach it — toggle it directly for focus mode.
       const kpi = document.getElementById('cal-kpi');
       if (kpi) kpi.style.display = collapsed ? 'none' : '';
+      // Toggling focus changes the canvas box (toolbar + reserved KPI row appear/vanish),
+      // so re-fit: without this the backing store went stale, leaving a blurry
+      // browser-scaled image with misaligned taps until an unrelated resize fired.
+      if (overlay && overlay._onBoxResize) overlay._onBoxResize();
+      // Don't strand keyboard focus on a now-hidden button.
+      try {
+        if (collapsed) { if (fab) fab.focus(); }
+        else { (settingsBtn || focusBtn || {}).focus && (settingsBtn || focusBtn).focus(); }
+      } catch (e) {}
     }
 
     // --------- Bottom sheet ----------
@@ -525,6 +531,20 @@ window.CalibUI = (function(){
 
     const body = document.createElement('div');
     body.className = 'cal-panel';
+
+    // Sticky header with an explicit Done button so the sheet has a discoverable close
+    // (previously it could only be dismissed by tapping a tool, which changed the tool).
+    const panelHead = document.createElement('div');
+    panelHead.className = 'cal-panel-head';
+    const panelTitle = document.createElement('strong');
+    panelTitle.textContent = '⚙️ Settings';
+    const panelDone = document.createElement('button');
+    panelDone.type = 'button'; panelDone.className = 'cal-panel-done';
+    panelDone.textContent = 'Done';
+    panelDone.setAttribute('aria-label', 'Close settings');
+    panelDone.onclick = () => { details.open = false; };
+    panelHead.append(panelTitle, panelDone);
+    body.appendChild(panelHead);
 
     // Fill the bottom sheet
     if (overlay) {
@@ -742,6 +762,12 @@ window.CalibUI = (function(){
       return b;
     };
 
+    // Two clusters: measurement tools on the LEFT, actions on the RIGHT. justify-content
+    // space-between on .cal-topbar keeps them apart on one row and drops the right cluster
+    // cleanly to a second row when narrow — no more 3-4 ragged rows with orphaned dividers.
+    const left = document.createElement('div');  left.className = 'cal-tb-left';
+    const right = document.createElement('div'); right.className = 'cal-tb-right';
+
     // New Image button (goes back to upload)
     const newImageSection = document.createElement('div');
     newImageSection.className = 'cal-toolbar-section';
@@ -752,14 +778,10 @@ window.CalibUI = (function(){
         window.location.reload();
       }
     });
+    newImage.classList.add('cal-icon--label');   // keep the word label even in icon-only layouts
 
     newImageSection.appendChild(newImage);
-    top.appendChild(newImageSection);
-
-    // Divider
-    const divNew = document.createElement('div');
-    divNew.className = 'cal-toolbar-divider';
-    top.appendChild(divNew);
+    left.appendChild(newImageSection);
 
     // Calibration chip — the reference size was buried two taps deep in the settings
     // sheet, so a wrong/default square silently scaled every measurement. Surface it as
@@ -772,11 +794,11 @@ window.CalibUI = (function(){
     // after firing — which would immediately undo openCalibration()'s panel-open.
     const calChip = document.createElement('button');
     calChip.type = 'button';
-    calChip.className = 'cal-icon';
+    calChip.className = 'cal-icon cal-icon--label';
     calChip.innerHTML = '<span class="cal-icon-emoji">📐</span><span class="cal-icon-text"></span>';
     calChip.onclick = () => openCalibration();
     calSection.appendChild(calChip);
-    top.appendChild(calSection);
+    left.appendChild(calSection);
 
     // Updates the chip's visible size + accessible label from the current scale state.
     function reflectCalChip(){
@@ -793,11 +815,6 @@ window.CalibUI = (function(){
     }
     reflectCalChip();
 
-    // Divider
-    const divCal = document.createElement('div');
-    divCal.className = 'cal-toolbar-divider';
-    top.appendChild(divCal);
-
     // Mode buttons (annotation tools)
     const toolsSection = document.createElement('div');
     toolsSection.className = 'cal-toolbar-section';
@@ -811,12 +828,7 @@ window.CalibUI = (function(){
     toolsSection.setAttribute('role', 'group');
     toolsSection.setAttribute('aria-label', 'Tools');
     toolsSection.append(...modeBtns);
-    top.appendChild(toolsSection);
-
-    // Divider
-    const div1 = document.createElement('div');
-    div1.className = 'cal-toolbar-divider';
-    top.appendChild(div1);
+    left.appendChild(toolsSection);
 
     // Edit section
     const editSection = document.createElement('div');
@@ -851,12 +863,7 @@ window.CalibUI = (function(){
     editSection.setAttribute('role', 'group');
     editSection.setAttribute('aria-label', 'Edit');
     editSection.append(undo, redo, finish, del, clearAll);
-    top.appendChild(editSection);
-
-    // Divider
-    const div2 = document.createElement('div');
-    div2.className = 'cal-toolbar-divider';
-    top.appendChild(div2);
+    right.appendChild(editSection);
 
     // Zoom section
     const zoomSection = document.createElement('div');
@@ -877,12 +884,7 @@ window.CalibUI = (function(){
     zoomSection.setAttribute('role', 'group');
     zoomSection.setAttribute('aria-label', 'Zoom');
     zoomSection.append(zoomOut, zoomIn, fit);
-    top.appendChild(zoomSection);
-
-    // Divider
-    const div3 = document.createElement('div');
-    div3.className = 'cal-toolbar-divider';
-    top.appendChild(div3);
+    right.appendChild(zoomSection);
 
     // Download section
     const downloadSection = document.createElement('div');
@@ -892,15 +894,16 @@ window.CalibUI = (function(){
     // Quick download PNG button
     const quickDownload = document.createElement('button');
     quickDownload.type = 'button';
-    quickDownload.className = 'cal-icon cal-btn-download';
+    quickDownload.className = 'cal-icon cal-btn-download cal-icon--label';
     quickDownload.setAttribute('data-tooltip', 'Quick Download PNG');
+    quickDownload.setAttribute('aria-label', 'Quick download PNG');
     quickDownload.innerHTML = '<span class="cal-icon-emoji">💾</span><span class="cal-icon-text">Save PNG</span>';
     quickDownload.onclick = () => { if (overlay.savePNG) overlay.savePNG(); };
 
     // Download options menu button
     const download = document.createElement('button');
     download.type = 'button';
-    download.className = 'cal-icon';
+    download.className = 'cal-icon cal-icon--label';
     download.setAttribute('data-tooltip', 'More Download Options');
     download.setAttribute('aria-label', 'More download options');
     download.setAttribute('aria-haspopup', 'menu');
@@ -975,21 +978,73 @@ window.CalibUI = (function(){
       if (e.key === 'Escape'){ e.preventDefault(); closeSaveMenu(true); }
     });
 
-    top.appendChild(downloadSection);
+    right.appendChild(downloadSection);
+
+    // Meta section (focus + settings), grouped so the separator + wrapping behave.
+    const metaSection = document.createElement('div');
+    metaSection.className = 'cal-toolbar-section';
 
     // Focus mode: hide the tools for an unobstructed, full-height view of the image.
     // The floating "Show Tools" button (below) brings them back.
-    const focus = btn('⛶', '', 'Focus mode (hide tools)', () => setCollapsed(true));
-    top.appendChild(focus);
+    const focusBtn = btn('⛶', '', 'Focus mode (hide tools)', () => setCollapsed(true));
 
-    // More button
-    const more = btn('⋮', '', 'More Settings', () => {
-      details.open = !details.open;
+    // Settings button. Built DIRECTLY (not via btn()) — btn()'s handler force-closes the
+    // sheet after firing, so routing this toggle through it opened then instantly closed
+    // the panel (the ⋮ button never worked). Relabelled "Settings": the sheet had no
+    // discoverable, correctly-named opener (only the 📐 chip, which reads as calibration).
+    const settingsBtn = document.createElement('button');
+    settingsBtn.type = 'button';
+    settingsBtn.className = 'cal-icon';
+    settingsBtn.setAttribute('data-tooltip', 'Settings');
+    settingsBtn.setAttribute('aria-label', 'Settings');
+    settingsBtn.setAttribute('aria-haspopup', 'dialog');
+    settingsBtn.setAttribute('aria-expanded', 'false');
+    settingsBtn.innerHTML = '<span class="cal-icon-emoji">⚙️</span><span class="cal-icon-text"></span>';
+    settingsBtn.onclick = () => { details.open = !details.open; };
+    // Keep aria-expanded honest whether the sheet is toggled from here, the 📐 chip,
+    // the Done button, or a tool tap (which closes it as a side effect). Also hide the
+    // Save FAB while the sheet is open so it doesn't float over the panel controls
+    // (setting '' restores media-query/focus-mode CSS control on close).
+    details.addEventListener('toggle', () => {
+      settingsBtn.setAttribute('aria-expanded', String(details.open));
+      if (saveFab) saveFab.style.display = details.open ? 'none' : '';
     });
 
-    top.appendChild(more);
+    metaSection.append(focusBtn, settingsBtn);
+    right.appendChild(metaSection);
 
-    wrap.prepend(top);
+    top.append(left, right);
+
+    // Wrap the toolbar so a position-aware scroll cue can overlay its edges on touch
+    // (where the bar becomes a single horizontally-scrollable row).
+    const scrollWrap = document.createElement('div');
+    scrollWrap.className = 'cal-topbar-scroll';
+    const cueL = document.createElement('div'); cueL.className = 'cal-scroll-cue cal-scroll-cue--l';
+    const cueR = document.createElement('div'); cueR.className = 'cal-scroll-cue cal-scroll-cue--r';
+    scrollWrap.append(top, cueL, cueR);
+    wrap.prepend(scrollWrap);
+
+    // Show a left/right fade only for the side(s) that still have toolbar off-screen, and
+    // size the fades to the toolbar's real height. Runs on scroll + when the layout changes.
+    function updateScrollCue(){
+      // build() runs once per upload and the old toolbar is removed from the DOM; the
+      // window 'resize' listener below would otherwise pile up across uploads. Self-remove
+      // once our toolbar is detached (matches how the overlay tears down its own listeners).
+      if (!top.isConnected){ window.removeEventListener('resize', updateScrollCue); return; }
+      const max = top.scrollWidth - top.clientWidth;
+      const sl = top.scrollLeft;
+      if (max > 2) {
+        scrollWrap.toggleAttribute('data-ov-left', sl > 2);
+        scrollWrap.toggleAttribute('data-ov-right', sl < max - 2);
+      } else {
+        scrollWrap.removeAttribute('data-ov-left');
+        scrollWrap.removeAttribute('data-ov-right');
+      }
+      const h = top.offsetHeight; cueL.style.height = cueR.style.height = h + 'px';
+    }
+    top.addEventListener('scroll', updateScrollCue, { passive: true });
+    window.addEventListener('resize', updateScrollCue, { passive: true });
+    requestAnimationFrame(updateScrollCue);
 
     // --------- Floating "Tools" button for focus mode ----------
     const fab = document.createElement('button');
@@ -999,6 +1054,18 @@ window.CalibUI = (function(){
     fab.title = 'Show toolbar and panels';
     fab.onclick = () => setCollapsed(false);
     wrap.appendChild(fab);
+
+    // --------- Fixed primary Save button (touch only) ----------
+    // Export is the app's headline output but lived at the far end of the mobile scroll
+    // strip. This puts a one-tap PNG save in the thumb zone; the format menu (JSON/CSV/
+    // DXF/SVG) stays on the Options button. Hidden in focus mode via CSS.
+    const saveFab = document.createElement('button');
+    saveFab.type = 'button';
+    saveFab.className = 'cal-save-fab';
+    saveFab.setAttribute('aria-label', 'Save annotated PNG');
+    saveFab.innerHTML = '<span class="cal-icon-emoji">💾</span><span>Save</span>';
+    saveFab.onclick = () => { if (overlay.savePNG) overlay.savePNG(); };
+    wrap.appendChild(saveFab);
 
     // Reflect pressed tool + selection state
     function reflect(){
