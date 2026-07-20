@@ -422,6 +422,7 @@
       border-top: 1px solid var(--cal-border);
       backdrop-filter: blur(4px);
       font: 12px/1.3 Segoe UI, system-ui, sans-serif;
+      font-variant-numeric: tabular-nums;  /* equal-width digits: zoom/scale value changes don't reflow chip widths */
     }
     /* Before the first measurement view is built the strip has no chips (e.g. on the
        landing page); collapse it so it doesn't show as a stray empty bar. */
@@ -542,7 +543,8 @@ window.CalibUI = (function(){
     panelDone.type = 'button'; panelDone.className = 'cal-panel-done';
     panelDone.textContent = 'Done';
     panelDone.setAttribute('aria-label', 'Close settings');
-    panelDone.onclick = () => { details.open = false; };
+    // Restore focus to the opener so keyboard/switch users aren't stranded on <body>.
+    panelDone.onclick = () => { details.open = false; try { settingsBtn.focus(); } catch (e) {} };
     panelHead.append(panelTitle, panelDone);
     body.appendChild(panelHead);
 
@@ -970,9 +972,10 @@ window.CalibUI = (function(){
     };
 
     // Close menu when clicking outside
-    document.addEventListener('click', (e) => {
+    const onDocClickCloseSave = (e) => {
       if (!downloadSection.contains(e.target)) closeSaveMenu(false);
-    });
+    };
+    document.addEventListener('click', onDocClickCloseSave);
     // Escape closes and returns focus to the trigger (keyboard users could not dismiss it before).
     saveMenu.addEventListener('keydown', (e) => {
       if (e.key === 'Escape'){ e.preventDefault(); closeSaveMenu(true); }
@@ -1066,6 +1069,14 @@ window.CalibUI = (function(){
     saveFab.innerHTML = '<span class="cal-icon-emoji">💾</span><span>Save</span>';
     saveFab.onclick = () => { if (overlay.savePNG) overlay.savePNG(); };
     wrap.appendChild(saveFab);
+
+    // Deterministic teardown of the document/window listeners this build() attached, called
+    // from overlay.destroy() when the #viewer subtree is swapped on a new upload — otherwise
+    // one save-menu click listener + one scroll-cue resize listener would leak per upload.
+    overlay._uiCleanup = () => {
+      document.removeEventListener('click', onDocClickCloseSave);
+      window.removeEventListener('resize', updateScrollCue);
+    };
 
     // Reflect pressed tool + selection state
     function reflect(){

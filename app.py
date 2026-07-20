@@ -252,7 +252,9 @@ app.layout = html.Div([
         ], className="landing-card"),
     ], id="top-panel"),
     html.Div(id="viewer", style={"position": "relative"}),
-    html.Div(id="cal-kpi", className="cal-kpi"),
+    # role/aria-live so the load-bearing calibration state + measurement readout the JS
+    # writes here are announced to screen readers (it's polite so it won't interrupt).
+    html.Div(id="cal-kpi", className="cal-kpi", role="status", **{"aria-live": "polite"}),
 ], id="landing-root", style={"fontFamily": "Segoe UI, sans-serif"})
 
 

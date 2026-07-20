@@ -48,6 +48,12 @@
         // Last measured KPI height written into --cal-kpi-h, so we only touch the CSS var
         // (and trigger a reflow) when the status strip's wrapped height actually changes.
         this._kpiH=0;
+        // Signature of the last-rendered status strip; lets updateKPI skip rebuilding the
+        // chips (and the offsetHeight reflow) on frames where nothing it shows changed.
+        this._kpiSig=null;
+        // Set right before a --cal-kpi-h write so the ResizeObserver ignores the box change
+        // that write causes (see the observer in _wire) instead of re-fitting from it.
+        this._suppressRefit=false;
 
         this.opts = {
           mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','circle','circle3pt','note','setscale'
@@ -126,6 +132,9 @@
       // growing the letterbox bars — otherwise preserve their zoom/pan untouched.
       _onBoxResize(){
         if(this._destroyed || !this.img) return;
+        // The box changed, so the strip may rewrap at the same content — force updateKPI
+        // to re-measure its height (the signature gate would otherwise skip it).
+        this._kpiSig=null;
         const atFit = Math.abs(this.vp.k - this._fitK) < 1e-4;
         if(atFit){
           this.vp.fit(this.canvas, this.img);
@@ -355,7 +364,15 @@
         if(typeof ResizeObserver!=='undefined'){
           this._ro = new ResizeObserver(()=>{
             if(this._roRAF) return;
-            this._roRAF = requestAnimationFrame(()=>{ this._roRAF=0; this._onBoxResize(); });
+            this._roRAF = requestAnimationFrame(()=>{
+              this._roRAF=0;
+              // updateKPI writes --cal-kpi-h, which changes .cal-view padding-bottom and
+              // thus this very canvas box — firing us back. Re-fitting on that self-caused
+              // tick creates a feedback loop (and, mid-drag, a visible zoom/pan jump), so
+              // absorb it: refresh the backing store to stay crisp, but do NOT re-fit.
+              if(this._suppressRefit){ this._suppressRefit=false; this.vp._updateBackingStore(); this.requestDraw(); return; }
+              this._onBoxResize();
+            });
           });
           try{ this._ro.observe(this.canvas); }catch(e){}
         }
@@ -378,6 +395,9 @@
         if(this._ro){ try{ this._ro.disconnect(); }catch(e){} this._ro=null; }
         if(this._roRAF){ cancelAnimationFrame(this._roRAF); this._roRAF=0; }
         if(this._rAF){ cancelAnimationFrame(this._rAF); this._rAF=0; }
+        // Tear down the document/window listeners UI.build() attached (save-menu
+        // outside-click, toolbar scroll-cue resize) so they don't accumulate per upload.
+        try{ this._uiCleanup && this._uiCleanup(); }catch(e){}
         const box=document.getElementById('cal-scale-input'); if(box) box.remove();
       }
 
@@ -860,50 +880,68 @@
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
         const narrow = window.innerWidth < 480;
 
-        el.textContent=''; // clear previous chips
-        const chip=(text,cls)=>{ const sp=document.createElement('span'); sp.className='cal-chip'+(cls?' '+cls:''); sp.textContent=text; el.appendChild(sp); return sp; };
-
-        // Lead: the selected item's precise value (+ copy hint), else the active tool's
-        // step-by-step hint. This is the most useful thing on the strip, so it comes first.
+        // Assemble the chips as data first so we can skip the whole DOM rebuild (and the
+        // offsetHeight reflow) on frames where nothing shown changed — idle redraws, pans
+        // and hovers don't churn the strip.
+        const specs=[]; // {text, cls?, action?}
         const rd=this._selectedReadout();
-        if(rd){ chip(`🔎 ${rd.label}: ${rd.text}`, 'cal-chip--lead'); chip('C to copy','cal-chip--muted'); }
-        else { const h=this._toolHint(); if(h) chip(h, 'cal-chip--lead'); }
+        if(rd){ specs.push({text:`🔎 ${rd.label}: ${rd.text}`, cls:'cal-chip--lead'}); specs.push({text:'C to copy', cls:'cal-chip--muted'}); }
+        else { const th=this._toolHint(); if(th) specs.push({text:th, cls:'cal-chip--lead'}); }
 
         if(s<=0){
-          chip('⚠️ Not calibrated','cal-chip--warn');
-          const b=document.createElement('button'); b.type='button'; b.className='cal-chip cal-chip--action';
-          b.textContent='📐 Set a scale';
-          b.setAttribute('aria-label','Set a scale by drawing a line of known length');
-          b.onclick=()=>{ this.setMode('setscale'); };
-          el.appendChild(b);
+          specs.push({text:'⚠️ Not calibrated', cls:'cal-chip--warn'});
+          specs.push({text:'📐 Set a scale', cls:'cal-chip--action', action:true});
         }else{
           // A manual scale is user-defined (trusted); only auto-detected marker scale
           // carries a confidence, so only it can be flagged approximate.
           const lowConf = !this.opts.manualMmPerPx && this.data && this.data.calibration_confidence==='low';
-          if(lowConf) chip('⚠️ Approximate — verify with Set scale','cal-chip--warn');
+          if(lowConf) specs.push({text:'⚠️ Approximate — verify with Set scale', cls:'cal-chip--warn'});
           // Flag a marker size restored from a previous photo so a stale remembered value
           // can't silently rescale an unrelated image without the user noticing.
           const remembered = (!this.opts.manualMmPerPx && this._markerSizeFromMemory) ? ' (remembered)' : '';
           const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm sq${remembered}`;
           const unitPerPx=unit.fromMM(s);
-          chip(narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
-                      : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`);
-          if(!narrow) chip(`ref ${src}`);
+          specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
+                                    : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`});
+          if(!narrow) specs.push({text:`ref ${src}`});
           // Only linear measurements (lengths/areas/angles) are rectified for tilt;
           // circles stay on the uniform scale (see _selectedReadout).
-          if(!narrow && this._perspectiveActive()) chip('⟂ perspective-corrected', 'cal-chip--ok');
+          if(!narrow && this._perspectiveActive()) specs.push({text:'⟂ perspective-corrected', cls:'cal-chip--ok'});
         }
-        // On a phone, keep the strip to ~two lines: the lead + calibration state (both
-        // load-bearing) plus zoom, dropping the secondary status chips that would push it
-        // to four lines and steal image height. All of it stays on wider screens.
-        chip(`Zoom ${Math.round(this.vp.k*100)}%`);
-        if(!narrow){ const n=this.ann.items.length; chip(`Snap ${this.opts.snap?'on':'off'}`); chip(`${n} item${n===1?'':'s'}`); }
+        // On a phone keep the strip to ~two lines: lead + calibration state (both
+        // load-bearing) plus zoom, dropping the secondary chips. All of it stays wider.
+        specs.push({text:`Zoom ${Math.round(this.vp.k*100)}%`});
+        if(!narrow){ const n=this.ann.items.length; specs.push({text:`Snap ${this.opts.snap?'on':'off'}`}); specs.push({text:`${n} item${n===1?'':'s'}`}); }
 
-        // Feed the real height back into --cal-kpi-h (only on change, to avoid churn) so
-        // the .cal-view bottom reservation and the settings sheet offset track a strip
-        // that may have wrapped to two lines.
-        const h=Math.round(el.offsetHeight);
-        if(h>0 && h!==this._kpiH){ this._kpiH=h; document.documentElement.style.setProperty('--cal-kpi-h', h+'px'); }
+        const sig = specs.map(x=>(x.cls||'')+'|'+x.text).join('§');
+        if(sig===this._kpiSig) return;   // unchanged → no rebuild, no reflow, no announce
+        this._kpiSig=sig;
+
+        el.textContent='';
+        for(const x of specs){
+          if(x.action){
+            const b=document.createElement('button'); b.type='button'; b.className='cal-chip cal-chip--action';
+            b.textContent=x.text; b.setAttribute('aria-label','Set a scale by drawing a line of known length');
+            b.onclick=()=>{ this.setMode('setscale'); };
+            el.appendChild(b);
+          }else{
+            const sp=document.createElement('span'); sp.className='cal-chip'+(x.cls?' '+x.cls:''); sp.textContent=x.text; el.appendChild(sp);
+          }
+        }
+
+        // Feed the real height back into --cal-kpi-h so the .cal-view bottom reservation and
+        // the settings-sheet offset track a strip that wrapped to two lines — but ONLY when
+        // settled (not mid-drag/placement). Writing it resizes the canvas box, and doing so
+        // every frame while dragging an endpoint re-fit the image and made it visibly jump;
+        // a redraw after the gesture updates it. _suppressRefit tells the ResizeObserver to
+        // absorb the box change this write causes rather than re-fitting from it.
+        if(!this.drag && !this.selectedPoints.length){
+          const h=Math.round(el.offsetHeight);
+          if(h>0 && h!==this._kpiH){
+            this._kpiH=h; this._suppressRefit=true;
+            document.documentElement.style.setProperty('--cal-kpi-h', h+'px');
+          }
+        }
       }
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
