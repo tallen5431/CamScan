@@ -561,6 +561,26 @@ def calibrate_image(img_bgr: np.ndarray,
     # rectify measurements. Uses the first marker that carries one.
     homography = next((m["homography"] for m in markers if m.get("homography")), None)
 
+    # No RELIABLE calibration square? Look for a sheet of paper as a fallback reference.
+    # We run whenever confidence isn't "high" — including the trap case where the detector
+    # greedily latched onto a big bright rectangle (e.g. the sheet itself, or the part) as
+    # a low-confidence "square" and produced a bogus 30 mm scale. The paper detector's
+    # aspect filter rejects a real ~square, so it only fires on a genuinely paper-shaped
+    # quad. We return only its corners; the client confirms the real size (A4/Letter) —
+    # four corners yield a perspective homography, so a tilted photo still measures true
+    # (see detect_paper). Never auto-applied.
+    detected_rectangle = None
+    if calibration_confidence != "high":
+        try:
+            from detect_paper import detect_paper_sheet
+            detected_rectangle = detect_paper_sheet(img_bgr)
+            if detected_rectangle:
+                print(f"[Calibration] No square found; detected a paper sheet "
+                      f"(guess={detected_rectangle.get('guess')}, "
+                      f"aspect={detected_rectangle.get('aspect'):.2f}) — offering it as scale")
+        except Exception as e:
+            print(f"[Calibration] Paper-sheet detection skipped: {e}")
+
     cal_data: Dict[str, Any] = {
         "image": None,  # filled in save_outputs() if original file exists
         "image_size": {"width": int(W), "height": int(H)},
@@ -569,6 +589,7 @@ def calibrate_image(img_bgr: np.ndarray,
         "pixels_per_mm": px_per_mm_avg,
         "calibration_confidence": calibration_confidence,
         "homography": homography,
+        "detected_rectangle": detected_rectangle,  # fallback paper corners (client confirms size)
         "markers": markers
     }
 

@@ -87,6 +87,9 @@
           UI.build(wrap, this);           // builds the toolbar (its height defines the canvas top)
           this._layout();                  // size the canvas to the space under the toolbar + fit
           this.redraw();
+          // If no square calibrated this photo, offer the auto-detected sheet (if any) as
+          // a one-tap, tilt-corrected scale — the printerless happy path.
+          this._offerDetectedPaper();
         };
         // On decode/load failure, try the server file URL (data-img-fallback) once — it
         // survives HTTPS/proxy cases the base64 data-URI can trip on — then, if that
@@ -518,6 +521,7 @@
         if(Draw.resetLabels) Draw.resetLabels();   // start a fresh label-placement frame
         this._drawAnnotations();
         this._drawPreview();
+        this._drawDetectedRect();
 
         this.updateKPI();
       }
@@ -938,28 +942,35 @@
         this.requestDraw();
       }
 
+      // Build and apply a perspective scale from a rectangle's 4 image corners (from taps
+      // OR from auto-detection) given its real size. The longer real edge is assigned to
+      // whichever image edge is longer in pixels, so orientation (portrait/landscape) is
+      // handled automatically. Returns true on success. Shared by the manual Paper dialog
+      // and the auto-detected-sheet offer so both go through the exact same tested math.
+      _applyRectScale(corners, wmm, hmm){
+        const ordered=Geom.orderQuad(corners);
+        if(!ordered || !(wmm>0) || !(hmm>0)) return false;
+        const e0=Math.hypot(ordered[1][0]-ordered[0][0], ordered[1][1]-ordered[0][1]);
+        const e1=Math.hypot(ordered[2][0]-ordered[1][0], ordered[2][1]-ordered[1][1]);
+        const long=Math.max(wmm,hmm), short=Math.min(wmm,hmm);
+        const dst = (e0>=e1) ? [[0,0],[long,0],[long,short],[0,short]]
+                             : [[0,0],[short,0],[short,long],[0,long]];
+        const Hm=Geom.solveHomography(ordered, dst); if(!Hm) return false;
+        const areaPx=Geom.quadAreaPx(ordered);
+        const mmPerPx = areaPx>0 ? Math.sqrt((wmm*hmm)/areaPx) : 0;
+        this.setManualRectScale(Hm, mmPerPx, { w:long, h:short });
+        return true;
+      }
+
       // After the 4th corner tap, ask which rectangle was outlined (A4 / Letter / custom)
       // and build the homography. The tapped corners stay drawn behind the dialog so the
       // user can see what they outlined; the dialog only offers real, known sizes.
       _promptRectScale(imgPts){
-        const ordered=Geom.orderQuad(imgPts);
         const cleanup=()=>{ const b=document.getElementById('cal-rect-input'); if(b) b.remove();
                             this.selectedPoints=[]; this.hover=null; this.requestDraw(); };
-        // Assign the paper's longer real edge to whichever outlined edge is longer in
-        // pixels, so the scale is right whether the sheet sits portrait or landscape.
         const applyWH=(wmm,hmm)=>{
-          if(!ordered || !(wmm>0) || !(hmm>0)) return false;
-          const e0=Math.hypot(ordered[1][0]-ordered[0][0], ordered[1][1]-ordered[0][1]);
-          const e1=Math.hypot(ordered[2][0]-ordered[1][0], ordered[2][1]-ordered[1][1]);
-          const long=Math.max(wmm,hmm), short=Math.min(wmm,hmm);
-          const dst = (e0>=e1) ? [[0,0],[long,0],[long,short],[0,short]]
-                               : [[0,0],[short,0],[short,long],[0,long]];
-          const Hm=Geom.solveHomography(ordered, dst); if(!Hm) return false;
-          const areaPx=Geom.quadAreaPx(ordered);
-          const mmPerPx = areaPx>0 ? Math.sqrt((wmm*hmm)/areaPx) : 0;
-          this.setManualRectScale(Hm, mmPerPx, { w:long, h:short });
-          this.selectedPoints=[]; this.hover=null;
-          this.setMode('select');
+          if(!this._applyRectScale(imgPts, wmm, hmm)) return false;
+          this.selectedPoints=[]; this.hover=null; this.setMode('select');
           return true;
         };
 
@@ -988,6 +999,56 @@
         custom.append(wIn, times, hIn, uu, mkBtn('Set','primary', ()=>{ if(applyWH(parseFloat(wIn.value), parseFloat(hIn.value)) ) box.remove(); }));
         box.append(title, sub, row, custom); document.body.appendChild(box);
         box.addEventListener('keydown',(e)=>{ e.stopPropagation(); if(e.key==='Escape'){ e.preventDefault(); cleanup(); } });
+      }
+
+      // Offer a one-tap scale from a sheet of paper the server auto-detected (its corners
+      // arrive in data.detected_rectangle). Purely a suggestion: the user confirms the real
+      // size (A4/Letter) — the app can't tell those two apart — and can dismiss. Only ever
+      // shown when nothing else has calibrated the image, and once per photo.
+      _offerDetectedPaper(){
+        const rect = this.data && this.data.detected_rectangle;
+        if(!rect || !Array.isArray(rect.corners) || rect.corners.length!==4) return;
+        if(this.opts.manualHomography || this.opts.manualMmPerPx) return;   // already scaled
+        if(this.data.calibration_confidence === 'high') return;             // trust a real square
+        if(this._paperOffered) return; this._paperOffered = true;           // once per image
+
+        const corners = rect.corners.map(p => [Number(p[0]), Number(p[1])]);
+        this._previewDetectedRect = corners;   // drawn by _drawDetectedRect so the user sees it
+        this.requestDraw();
+
+        const finish = (fn)=>{ const b=document.getElementById('cal-paper-offer'); if(b) b.remove();
+                               this._previewDetectedRect = null; if(fn) fn(); this.requestDraw(); };
+        const choose = (wmm,hmm)=>{ if(this._applyRectScale(corners, wmm, hmm)) finish(()=>this.setMode('select'));
+                                    else finish(); };
+
+        const box=document.createElement('div'); box.id='cal-paper-offer';
+        box.style.cssText='position:fixed;z-index:42;left:50%;top:12px;transform:translateX(-50%);background:#0e0e0e;border:2px solid #00d4ff;border-radius:12px;padding:12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.6);max-width:calc(100vw - 16px);font:14px Segoe UI,system-ui,sans-serif;color:#eee;';
+        const t=document.createElement('div');
+        t.innerHTML='📄 <b>Sheet of paper detected.</b> Use it to set a tilt-corrected scale?';
+        t.style.cssText='margin-bottom:8px;';
+        const row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+        const guess = rect.guess==='letter' ? 'letter' : 'a4';
+        const mkB=(label,primary,fn)=>{ const b=document.createElement('button'); b.type='button'; b.textContent=label;
+          b.style.cssText='min-height:44px;padding:8px 14px;border-radius:8px;font-size:14px;cursor:pointer;'+(primary
+            ?'background:#00d4ff;color:#000;border:none;font-weight:600;'
+            :'background:#151515;color:#cde;border:1px solid #2a3540;'); b.onclick=fn; return b; };
+        row.appendChild(mkB('A4 · 210×297', guess==='a4', ()=>choose(210,297)));
+        row.appendChild(mkB('US Letter · 216×279', guess==='letter', ()=>choose(215.9,279.4)));
+        row.appendChild(mkB('No thanks', false, ()=>finish()));
+        box.append(t,row); document.body.appendChild(box);
+      }
+
+      // Draw the auto-detected sheet's outline (a dashed ring + corner dots) so the user
+      // can see WHAT was detected before accepting it as a scale.
+      _drawDetectedRect(){
+        const q=this._previewDetectedRect; if(!q || q.length!==4) return;
+        const c=this.ctx;
+        c.save();
+        c.setLineDash([12,8]); c.strokeStyle='rgba(0,212,255,.95)'; c.lineWidth=Draw.px(this.canvas,2.5);
+        c.beginPath(); c.moveTo(q[0][0],q[0][1]); for(let i=1;i<4;i++) c.lineTo(q[i][0],q[i][1]); c.closePath(); c.stroke();
+        c.setLineDash([]); c.fillStyle='rgba(0,212,255,.95)';
+        for(const [x,y] of q){ c.beginPath(); c.arc(x,y,Draw.px(this.canvas,6),0,Math.PI*2); c.fill(); }
+        c.restore();
       }
 
       // Live guidance for the active tool, e.g. "Angle — click point 2 of 3", so a
