@@ -160,6 +160,9 @@ app.index_string = """
       .landing-sub{ color:#9a9aa4; font-size:14px; margin:0; }
       .landing-how{ color:#c9c9d0; font-size:13px; line-height:1.5; background:rgba(0,212,255,.06); border:1px solid rgba(0,212,255,.18); border-radius:10px; padding:10px 12px; margin:16px 0; }
       .landing-how b{ color:var(--cal-accent); }
+      /* Sets honest expectations before the customer shoots: a single photo is a flat
+         profile, not a 3D model. Muted so it informs without competing with the CTA. */
+      .landing-note{ color:#8a8a92; font-size:12px; line-height:1.5; margin:10px 2px 0; }
       .landing-formats{ color:#76767e; font-size:12px; text-align:center; margin-top:12px; }
       #status{ margin-top:12px; text-align:center; }
       /* The uploader is a real drop zone with an accent-tinted, interactive affordance
@@ -231,9 +234,15 @@ app.layout = html.Div([
             html.Div("CamScan", className="landing-title"),
             html.P("Measure real-world millimeters from a photo.", className="landing-sub"),
             html.Div([
-                "Print the calibration square, photograph your part beside it, then ",
-                html.B("measure in real mm"), ".",
+                html.B("No printer needed."), " Lay a coin, a card, or a sheet of paper "
+                "flat beside your part for scale, then ", html.B("measure in real mm"),
+                ". A printed calibration square works too and scales automatically.",
             ], className="landing-how"),
+            html.Div(
+                "One photo captures the front outline and hole positions. For a full 3D "
+                "quote, a few angles help — shoot the part flat-on for the best accuracy.",
+                className="landing-note",
+            ),
             dcc.Upload(
                 id="uploader",
                 children=html.Div(["Tap ", html.B("to take a photo"), " or drop an image"]),
@@ -354,13 +363,29 @@ def on_upload(contents, filename):
 
     marker_mm = cal.get("marker_size_mm", "—")
     n_markers = len(cal.get("markers", []))
+    confidence = cal.get("calibration_confidence")
+
+    # No calibration reference was found. The image loaded fine, but there is NO scale —
+    # every measurement will be in PIXELS until the user sets one. Do NOT dress this up as
+    # a green "✅ success": that led people to submit un-scaled photos believing they were
+    # measured in mm. Be honest and point straight at the recovery tool. (Matches the
+    # app's pixel-honesty philosophy — see the uncalibrated export confirm.)
+    if n_markers == 0 or confidence == "none":
+        status = (
+            f"⚠️ Loaded '{filename}', but no calibration square was found — "
+            "measurements would be in pixels, not mm. Use the Set Scale tool (📐): draw a "
+            "line across something of known size (a coin, a card, a sheet of paper, or a "
+            "ruler) and type its real length."
+        )
+        return status, viewer, {"display": "none"}, None
+
     status = (
         f"✅ Processed '{filename}' — {n_markers} marker(s). "
         f"Marker size: {marker_mm} mm. Tap/click to annotate."
     )
     # Warn when the auto-calibration had to fall back to a rough estimate, so the
     # user knows to double-check the scale rather than trusting a wrong value.
-    if n_markers and cal.get("calibration_confidence") == "low":
+    if confidence == "low":
         status += " ⚠️ Auto-calibration is approximate — verify with the Set Scale tool (📐)."
     return status, viewer, {"display": "none"}, None  # Reset upload for next file
 

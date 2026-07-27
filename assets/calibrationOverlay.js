@@ -829,7 +829,36 @@
         const us=document.createElement('span'); us.textContent=unit.label;
         const ok=document.createElement('button'); ok.type='button'; ok.textContent='Set'; ok.style.cssText='min-height:44px;padding:8px 18px;background:#00d4ff;color:#000;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;';
         const cancel=document.createElement('button'); cancel.type='button'; cancel.textContent='✕'; cancel.setAttribute('aria-label','Cancel'); cancel.style.cssText='min-height:44px;min-width:44px;padding:8px 12px;background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:8px;font-size:15px;cursor:pointer;';
-        box.append(lab,inp,us,ok,cancel); document.body.appendChild(box);
+        // Apply an EXACT millimetre length (used by the preset chips below). Unlike the
+        // typed field — which is in the active display unit — presets are already mm, so
+        // they bypass unit.toMM and can't be corrupted by inch/cm mode (the unit trap).
+        const finishMM=(mm)=>{
+          box.remove(); this.selectedPoints=[]; this.hover=null;
+          if(mm>0){ this.setManualScaleFromPixels(pixelLen, mm); this.setMode('select'); }
+          this.requestDraw();
+        };
+        // One-tap reference presets so a customer without a ruler (or who doesn't know a
+        // quarter is 24.26 mm) can still set scale from something in the shot. Card is
+        // ISO ID-1 — identical worldwide; the coin/paper sizes are region-specific but
+        // cover the usual cases. Each is the length you'd draw a line ACROSS.
+        const presets=document.createElement('div');
+        presets.style.cssText='flex:1 1 100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px solid #242424;padding-top:8px;margin-top:2px;';
+        const plab=document.createElement('span'); plab.textContent='…or tap what you measured across:';
+        plab.style.cssText='flex:1 1 100%;font-size:12px;color:#9aa;';
+        presets.appendChild(plab);
+        for(const p of [
+          {t:'💳 Card',    mm:85.6,   h:'ID / credit-card long edge (85.6 mm, ISO standard)'},
+          {t:'🪙 Quarter', mm:24.26,  h:'US quarter diameter (24.26 mm)'},
+          {t:'📄 A4',      mm:297,    h:'A4 sheet long edge (297 mm)'},
+          {t:'📄 Letter',  mm:279.4,  h:'US Letter long edge (279.4 mm)'},
+        ]){
+          const b=document.createElement('button'); b.type='button';
+          b.textContent=`${p.t} · ${p.mm} mm`; b.title=p.h; b.setAttribute('aria-label',p.h);
+          b.style.cssText='min-height:40px;padding:6px 11px;background:#151515;color:#cde;border:1px solid #2a3540;border-radius:8px;font-size:13px;cursor:pointer;';
+          b.onclick=()=>finishMM(p.mm);
+          presets.appendChild(b);
+        }
+        box.append(lab,inp,us,ok,cancel,presets); document.body.appendChild(box);
         // Anchor ABOVE the drawn line (never below): the soft keyboard opens from the
         // bottom, so a box placed under the finger/midpoint gets covered on phones. Fall
         // back below only if there's no room above, and keep it out of the lower ~45%.
@@ -904,6 +933,12 @@
           specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
                                     : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`});
           if(!narrow) specs.push({text:`ref ${src}`});
+          // A manual (line) scale is a single uniform mm/px with NO perspective correction
+          // (homography is disabled whenever manualMmPerPx is set — see _perspectiveActive),
+          // so a tilted photo measures short. This is the ONE path that needs a flat-on
+          // shot, so surface that here contextually. (If a future rectangle-based manual
+          // scale restores the homography, gate this on !this._perspectiveActive() instead.)
+          if(this.opts.manualMmPerPx) specs.push({text:'📐 Manual scale — shoot flat-on for accuracy', cls:'cal-chip--muted'});
           // Only linear measurements (lengths/areas/angles) are rectified for tilt;
           // circles stay on the uniform scale (see _selectedReadout).
           if(!narrow && this._perspectiveActive()) specs.push({text:'⟂ perspective-corrected', cls:'cal-chip--ok'});
