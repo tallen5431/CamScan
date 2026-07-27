@@ -34,6 +34,7 @@
         this.ann = Ann.createStore();        // image-space items
         this.selectedPoints=[]; this.hover=null; this.noteText='';
         this.drag=null; this._rAF=0; this._spacePan=false;
+        this._selDrag=null; this._suppressClick=false;   // precision-mode endpoint dragging
 
         // Undo/redo history: snapshots of ann.items taken BEFORE each mutating op.
         this._undoStack=[]; this._redoStack=[]; this._preDragSnapshot=null; this._dragPushed=false;
@@ -227,8 +228,21 @@
         this._gestureDetach = G.attach(this.canvas, this.vp, {
           canPanStart,
           onTransform: ()=>this.requestDraw(),
-          onHover: (pt)=>{ this.hover = this.opts.snap ? this._maybeSnap(pt) : pt; if(this.selectedPoints.length) this.requestDraw(); },
+          onHover: (pt)=>{ this.hover = this.opts.snap ? this._maybeSnap(pt) : pt; if(this.selectedPoints.length || this._precisionMode()) this.requestDraw(); },
           onDown: (pt, ev)=>{
+            this._suppressClick=false;
+            // In a precision scale mode, pressing ON a placed point grabs it to fine-tune
+            // (drag) instead of hit-testing an annotation or placing a new point. The
+            // gesture layer already turns a moved press into a drag (and no click), so we
+            // just need to suppress the click for a no-move grab so it doesn't dup a point.
+            if(this._precisionMode() && this.selectedPoints.length){
+              const tol=this.vp.pxToImg(22); let bi=-1, bd=tol;
+              for(let i=0;i<this.selectedPoints.length;i++){
+                const d=Math.hypot(pt[0]-this.selectedPoints[i][0], pt[1]-this.selectedPoints[i][1]);
+                if(d<=bd){ bd=d; bi=i; }
+              }
+              if(bi>=0){ this._selDrag=bi; this._suppressClick=true; this.drag=null; return this.requestDraw(); }
+            }
             this.ann.hitTolPx = this.vp.pxToImg(18);
             const hit = Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
             this.ann.selectedId = hit ? hit.id : this.ann.selectedId;
@@ -240,6 +254,12 @@
             this.requestDraw();
           },
           onDrag: (pt)=>{
+            // Dragging a placed scale/verify/paper point: move it live so the user can
+            // land it exactly on an edge (the loupe shows the magnified target).
+            if(this._selDrag!=null){
+              this.selectedPoints[this._selDrag] = this.opts.snap ? this._maybeSnap(pt) : pt;
+              return this.requestDraw();
+            }
             if(!this.drag) return;
             if(!this._dragPushed && this._preDragSnapshot){
               this._undoStack.push(this._preDragSnapshot);
@@ -250,8 +270,11 @@
             this._updateDrag(this.opts.snap ? this._maybeSnap(pt, this.drag && this.drag.item) : pt);
             this.requestDraw();
           },
-          onUp: ()=>{ this.drag=null; },
+          onUp: ()=>{ this.drag=null; this._selDrag=null; },
           onClick: (pt)=>{
+            // A press that only grabbed a placed point (no move) must not also place a
+            // new one. _suppressClick is reset every onDown, so it can't leak.
+            if(this._suppressClick){ this._suppressClick=false; return this.requestDraw(); }
             if (this.opts.mode==='pan') return; // clicks do nothing in Pan mode
             const p = this.opts.snap ? this._maybeSnap(pt) : pt;
 
@@ -529,6 +552,7 @@
         this._drawAnnotations();
         this._drawPreview();
         this._drawDetectedRect();
+        this._drawLoupe();
 
         this.updateKPI();
       }
@@ -1057,6 +1081,51 @@
         c.beginPath(); c.moveTo(q[0][0],q[0][1]); for(let i=1;i<4;i++) c.lineTo(q[i][0],q[i][1]); c.closePath(); c.stroke();
         c.setLineDash([]); c.fillStyle='rgba(0,212,255,.95)';
         for(const [x,y] of q){ c.beginPath(); c.arc(x,y,Draw.px(this.canvas,6),0,Math.PI*2); c.fill(); }
+        c.restore();
+      }
+
+      _precisionMode(){ const m=this.opts.mode; return m==='setscale'||m==='verifyscale'||m==='setscalerect'; }
+
+      // The point the loupe should magnify: the one being dragged, else the hover point,
+      // while in a precision scale mode and no size/entry dialog is covering the view.
+      _loupeTarget(){
+        if(!this._precisionMode()) return null;
+        if(document.getElementById('cal-rect-input') || document.getElementById('cal-scale-input') ||
+           document.getElementById('cal-verify') || document.getElementById('cal-paper-offer')) return null;
+        if(this._selDrag!=null && this.selectedPoints[this._selDrag]) return this.selectedPoints[this._selDrag];
+        return this.hover || null;
+      }
+
+      // A magnifier loupe: a circular, zoomed inset of the image centred on the target
+      // point with a crosshair — so a fingertip that covers the pixel it is placing can
+      // still see exactly where the point lands. Drawn in screen space, over everything.
+      _drawLoupe(){
+        const pt=this._loupeTarget(); if(!pt || !this.img) return;
+        const c=this.ctx;
+        const [pcx,pcy]=this.vp.imageToCanvas(pt[0], pt[1]);   // device px
+        const R=Draw.px(this.canvas,54), zoom=2.6, off=Draw.px(this.canvas,16), pad=R+Draw.px(this.canvas,6);
+        // Default above-left of the target; flip to the other side if that would clip.
+        let lx=pcx-R-off, ly=pcy-R-off;
+        if(lx<pad) lx=pcx+R+off;
+        if(ly<pad) ly=pcy+R+off;
+        lx=Math.max(pad, Math.min(this.canvas.width-pad, lx));
+        ly=Math.max(pad, Math.min(this.canvas.height-pad, ly));
+
+        c.save();
+        c.setTransform(1,0,0,1,0,0);
+        c.beginPath(); c.arc(lx,ly,R,0,Math.PI*2); c.clip();
+        c.fillStyle='#0d0d0f'; c.fillRect(lx-R,ly-R,2*R,2*R);
+        const K=this.vp.k*zoom;                          // magnified image->device scale
+        c.setTransform(K,0,0,K, lx-pt[0]*K, ly-pt[1]*K); // centre pt under the loupe
+        c.imageSmoothingEnabled=true;
+        c.drawImage(this.img,0,0);
+        c.restore();
+
+        c.save(); c.setTransform(1,0,0,1,0,0);
+        c.beginPath(); c.arc(lx,ly,R,0,Math.PI*2); c.lineWidth=Draw.px(this.canvas,2.5); c.strokeStyle='rgba(0,212,255,.95)'; c.stroke();
+        const ch=Draw.px(this.canvas,9);
+        c.lineWidth=Draw.px(this.canvas,1.5); c.strokeStyle='rgba(255,70,70,.95)';
+        c.beginPath(); c.moveTo(lx-ch,ly); c.lineTo(lx+ch,ly); c.moveTo(lx,ly-ch); c.lineTo(lx,ly+ch); c.stroke();
         c.restore();
       }
 
