@@ -425,6 +425,12 @@ window.CalibUI = (function(){
       setRectBtn.onclick = () => { if (overlay.setMode) overlay.setMode('setscalerect'); details.open = false; };
       body.appendChild(setRectBtn);
 
+      const verifyBtn = document.createElement('button');
+      verifyBtn.type = 'button'; verifyBtn.className = 'cal-panel-btn';
+      verifyBtn.innerHTML = '<span>✅</span><span>Verify scale (measure a known feature)</span>';
+      verifyBtn.onclick = () => { if (overlay.setMode) overlay.setMode('verifyscale'); details.open = false; };
+      body.appendChild(verifyBtn);
+
       const clearScaleBtn = document.createElement('button');
       clearScaleBtn.type = 'button'; clearScaleBtn.className = 'cal-panel-btn';
       clearScaleBtn.innerHTML = '<span>↺</span><span>Clear manual scale (use square)</span>';

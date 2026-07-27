@@ -298,6 +298,13 @@
               this._promptScale(px, mid);
               return this.requestDraw();
             }
+            // Verify-scale: two clicks across a SECOND known feature; compare the measured
+            // length (at the current scale) with its real size to expose a wrong scale.
+            if(this.opts.mode==='verifyscale' && this.selectedPoints.length===2){
+              const [a,b]=this.selectedPoints;
+              this._promptVerify(a,b);
+              return this.requestDraw();
+            }
             if(this.opts.mode==='segment' && this.selectedPoints.length===2){
               const [a,b]=this.selectedPoints; this._pushHistory(); Ann.addSegment(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[]; return this.requestDraw();
@@ -606,11 +613,13 @@
         c.fillStyle='orange'; c.strokeStyle='rgba(255,200,0,.9)'; c.lineWidth=linePx;
         for(const [x,y] of this.selectedPoints){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle='#000'; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
         const H=this.hover;
-        if((this.opts.mode==='segment'||this.opts.mode==='setscale') && this.selectedPoints.length===1 && H){ const a=this.selectedPoints[0], b=H;
+        if((this.opts.mode==='segment'||this.opts.mode==='setscale'||this.opts.mode==='verifyscale') && this.selectedPoints.length===1 && H){ const a=this.selectedPoints[0], b=H;
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(a[0],a[1]); c.lineTo(b[0],b[1]); c.stroke(); c.restore();
           const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
           if(this.opts.mode==='setscale'){
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this.opts.labelScale);
+          } else if(this.opts.mode==='verifyscale'){
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `verify — click 2nd point`, this.opts.labelScale);
           } else {
             const mm=Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]);
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this.opts.labelScale);
@@ -1051,6 +1060,55 @@
         c.restore();
       }
 
+      // Verify the active scale against a SECOND known feature. The user draws a line
+      // across something whose real size they know; we measure it at the CURRENT scale
+      // (perspective-corrected, same path as every other measurement) and show expected
+      // vs actual with a signed % error. Nothing else catches a wrong-size square or a
+      // mis-typed length — both read "calibrated" and export silently wrong.
+      _promptVerify(a, b){
+        const done=()=>{ const bx=document.getElementById('cal-verify'); if(bx) bx.remove();
+                         this.selectedPoints=[]; this.hover=null; this.setMode('select'); this.requestDraw(); };
+        const prev=document.getElementById('cal-verify'); if(prev) prev.remove();
+        const box=document.createElement('div'); box.id='cal-verify';
+        box.style.cssText='position:fixed;z-index:41;left:50%;top:14%;transform:translateX(-50%);background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.6);max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
+        const primaryBtn=(label,fn)=>{ const b2=document.createElement('button'); b2.type='button'; b2.textContent=label;
+          b2.style.cssText='min-height:44px;padding:8px 16px;background:#00d4ff;color:#000;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;'; b2.onclick=fn; return b2; };
+        document.body.appendChild(box);
+
+        if(!this.isCalibrated()){
+          const m=document.createElement('div'); m.textContent='Set a scale first, then verify it.'; m.style.cssText='margin-bottom:10px;';
+          box.append(m, primaryBtn('OK', done)); return;
+        }
+
+        const unit=Units.get(this.opts.units);
+        const measuredMM=Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]);
+
+        const title=document.createElement('div'); title.textContent='Check scale — this line is really:'; title.style.cssText='font-weight:600;margin-bottom:8px;';
+        const row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+        const inp=document.createElement('input'); inp.type='number'; inp.step='0.01'; inp.min='0'; inp.inputMode='decimal'; inp.placeholder='known length';
+        inp.style.cssText='flex:1 1 120px;min-width:120px;min-height:44px;padding:8px 10px;background:#181818;border:1px solid #2a2a2a;border-radius:8px;color:#eee;font:16px Segoe UI,system-ui,sans-serif;';
+        const us=document.createElement('span'); us.textContent=unit.label; us.style.color='#9aa';
+        const closeBtn=document.createElement('button'); closeBtn.type='button'; closeBtn.textContent='Done';
+        closeBtn.style.cssText='min-height:44px;padding:8px 14px;background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:8px;cursor:pointer;'; closeBtn.onclick=done;
+        const result=document.createElement('div'); result.style.cssText='margin-top:10px;font-size:14px;line-height:1.55;';
+
+        const check=()=>{
+          const v=parseFloat(inp.value); if(!(v>0)){ result.textContent=''; return; }
+          const expected=unit.toMM(v);
+          const pct=(measuredMM-expected)/expected*100, ap=Math.abs(pct);
+          const color = ap<=2 ? '#3ecf8e' : (ap<=5 ? '#e2a24c' : '#ff6b6b');
+          const verdict = ap<=2 ? '✓ scale looks good' : (ap<=5 ? '⚠ a little off — double-check' : '⚠ off — re-check your scale or the size you entered');
+          result.innerHTML =
+            `<div style="color:${color};font-weight:700;">${verdict}</div>`+
+            `<div style="color:#cdd;">measured <b>${unit.fromMM(measuredMM).toFixed(2)} ${unit.label}</b> vs expected <b>${v.toFixed(2)} ${unit.label}</b></div>`+
+            `<div style="color:${color};font-weight:600;font-variant-numeric:tabular-nums;">${pct>=0?'+':''}${pct.toFixed(1)}%</div>`;
+        };
+        row.append(inp, us, primaryBtn('Check', check), closeBtn);
+        box.append(title, row, result);
+        inp.addEventListener('keydown',(e)=>{ e.stopPropagation(); if(e.key==='Enter'){ e.preventDefault(); check(); } else if(e.key==='Escape'){ e.preventDefault(); done(); } });
+        setTimeout(()=>{ inp.focus(); },0);
+      }
+
       // Live guidance for the active tool, e.g. "Angle — click point 2 of 3", so a
       // user (especially on mobile, where hover tooltips don't exist) always knows
       // how many clicks the current tool needs and where they are in the sequence.
@@ -1059,12 +1117,15 @@
         const defs={ segment:['Measure',2], setscale:['Set scale',2], rectangle:['Area',2],
                      circle:['Circle',2], angle:['Angle',3], circle3pt:['3-pt circle',3],
                      note:['Note',1], polyline:['Path',0], pan:['Pan',0], select:['Select',0],
-                     setscalerect:['Paper scale',4] };
+                     setscalerect:['Paper scale',4], verifyscale:['Verify scale',2] };
         const d=defs[m]; if(!d) return '';
         const [name,total]=d, n=this.selectedPoints.length;
         if(m==='setscalerect') return n>=4 ? '✏️ Paper scale — pick the paper size'
                                            : (n ? `✏️ Paper scale — corner ${Math.min(n+1,4)} of 4`
                                                 : '✏️ Paper scale — tap the 4 corners of the sheet');
+        if(m==='verifyscale') return n>=2 ? '✏️ Verify — enter the real length'
+                                          : (n ? '✏️ Verify — click the 2nd point'
+                                               : '✏️ Verify — draw across something of known size');
         if(m==='pan') return '';
         if(m==='select') return this.ann.selectedId!=null ? '✏️ Select — item selected (Delete removes it)' : '✏️ Select — tap a measurement';
         if(m==='note') return '✏️ Note — tap to place';
