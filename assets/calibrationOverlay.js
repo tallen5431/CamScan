@@ -22,7 +22,7 @@
   })();
 
   waitForDeps(6000, 80, function boot(){
-    const Units=window.CalibUnits, Draw=window.CalibDraw, Ann=window.CalibAnn, Measure=window.CalibMeasure;
+    const Units=window.CalibUnits, Draw=window.CalibDraw, Ann=window.CalibAnn, Measure=window.CalibMeasure, Geom=window.CalibGeom;
     const { CalibViewport:VP, CalibGestures:G, CalibUI:UI, CalibExport:Xport } = window;
 
     class CalibrationOverlay{
@@ -56,13 +56,15 @@
         this._suppressRefit=false;
 
         this.opts = {
-          mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','circle','circle3pt','note','setscale'
+          mode:'select',          // 'pan','select','segment','polyline','rectangle','angle','circle','circle3pt','note','setscale','setscalerect'
           units:'mm',
           snap:false, snapPx:15,  // DEFAULT: off (precise clicks)
           labelScale:1.35, linePx:3,
           showGrid:false, showAnn:true, showMarkers:true,
           exportVisibleOnly:true, lockMarkerId:null,
-          manualMmPerPx:null      // user-set scale (from a known length) — wins over markers
+          manualMmPerPx:null,     // user-set scale (from a known length) — wins over markers
+          manualHomography:null   // user-set px->mm homography (from a paper rectangle's 4
+                                  // corners) — like manualMmPerPx but ALSO rectifies tilt
         };
 
         this._init();
@@ -270,8 +272,18 @@
               }
             }
 
+            // Paper/rectangle scale: ignore taps past the 4th while the size dialog is up.
+            if(this.opts.mode==='setscalerect' && this.selectedPoints.length>=4) return this.requestDraw();
+
             this.selectedPoints.push(p);
             const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
+
+            // Set-scale-from-paper: four taps outline a rectangle of known real size; its
+            // corners give a perspective homography (tilt correction), not just a scale.
+            if(this.opts.mode==='setscalerect' && this.selectedPoints.length===4){
+              this._promptRectScale(this.selectedPoints.slice());
+              return this.requestDraw();
+            }
 
             // Set-scale-from-line: two clicks define a line of known real length.
             if(this.opts.mode==='setscale' && this.selectedPoints.length===2){
@@ -603,6 +615,15 @@
         else if(this.opts.mode==='polyline' && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke(); c.restore();
         }
+        else if(this.opts.mode==='setscalerect' && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
+          c.save(); c.setLineDash([10,8]); c.strokeStyle='rgba(0,212,255,.95)';
+          c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]);
+          if(this.selectedPoints.length>=3) c.closePath();   // show the closing edge once the shape is readable
+          c.stroke(); c.restore();
+          const need=4-this.selectedPoints.length;
+          const mid=this.selectedPoints[0];
+          Draw.boxLabel(c, this.canvas, mid[0], mid[1], need>0?`tap ${need} more corner${need===1?'':'s'}`:`pick paper size`, this.opts.labelScale);
+        }
         else if(this.opts.mode==='rectangle' && this.selectedPoints.length===1 && H){
           const a=this.selectedPoints[0], b=H;
           const x1=Math.min(a[0],b[0]), y1=Math.min(a[1],b[1]); const x2=Math.max(a[0],b[0]), y2=Math.max(a[1],b[1]);
@@ -682,7 +703,7 @@
       // inherently uniform). Falls back to the annotation's own frozen mm/px.
       _measureCtx(a){
         const fallback = (a && a.mm_per_px) || this.getScale() || 0;
-        return Measure.context(this.data, fallback, !this.opts.manualMmPerPx);
+        return Measure.context(this._dataForMeasure(), fallback, this._allowHomography());
       }
 
       _annCentroid(a){
@@ -734,9 +755,13 @@
 
       isCalibrated(){ return this.getScale() > 0; }
 
-      // True when linear measurements are being rectified by the marker homography
-      // (i.e. not overridden by a manual scale). Circles are NOT rectified.
-      _perspectiveActive(){ return !this.opts.manualMmPerPx && !!(this.data && this.data.homography); }
+      // True when linear measurements are being rectified by a homography — either the
+      // user's paper-rectangle scale, or the auto marker homography when no manual scale
+      // overrides it. A manual LINE scale (manualMmPerPx without manualHomography) is
+      // uniform, so it is NOT perspective-corrected. Circles are never rectified.
+      _perspectiveActive(){
+        return !!this.opts.manualHomography || (!this.opts.manualMmPerPx && !!(this.data && this.data.homography));
+      }
 
       // Format a length/area for a label: real units when calibrated, raw PIXELS
       // otherwise — so an uncalibrated measurement reads as "128 px", never a fake
@@ -761,6 +786,7 @@
         // rescaling an unrelated image (see updateKPI).
         this._markerSizeFromMemory = !!fromMemory;
         this.opts.manualMmPerPx = null; // markers become the source of truth again
+        this.opts.manualHomography = null; this._manualRef = null;
         const vals=[];
         for(const m of (this.data?.markers||[])){
           const px = m.edge_px || this._markerEdgePx(m);
@@ -781,11 +807,14 @@
         knownMM = parseFloat(knownMM);
         if(!(pixelLength>0) || !(knownMM>0)) return;
         this._markerSizeFromMemory = false;
+        // A line scale is uniform — drop any paper-rectangle homography so we don't claim
+        // tilt correction the single line can't provide.
+        this.opts.manualHomography = null; this._manualRef = null;
         this.opts.manualMmPerPx = knownMM/pixelLength;
         this._rescaleAnnotations();
         this.requestDraw();
       }
-      clearManualScale(){ this.opts.manualMmPerPx = null; this._rescaleAnnotations(); this.requestDraw(); }
+      clearManualScale(){ this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null; this._rescaleAnnotations(); this.requestDraw(); }
       currentMarkerSizeMM(){ return (this.data && this.data.marker_size_mm) || null; }
 
       // Commit the in-progress polyline (needs >=2 points). Clears the working points.
@@ -881,6 +910,86 @@
         setTimeout(()=>{ inp.focus(); if(inp.select) inp.select(); },0);
       }
 
+      // Measurement `data` to feed CalibMeasure. When a manual paper-rectangle scale is
+      // active, substitute a synthetic calibration: a px->mm homography with
+      // marker_size_mm=1, so CalibMeasure returns real millimetres directly (it multiplies
+      // unit-square coords by edgeMM, and edgeMM=1 makes it a pass-through). Otherwise the
+      // real detection data (auto square homography + marker size) is used unchanged.
+      _dataForMeasure(){
+        if(this.opts.manualHomography)
+          return Object.assign({}, this.data, { homography:this.opts.manualHomography, marker_size_mm:1 });
+        return this.data;
+      }
+      // Whether the perspective homography should rectify measurements right now. A manual
+      // paper rectangle carries its own homography (use it); a manual LINE scale is uniform
+      // by nature so it disables the auto homography; otherwise the auto homography applies.
+      _allowHomography(){ return this.opts.manualHomography ? true : !this.opts.manualMmPerPx; }
+
+      // Set a perspective-corrected scale from a paper rectangle's 4 corners. H maps image
+      // px -> plane mm; mmPerPx is a representative uniform scale kept for circles (which
+      // aren't rectified), the KPI readout, and the fallback path. ref describes the sheet.
+      setManualRectScale(H, mmPerPx, ref){
+        if(!H) return;
+        this._markerSizeFromMemory=false;
+        this.opts.manualHomography=H;
+        if(mmPerPx>0) this.opts.manualMmPerPx=mmPerPx;   // wins over any detected marker
+        this._manualRef=ref||null;
+        this._rescaleAnnotations();
+        this.requestDraw();
+      }
+
+      // After the 4th corner tap, ask which rectangle was outlined (A4 / Letter / custom)
+      // and build the homography. The tapped corners stay drawn behind the dialog so the
+      // user can see what they outlined; the dialog only offers real, known sizes.
+      _promptRectScale(imgPts){
+        const ordered=Geom.orderQuad(imgPts);
+        const cleanup=()=>{ const b=document.getElementById('cal-rect-input'); if(b) b.remove();
+                            this.selectedPoints=[]; this.hover=null; this.requestDraw(); };
+        // Assign the paper's longer real edge to whichever outlined edge is longer in
+        // pixels, so the scale is right whether the sheet sits portrait or landscape.
+        const applyWH=(wmm,hmm)=>{
+          if(!ordered || !(wmm>0) || !(hmm>0)) return false;
+          const e0=Math.hypot(ordered[1][0]-ordered[0][0], ordered[1][1]-ordered[0][1]);
+          const e1=Math.hypot(ordered[2][0]-ordered[1][0], ordered[2][1]-ordered[1][1]);
+          const long=Math.max(wmm,hmm), short=Math.min(wmm,hmm);
+          const dst = (e0>=e1) ? [[0,0],[long,0],[long,short],[0,short]]
+                               : [[0,0],[short,0],[short,long],[0,long]];
+          const Hm=Geom.solveHomography(ordered, dst); if(!Hm) return false;
+          const areaPx=Geom.quadAreaPx(ordered);
+          const mmPerPx = areaPx>0 ? Math.sqrt((wmm*hmm)/areaPx) : 0;
+          this.setManualRectScale(Hm, mmPerPx, { w:long, h:short });
+          this.selectedPoints=[]; this.hover=null;
+          this.setMode('select');
+          return true;
+        };
+
+        const prev=document.getElementById('cal-rect-input'); if(prev) prev.remove();
+        const box=document.createElement('div'); box.id='cal-rect-input';
+        box.style.cssText='position:fixed;z-index:41;left:50%;top:14%;transform:translateX(-50%);background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.6);max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
+        const title=document.createElement('div'); title.textContent='What did you outline?'; title.style.cssText='font-weight:700;margin-bottom:4px;';
+        const sub=document.createElement('div'); sub.textContent='Tilt is corrected from the 4 corners, so an angled photo still measures true.'; sub.style.cssText='font-size:12px;color:#9aa;margin-bottom:10px;max-width:36ch;';
+        const row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+        const mkBtn=(label,cls,fn)=>{ const b=document.createElement('button'); b.type='button'; b.textContent=label;
+          b.style.cssText='min-height:44px;padding:8px 14px;border-radius:8px;font-size:14px;cursor:pointer;'+(cls==='primary'
+            ?'background:#00d4ff;color:#000;border:none;font-weight:600;'
+            :'background:#151515;color:#cde;border:1px solid #2a3540;'); b.onclick=fn; return b; };
+        row.appendChild(mkBtn('A4 · 210×297', '', ()=>{ if(applyWH(210,297)) box.remove(); }));
+        row.appendChild(mkBtn('US Letter · 216×279', '', ()=>{ if(applyWH(215.9,279.4)) box.remove(); }));
+        const custom=document.createElement('div'); custom.style.cssText='display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;';
+        row.appendChild(mkBtn('Custom…', '', ()=>{ custom.style.display = custom.style.display==='none' ? 'flex' : 'none';
+          if(custom.style.display==='flex') setTimeout(()=>wIn.focus(),0); }));
+        const cancel=document.createElement('button'); cancel.type='button'; cancel.textContent='✕';
+        cancel.setAttribute('aria-label','Cancel'); cancel.style.cssText='min-height:44px;min-width:44px;padding:8px 12px;background:#181818;color:#eee;border:1px solid #2a2a2a;border-radius:8px;cursor:pointer;';
+        cancel.onclick=()=>cleanup(); row.appendChild(cancel);
+        const mkNum=(ph)=>{ const i=document.createElement('input'); i.type='number'; i.step='0.1'; i.min='0'; i.inputMode='decimal'; i.placeholder=ph;
+          i.style.cssText='width:88px;min-height:44px;padding:8px 10px;background:#181818;border:1px solid #2a2a2a;border-radius:8px;color:#eee;font:16px Segoe UI,system-ui,sans-serif;'; return i; };
+        const wIn=mkNum('width'), hIn=mkNum('height'), times=document.createElement('span'); times.textContent='×';
+        const uu=document.createElement('span'); uu.textContent='mm'; uu.style.color='#9aa';
+        custom.append(wIn, times, hIn, uu, mkBtn('Set','primary', ()=>{ if(applyWH(parseFloat(wIn.value), parseFloat(hIn.value)) ) box.remove(); }));
+        box.append(title, sub, row, custom); document.body.appendChild(box);
+        box.addEventListener('keydown',(e)=>{ e.stopPropagation(); if(e.key==='Escape'){ e.preventDefault(); cleanup(); } });
+      }
+
       // Live guidance for the active tool, e.g. "Angle — click point 2 of 3", so a
       // user (especially on mobile, where hover tooltips don't exist) always knows
       // how many clicks the current tool needs and where they are in the sequence.
@@ -888,9 +997,13 @@
         const m=this.opts.mode;
         const defs={ segment:['Measure',2], setscale:['Set scale',2], rectangle:['Area',2],
                      circle:['Circle',2], angle:['Angle',3], circle3pt:['3-pt circle',3],
-                     note:['Note',1], polyline:['Path',0], pan:['Pan',0], select:['Select',0] };
+                     note:['Note',1], polyline:['Path',0], pan:['Pan',0], select:['Select',0],
+                     setscalerect:['Paper scale',4] };
         const d=defs[m]; if(!d) return '';
         const [name,total]=d, n=this.selectedPoints.length;
+        if(m==='setscalerect') return n>=4 ? '✏️ Paper scale — pick the paper size'
+                                           : (n ? `✏️ Paper scale — corner ${Math.min(n+1,4)} of 4`
+                                                : '✏️ Paper scale — tap the 4 corners of the sheet');
         if(m==='pan') return '';
         if(m==='select') return this.ann.selectedId!=null ? '✏️ Select — item selected (Delete removes it)' : '✏️ Select — tap a measurement';
         if(m==='note') return '✏️ Note — tap to place';
@@ -928,17 +1041,18 @@
           // Flag a marker size restored from a previous photo so a stale remembered value
           // can't silently rescale an unrelated image without the user noticing.
           const remembered = (!this.opts.manualMmPerPx && this._markerSizeFromMemory) ? ' (remembered)' : '';
-          const src = this.opts.manualMmPerPx ? 'manual' : `${this.currentMarkerSizeMM()??'—'} mm sq${remembered}`;
+          const src = this.opts.manualHomography
+                        ? (this._manualRef ? `paper ${Math.round(this._manualRef.w)}×${Math.round(this._manualRef.h)} mm` : 'paper')
+                        : (this.opts.manualMmPerPx ? 'manual line' : `${this.currentMarkerSizeMM()??'—'} mm sq${remembered}`);
           const unitPerPx=unit.fromMM(s);
           specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
                                     : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`});
           if(!narrow) specs.push({text:`ref ${src}`});
-          // A manual (line) scale is a single uniform mm/px with NO perspective correction
-          // (homography is disabled whenever manualMmPerPx is set — see _perspectiveActive),
-          // so a tilted photo measures short. This is the ONE path that needs a flat-on
-          // shot, so surface that here contextually. (If a future rectangle-based manual
-          // scale restores the homography, gate this on !this._perspectiveActive() instead.)
-          if(this.opts.manualMmPerPx) specs.push({text:'📐 Manual scale — shoot flat-on for accuracy', cls:'cal-chip--muted'});
+          // A manual LINE scale is a single uniform mm/px with NO perspective correction,
+          // so a tilted photo measures short — surface the flat-on nudge for that path
+          // ONLY. A paper-rectangle scale (manualHomography) rectifies tilt, so it doesn't
+          // need the warning and instead earns the ⟂ perspective-corrected chip below.
+          if(this.opts.manualMmPerPx && !this.opts.manualHomography) specs.push({text:'📐 Manual scale — shoot flat-on for accuracy', cls:'cal-chip--muted'});
           // Only linear measurements (lengths/areas/angles) are rectified for tilt;
           // circles stay on the uniform scale (see _selectedReadout).
           if(!narrow && this._perspectiveActive()) specs.push({text:'⟂ perspective-corrected', cls:'cal-chip--ok'});
@@ -981,17 +1095,21 @@
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
       _imgH(){ return this.img ? (this.img.naturalHeight || this.img.height) : 0; }
-      savePNG(){ Xport.exportPNG(this.img, this.data, this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, !this.opts.manualMmPerPx); }
+      savePNG(){ Xport.exportPNG(this.img, this._dataForMeasure(), this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, this._allowHomography()); }
       saveJSON(){
+        // The exported homography maps to different spaces depending on its source: the
+        // auto marker homography maps px -> UNIT square (scale by marker_size_mm), while a
+        // manual paper-rectangle homography maps px -> mm directly (marker_size_mm=1). Tag
+        // which, so a consumer reproduces the same perspective-corrected mm the app showed.
+        const rect=this.opts.manualHomography;
         const payload=Ann.toExportJSON(this.imgSrc, {
-          marker_size_mm:this.data?.marker_size_mm??null,
+          marker_size_mm: rect ? 1 : (this.data?.marker_size_mm??null),
           mm_per_px:this.getScale()||(this.data?.mm_per_px??null),
           pixels_per_mm:this.data?.pixels_per_mm??null,
           manual_scale:this.opts.manualMmPerPx||null,
-          // Include the rectifying homography (unless a manual scale overrides it) so a
-          // JSON consumer can reproduce the SAME perspective-corrected mm the app showed,
-          // instead of getting foreshortened values from mm_per_px alone on tilted shots.
-          homography:(!this.opts.manualMmPerPx && this.data?.homography) ? this.data.homography : null,
+          homography: rect ? rect : ((!this.opts.manualMmPerPx && this.data?.homography) ? this.data.homography : null),
+          homography_maps: rect ? 'px_to_mm' : ((!this.opts.manualMmPerPx && this.data?.homography) ? 'px_to_unit_square' : null),
+          manual_reference: this._manualRef ? { width_mm:this._manualRef.w, height_mm:this._manualRef.h } : null,
           markers:this.data?.markers??[]
         }, this._exportStore(), this.opts.units);
         Xport.exportJSON(payload);
@@ -999,9 +1117,9 @@
       _confirmUncalibrated(){
         return this.isCalibrated() || confirm('Not calibrated — exported values will be in pixels, not millimetres. Set a scale first for real measurements. Export anyway?');
       }
-      saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this.data, this._exportStore(), this.opts.units, this.getScale(), !this.opts.manualMmPerPx); }
-      saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this.data, this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:!this.opts.manualMmPerPx }); }
-      saveSVG(){ if(!this._confirmUncalibrated()) return; return Xport.exportSVG(this.data, this._exportStore(), { mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:!this.opts.manualMmPerPx }); }
+      saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this._dataForMeasure(), this._exportStore(), this.opts.units, this.getScale(), this._allowHomography()); }
+      saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this._dataForMeasure(), this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:this._allowHomography() }); }
+      saveSVG(){ if(!this._confirmUncalibrated()) return; return Xport.exportSVG(this._dataForMeasure(), this._exportStore(), { mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:this._allowHomography() }); }
     }
 
     window.CalibrationOverlay = window.CalibrationOverlay || CalibrationOverlay;

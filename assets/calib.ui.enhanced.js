@@ -419,6 +419,12 @@ window.CalibUI = (function(){
       setScaleBtn.onclick = () => { if (overlay.setMode) overlay.setMode('setscale'); details.open = false; };
       body.appendChild(setScaleBtn);
 
+      const setRectBtn = document.createElement('button');
+      setRectBtn.type = 'button'; setRectBtn.className = 'cal-panel-btn';
+      setRectBtn.innerHTML = '<span>📄</span><span>Set scale from a sheet of paper (tilt-corrected)</span>';
+      setRectBtn.onclick = () => { if (overlay.setMode) overlay.setMode('setscalerect'); details.open = false; };
+      body.appendChild(setRectBtn);
+
       const clearScaleBtn = document.createElement('button');
       clearScaleBtn.type = 'button'; clearScaleBtn.className = 'cal-panel-btn';
       clearScaleBtn.innerHTML = '<span>↺</span><span>Clear manual scale (use square)</span>';
@@ -538,10 +544,12 @@ window.CalibUI = (function(){
 
     function reflectCalChip(){
       const mm = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
+      const paper = overlay.opts && overlay.opts.manualHomography;
       const manual = overlay.opts && overlay.opts.manualMmPerPx;
       const uncal = !(overlay.isCalibrated && overlay.isCalibrated());
       let text, label;
-      if (manual)      { text = 'manual';   label = 'Scale: manual (from a known line) — tap to change'; }
+      if (paper)       { text = 'paper';    label = 'Scale: from a sheet of paper (tilt-corrected) — tap to change'; }
+      else if (manual) { text = 'manual';   label = 'Scale: manual (from a known line) — tap to change'; }
       else if (mm)     { text = `${mm} mm`;  label = `Calibration square: ${mm} mm — tap to change`; }
       else             { text = 'Set size';  label = 'Not calibrated — tap to set your square size'; }
       const t = calChip.querySelector('.cal-icon-text');
@@ -626,6 +634,7 @@ window.CalibUI = (function(){
       ['circle3pt', '◎',  '3-pt',     'Fit a circle to 3 points'],
       ['note',      '🏷',  'Note',     'Add a note / label'],
       ['setscale',  '📐',  'Set scale','Set the scale from a line of known length'],
+      ['setscalerect','📄','Paper',    'Set a perspective-corrected scale from a sheet of paper — tap its 4 corners'],
     ];
 
     const rail = document.createElement('div');
