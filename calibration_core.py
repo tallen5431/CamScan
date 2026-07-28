@@ -489,7 +489,12 @@ def calibrate_image(img_bgr: np.ndarray,
                 [(ox + int(qx / denom), oy + int(qy / denom)) for (qx, qy) in quad_crop]
                 if quad_crop else None
             )
-            marker = _record_marker(overlay, mapped, edge_len_mm, corner_source, distortion, line_thickness, homography_corners)
+            # Prefer the edge-fit trapezoid for the DRAWN quad, stored corners and edge
+            # length as well: under tilt it hugs the true edges, whereas the minAreaRect
+            # rectangle (mapped) visibly drifts off them and slightly mis-scales. Fall
+            # back to minAreaRect only when edge refinement produced no quad.
+            draw_corners = homography_corners if homography_corners else mapped
+            marker = _record_marker(overlay, draw_corners, edge_len_mm, corner_source, distortion, line_thickness, homography_corners)
             if marker is not None:
                 markers.append(marker)
                 if marker["confidence"] == "low" and corner_source == "refined":

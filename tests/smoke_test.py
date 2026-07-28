@@ -100,6 +100,38 @@ def main():
     except Exception as e:
         check("homography", False, repr(e))
 
+    # 2c) Tilted marker: the edge-fit corner refinement must keep the detected corners
+    #     close to the TRUE projected corners (a handheld/angled shot). Guards against
+    #     regressions in the edge-line fitting that a flat target wouldn't catch.
+    try:
+        sq = [(450, 300), (750, 300), (750, 600), (450, 600)]  # TL,TR,BR,BL of the square
+        H0, W0 = img.shape[:2]
+        src = np.float32([[0, 0], [W0, 0], [W0, H0], [0, H0]])
+        dst = np.float32([[230, 0], [W0 - 230, 0], [W0, H0], [0, H0]])  # pinch top → ~30° tilt
+        Hm = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img, Hm, (W0, H0), borderValue=(120, 120, 120))
+        warped = cv2.GaussianBlur(warped, (5, 5), 0)                    # handheld softness
+        gt = cv2.perspectiveTransform(np.float32([[list(p) for p in sq]]), Hm)[0]
+
+        def _order(pts):
+            pts = np.asarray(pts, np.float32)
+            c = pts.mean(0)
+            o = pts[np.argsort(np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0]))]
+            return np.roll(o, -int(np.argmin(o[:, 0] + o[:, 1])), axis=0)
+
+        with _quiet():
+            calt, _ = calibrate_image(warped, edge_mm=30.0)
+        ok = bool(calt.get("markers"))
+        if ok:
+            rec = _order([(c["x"], c["y"]) for c in calt["markers"][0]["corners"]])
+            err = float(np.max(np.linalg.norm(rec - _order(gt), axis=1)))
+            ok = err < 4.0
+            check("tilted marker corners stay on true edges", ok, f"max_corner_err={err:.2f}px")
+        else:
+            check("tilted marker corners stay on true edges", False, "no markers")
+    except Exception as e:
+        check("tilted marker refinement", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():

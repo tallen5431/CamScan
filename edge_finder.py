@@ -125,29 +125,86 @@ def _square_mask(gray: np.ndarray, polarity: str = "dark") -> np.ndarray:
     return mask
 
 
-def _contour_quad_and_distortion(contour):
-    """Return (ordered_quad, distortion_deg) from a contour's true 4-corner shape.
+def _line_intersect(l1, l2):
+    """Intersect two lines given as (vx, vy, x0, y0) (unit direction + a point on it).
 
-    ``ordered_quad`` is the contour's approxPolyDP quadrilateral ordered TL,TR,BR,BL
-    (a list of (x, y) floats in the contour's coordinate frame), or None when the
-    contour doesn't reduce to a clean 4-gon. ``distortion_deg`` is the max corner
-    angle deviation from 90°.
-
-    This is the TRUE projected quad (a trapezoid under camera tilt), unlike the
-    minAreaRect corners used elsewhere which are always a perfect rectangle and so
-    hide perspective. It is what a rectifying homography must be built from, and it
-    drives the perspective-distortion confidence flag.
+    Returns (x, y) or None when the lines are (near) parallel. Used to recover a
+    quad corner as the crossing of its two adjacent edge lines — far more accurate
+    than a single boundary vertex when the real corner is rounded or blurred.
     """
-    peri = cv2.arcLength(contour, True)
-    if peri <= 0:
-        return None, 0.0
-    approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-    if len(approx) != 4:
-        return None, 0.0
+    vx1, vy1, x1, y1 = l1
+    vx2, vy2, x2, y2 = l2
+    det = vx1 * (-vy2) - (-vx2) * vy1
+    if abs(det) < 1e-9:
+        return None
+    dx, dy = x2 - x1, y2 - y1
+    t = (dx * (-vy2) - (-vx2) * dy) / det
+    return (x1 + t * vx1, y1 + t * vy1)
+
+
+def _refine_quad_by_edges(contour, coarse):
+    """Refine a 4-corner quad by fitting each edge to a line and intersecting them.
+
+    ``coarse`` is an ordered (TL,TR,BR,BL) quad that only approximately follows the
+    marker (e.g. from approxPolyDP or minAreaRect). Every contour point is bucketed
+    to its nearest coarse edge (corner regions trimmed off), each edge is robustly
+    line-fit over its hundreds of boundary points, and adjacent edge lines are
+    intersected to give the four corners at sub-pixel precision.
+
+    Why this matters: thresholding + morphology round the square's corners inward,
+    and a single approxPolyDP vertex sits on that rounded boundary — an error that
+    grows on the foreshortened (far) edge of a tilted shot. Straight edges are not
+    rounded, so intersecting the fitted edge lines recovers the TRUE corner the two
+    edges would meet at. Returns an ordered quad (np.float32 4x2) or None.
+    """
+    q = np.asarray(coarse, dtype=np.float32).reshape(4, 2)
+    pts = np.asarray(contour, dtype=np.float32).reshape(-1, 2)
+    if pts.shape[0] < 16:
+        return None
+
+    # Assign every contour point to its nearest coarse edge (vectorised).
+    a = q                                   # (4,2) edge starts
+    ab = np.roll(q, -1, axis=0) - q         # (4,2) edge directions
+    L2 = (ab ** 2).sum(1) + 1e-9            # (4,)
+    diff = pts[None, :, :] - a[:, None, :]  # (4,N,2)
+    t = (diff * ab[:, None, :]).sum(2) / L2[:, None]        # (4,N) projection param
+    tc = np.clip(t, 0.0, 1.0)
+    proj = a[:, None, :] + tc[:, :, None] * ab[:, None, :]  # (4,N,2)
+    d = np.linalg.norm(pts[None, :, :] - proj, axis=2)      # (4,N)
+    assign = np.argmin(d, axis=0)                           # (N,)
+
+    lines = []
+    for i in range(4):
+        # Trim the corner-rounding regions: keep only the straight middle of each edge.
+        sel = (assign == i) & (t[i] >= 0.15) & (t[i] <= 0.85)
+        bpts = pts[sel]
+        if bpts.shape[0] < 5:
+            return None
+        vx, vy, x0, y0 = cv2.fitLine(bpts, cv2.DIST_HUBER, 0, 0.01, 0.01).ravel()
+        lines.append((float(vx), float(vy), float(x0), float(y0)))
+
+    refined = []
+    for i in range(4):
+        pt = _line_intersect(lines[(i - 1) % 4], lines[i])   # corner i = edge(i-1) ∩ edge(i)
+        if pt is None:
+            return None
+        refined.append(pt)
+    refined = np.asarray(refined, dtype=np.float32)
+
+    # Guard against a degenerate fit flinging a corner away: each refined corner must
+    # stay near its coarse counterpart (within ~30% of the marker's mean side).
+    side = float(np.mean([np.linalg.norm(q[(i + 1) % 4] - q[i]) for i in range(4)]))
+    if side <= 0 or np.max(np.linalg.norm(refined - q, axis=1)) > 0.3 * side:
+        return None
     try:
-        ordered = _order_quad(approx.reshape(-1, 2).astype(np.float32))
+        return _order_quad(refined)
     except ValueError:
-        return None, 0.0
+        return None
+
+
+def _quad_distortion(ordered) -> float:
+    """Max corner-angle deviation from 90° for an ordered quad (perspective proxy)."""
+    ordered = np.asarray(ordered, dtype=np.float32)
     max_dev = 0.0
     for i in range(4):
         a = ordered[(i - 1) % 4] - ordered[i]
@@ -157,8 +214,47 @@ def _contour_quad_and_distortion(contour):
             continue
         cosang = float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))
         max_dev = max(max_dev, abs(float(np.degrees(np.arccos(cosang))) - 90.0))
+    return max_dev
+
+
+def _contour_quad_and_distortion(contour):
+    """Return (ordered_quad, distortion_deg) from a contour's true 4-corner shape.
+
+    ``ordered_quad`` is the marker's TRUE projected quad (a trapezoid under camera
+    tilt) ordered TL,TR,BR,BL — a list of (x, y) floats in the contour's frame — or
+    None when no clean quad can be recovered. ``distortion_deg`` is the max corner
+    angle deviation from 90°.
+
+    A coarse quad is taken from approxPolyDP when it reduces cleanly to 4 points, and
+    otherwise from minAreaRect (so a homography is still produced on noisy contours
+    where approxPolyDP splinters). That coarse quad is then sharpened by edge-line
+    fitting + intersection (see ``_refine_quad_by_edges``) for sub-pixel corners that
+    resist the corner-rounding of a tilted/blurred shot. This is what a rectifying
+    homography is built from and what drives the perspective-distortion confidence.
+    """
+    peri = cv2.arcLength(contour, True)
+    if peri <= 0:
+        return None, 0.0
+
+    coarse = None
+    approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+    if len(approx) == 4:
+        try:
+            coarse = _order_quad(approx.reshape(-1, 2).astype(np.float32))
+        except ValueError:
+            coarse = None
+    if coarse is None:
+        # approxPolyDP didn't give a clean 4-gon (noisy/rounded boundary) — start from
+        # the rotated bounding box so edge-fitting can still recover the true corners.
+        try:
+            coarse = _order_quad(cv2.boxPoints(cv2.minAreaRect(contour)))
+        except ValueError:
+            return None, 0.0
+
+    refined = _refine_quad_by_edges(contour, coarse)
+    ordered = refined if refined is not None else coarse
     quad = [(float(x), float(y)) for (x, y) in ordered]
-    return quad, max_dev
+    return quad, _quad_distortion(ordered)
 
 
 # ─────────────────────────────────────────
@@ -218,7 +314,10 @@ def find_main_edges(
     margin_x = cfg["border_margin_frac"] * w_img
     margin_y = cfg["border_margin_frac"] * h_img
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # CHAIN_APPROX_NONE keeps every boundary pixel — the edge-line fit in
+    # _contour_quad_and_distortion needs the dense edge points, not just the segment
+    # endpoints CHAIN_APPROX_SIMPLE would collapse a straight edge to.
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     contours = sorted(contours, key=cv2.contourArea, reverse=True)[: max_edges]
 
     overlay = crop.copy()
