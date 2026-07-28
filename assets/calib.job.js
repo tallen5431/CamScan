@@ -47,14 +47,22 @@
              brief:{ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, views:[] };
     try{ localStorage.removeItem(LS_KEY); }catch(e){} }
 
+  // Per-photo identity: the cal-view's data-json URL carries a unique upload id, so we can
+  // update-in-place instead of duplicating when the same photo is (re)captured.
+  function currentSourceId(){ var el=document.querySelector('.cal-view'); return (el && el.getAttribute('data-json')) || null; }
+  function hasCurrent(){ var sid=currentSourceId(); return !!(sid && job.views.some(function(v){ return v.sourceId===sid; })); }
+
   function addView(label){
     var o=overlay();
-    if(!o || !o.img){ setStatus('Load and measure a photo first, then add it.', true); return; }
+    if(!o || !o.img){ setStatus('Load a photo first, then add it.', true); return; }
     var rec;
     try{ rec=o.getViewRecord(label); }catch(e){ setStatus('Could not capture this view: '+e.message, true); return; }
     rec.capturedAt=new Date().toISOString();
-    job.views.push(rec); save(); changed();
-    setStatus('✓ Added “'+label+'”. Tap ⬅ New to add another view, or Send when you\'re done.');
+    rec.sourceId=currentSourceId();
+    var idx = rec.sourceId ? job.views.findIndex(function(v){ return v.sourceId===rec.sourceId; }) : -1;
+    if(idx>=0) job.views[idx]=rec; else job.views.push(rec);   // update-or-add: one entry per photo
+    save(); changed();
+    setStatus('✓ Saved “'+(label||rec.label||'view')+'”. Add another photo, or Send when done.');
   }
   function removeView(i){ job.views.splice(i,1); save(); changed(); }
 
@@ -280,7 +288,8 @@
     addView: addView,
     open: openPanel,
     count: function(){ return job.views.length; },
-    isEmpty: function(){ return !job.views.length; }
+    isEmpty: function(){ return !job.views.length; },
+    hasCurrent: hasCurrent   // is the photo on screen already captured into the set?
   };
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.

@@ -57,6 +57,23 @@
     renderCard();
   }
 
+  // Auto-store the photo on screen into the set (once) so nothing is lost when the customer
+  // moves on. A default "View N" label is used if none was chosen; tapping a label chip
+  // updates the same entry in place (dedup is by the photo's source id, in CalibJob).
+  function captureCurrent(){
+    var J=window.CalibJob;
+    if(J && J.addView && J.hasCurrent && !J.hasCurrent()){
+      var n=(J.count && J.count()) || 0;
+      J.addView('View '+(n+1));
+    }
+  }
+  // Re-open the uploader (tucked off-screen after the first photo) to add another WITHOUT a
+  // page reload — the Dash callback swaps the viewer and the collected set persists.
+  function triggerUpload(){
+    var inp=document.querySelector('#uploader input[type="file"]');
+    if(inp){ try{ inp.value=''; }catch(e){} inp.click(); }
+  }
+
   function statusOf(o){
     var cal = o.isCalibrated && o.isCalibrated();
     var si = o.getScaleInfo ? o.getScaleInfo() : null;
@@ -88,10 +105,10 @@
     });
     card.appendChild(r1);
     var r2=document.createElement('div'); r2.className='row'; r2.style.marginTop='9px';
-    var neu=document.createElement('button'); neu.className='ghost'; neu.textContent='📷 New photo';
-    neu.onclick=function(){ try{ location.reload(); }catch(e){} };
+    var neu=document.createElement('button'); neu.className='ghost'; neu.textContent='📷 Add another photo';
+    neu.onclick=function(){ captureCurrent(); triggerUpload(); };   // store this one, then pick the next — no reload
     var sub=document.createElement('button'); sub.className='prim'; sub.textContent='Review & Submit'+(n?' ('+n+')':'');
-    sub.onclick=function(){ if(window.CalibJob) window.CalibJob.open(); };
+    sub.onclick=function(){ captureCurrent(); if(window.CalibJob) window.CalibJob.open(); };
     var adv=document.createElement('button'); adv.className='adv'; adv.textContent='Mark up ▸';
     adv.onclick=function(){ setSimple(false); applyMode(true); };
     r2.appendChild(neu); r2.appendChild(sub); r2.appendChild(adv); card.appendChild(r2);

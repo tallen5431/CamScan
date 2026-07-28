@@ -283,6 +283,13 @@ app.layout = html.Div([
 ], id="landing-root", style={"fontFamily": "Segoe UI, sans-serif"})
 
 
+# After the first photo, tuck the landing/upload card off-screen (not display:none)
+# so the "Add another photo" button can re-open the file picker WITHOUT a page
+# reload — the multi-photo, one-at-a-time submission flow depends on it.
+_UPLOADER_TUCKED = {"position": "fixed", "left": "-9999px", "top": "0",
+                    "width": "1px", "height": "1px", "overflow": "hidden", "opacity": "0"}
+
+
 @app.callback(
     Output("status", "children"),
     Output("viewer", "children"),
@@ -393,7 +400,7 @@ def on_upload(contents, filename):
             "line across something of known size (a coin, a card, a sheet of paper, or a "
             "ruler) and type its real length."
         )
-        return status, viewer, {"display": "none"}, None
+        return status, viewer, _UPLOADER_TUCKED, None
 
     status = (
         f"✅ Processed '{filename}' — {n_markers} marker(s). "
@@ -403,7 +410,7 @@ def on_upload(contents, filename):
     # user knows to double-check the scale rather than trusting a wrong value.
     if confidence == "low":
         status += " ⚠️ Auto-calibration is approximate — verify with the Set Scale tool (📐)."
-    return status, viewer, {"display": "none"}, None  # Reset upload for next file
+    return status, viewer, _UPLOADER_TUCKED, None  # Reset upload for next file
 
 
 @server.route("/uploads/<path:fname>")
