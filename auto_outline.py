@@ -71,11 +71,14 @@ def auto_outline_full(
 ) -> Optional[dict]:
     """Segment the tapped part and return both its outer boundary AND its interior holes:
 
-        {"outer": [[x, y], ...], "holes": [[[x, y], ...], ...]}   (image pixel coords)
+        {"outer": [[x, y], ...],
+         "holes": [ {"shape": "circle",  "cx": .., "cy": .., "r": ..},      # a round bore
+                    {"shape": "polygon", "points": [[x, y], ...]}, ... ]}   (image pixel coords)
 
     Holes are enclosed background inside the part — a box-end ring, bolt holes — which is what
-    turns a flat outline into a printable replica. A wrench's OPEN jaw is not a hole (it opens
-    to the exterior) so it stays part of `outer`. Returns None if nothing could be segmented.
+    turns a flat outline into a printable replica; a round bore comes back as a true circle.
+    A wrench's OPEN jaw is not a hole (it opens to the exterior) so it stays part of `outer`.
+    Returns None if nothing could be segmented.
     """
     seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
     if seg is None:
