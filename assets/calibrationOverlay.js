@@ -212,7 +212,7 @@
           this.ann.selectedId=null; this.hover=null; this.requestDraw();
         }
       }
-      clearAll(){ this._pushHistory(); this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this.requestDraw(); }
+      clearAll(){ this._pushHistory(); this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this._autoAddedIds=[]; this._dismissTraceDetail(); this.requestDraw(); }
 
       deleteSelected(){
         if(this.ann && this.ann.selectedId!=null){
@@ -1095,16 +1095,33 @@
         if(this.opts.mode!=='outline') this.setMode('outline');
         this.selectedPoints=[]; this.hover=null;
         this._autoOutlineArm=true;
+        this._dismissTraceDetail();          // a fresh trace starts — retire the old slider
         if(this._armToast) this._armToast.dismiss();
         this._armToast=this._toast('Tap the part to trace it automatically.', {autoMs:5000});
         this.requestDraw();
       }
 
       // Auto-trace the part under `seed` (image coords): POST the photo to the server, which
-      // segments the tapped object and returns a simplified polygon; we drop it in as an
-      // editable, closed outline and switch to Select so the customer can drag any point.
+      // segments the tapped object and returns its outer boundary + interior holes; we drop
+      // them in as editable closed profiles and switch to Select so any point can be dragged.
+      // A Detail slider then lets the user re-trace the SAME spot smoother or simpler.
       autoOutline(seed){
         if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        if(!this.img){ return; }
+        this._lastAutoSeed = Array.isArray(seed) ? seed.slice() : null;
+        if(!(this._autoSimplify > 0)) this._autoSimplify = 0.0006;   // default detail level
+        this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, false);
+      }
+
+      // Re-run the last auto-trace at a new detail level (from the Detail slider), REPLACING
+      // the previously auto-added outline + holes. One undo step.
+      retraceDetail(simplify){
+        if(!Array.isArray(this._lastAutoSeed)){ return; }
+        this._autoSimplify = Math.min(0.05, Math.max(0.0003, simplify));
+        this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, true);
+      }
+
+      _runAutoTrace(seed, simplify, isRetrace){
         if(!this.img){ return; }
         const self=this;
         const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
@@ -1125,37 +1142,95 @@
         }catch(e){}
         const seedSent = seed ? [seed[0]*sentScale, seed[1]*sentScale] : null;
 
-        const toast=this._toast('Finding the outline…');
+        const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude }) })
+            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify }) })
           .then(r=>r.json())
           .then(function(j){
             if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){
-              const pts=j.points.map(p=>[p[0]/sentScale, p[1]/sentScale]);   // back to image coords
               const mm=self.getScale() || (self.data && self.data.mm_per_px) || 0;
               self._pushHistory();
+              // On a re-trace, remove what the previous auto-trace added so a detail change
+              // REPLACES the outline + holes instead of stacking new geometry on top.
+              if(isRetrace && Array.isArray(self._autoAddedIds) && self._autoAddedIds.length){
+                const ids=new Set(self._autoAddedIds);
+                self.ann.items = self.ann.items.filter(function(a){ return !ids.has(a.id); });
+              }
+              self._autoAddedIds = [];
+              const pts=j.points.map(p=>[p[0]/sentScale, p[1]/sentScale]);   // back to image coords
               Ann.addPolyline(self.ann, pts, mm, self.opts.units, self.opts.lockMarkerId, true);
-              // Interior holes (a box-end ring, bolt holes) come back as extra closed loops —
-              // add each as its own closed profile so the DXF carries the holes, not just the
-              // silhouette. That is what turns a flat outline into a printable replica.
-              let nHoles=0;
+              self._autoAddedIds.push(self.ann.selectedId);
+              let nPts=pts.length, nHoles=0;
+              // Interior holes come back typed: a round bore as a TRUE circle (perfect in the
+              // DXF), a hex / 12-point socket or slot as a corner-kept polygon. Each is added
+              // as its own closed profile, so the DXF carries the holes, not just the silhouette.
               (Array.isArray(j.holes)?j.holes:[]).forEach(function(h){
-                if(Array.isArray(h) && h.length>=3){
-                  const hp=h.map(p=>[p[0]/sentScale, p[1]/sentScale]);
-                  Ann.addPolyline(self.ann, hp, mm, self.opts.units, self.opts.lockMarkerId, true);
-                  nHoles++;
+                if(h && h.shape==='circle' && h.r>0){
+                  const c=[h.cx/sentScale, h.cy/sentScale], edge=[c[0]+h.r/sentScale, c[1]];
+                  Ann.addCircle(self.ann, c, edge, mm, self.opts.units, self.opts.lockMarkerId);
+                  self._autoAddedIds.push(self.ann.selectedId); nHoles++;
+                }else{
+                  const raw=(h && Array.isArray(h.points)) ? h.points : (Array.isArray(h) ? h : null);
+                  if(raw && raw.length>=3){
+                    const hp=raw.map(p=>[p[0]/sentScale, p[1]/sentScale]);
+                    Ann.addPolyline(self.ann, hp, mm, self.opts.units, self.opts.lockMarkerId, true);
+                    self._autoAddedIds.push(self.ann.selectedId); nPts+=hp.length; nHoles++;
+                  }
                 }
               });
               self.setMode('select'); self.requestDraw();
-              const msg = nHoles ? ('Outline + '+nHoles+' hole'+(nHoles>1?'s':'')+' traced — drag any dot to fix it, or Undo.')
-                                 : 'Outline traced — drag any dot to fix it, or Undo.';
-              toast.update(msg, 'ok'); setTimeout(toast.dismiss, 2800);
+              const tail = nHoles ? (' + '+nHoles+' hole'+(nHoles>1?'s':'')) : '';
+              toast.update('Outline'+tail+' traced — drag any dot to fix it, or use the Detail slider.', 'ok');
+              setTimeout(toast.dismiss, isRetrace ? 1400 : 2800);
+              self._showTraceDetail(nPts, nHoles);
             }else{
-              toast.update('No part found there — tap right on the part, or trace it by hand.', 'err'); setTimeout(toast.dismiss, 3400);
+              toast.update(isRetrace ? 'Re-trace found nothing — try a different detail level.'
+                                     : 'No part found there — tap right on the part, or trace it by hand.', 'err');
+              setTimeout(toast.dismiss, 3400);
             }
           })
           .catch(function(){ toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
       }
+
+      // A floating "Detail" slider shown after an auto-trace: drag to re-trace the SAME spot
+      // finer (smoother curves, more points) or simpler. Built once; later calls only refresh
+      // the live vertex count. The slider drives the re-trace on release (change), not on every
+      // pixel of the drag, so the server isn't hammered.
+      _showTraceDetail(nPts, nHoles){
+        const self=this, COARSE=0.003, FINE=0.0003;
+        let el=document.getElementById('cal-trace-detail');
+        if(!el){
+          el=document.createElement('div'); el.id='cal-trace-detail';
+          el.style.cssText='position:fixed;left:50%;bottom:132px;transform:translateX(-50%);z-index:60;'+
+            'display:flex;gap:9px;align-items:center;background:#12171c;color:#e8eef2;border:1px solid #2a3a44;'+
+            'border-radius:12px;padding:9px 13px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:600 13px Segoe UI,system-ui,sans-serif;max-width:94vw;';
+          const lab=document.createElement('span'); lab.textContent='Detail'; lab.style.color='#9fb2bb';
+          const s1=document.createElement('span'); s1.textContent='simpler'; s1.style.cssText='color:#76767e;font-size:11px;';
+          const rng=document.createElement('input'); rng.type='range'; rng.id='cal-trace-detail-rng';
+          rng.min='0'; rng.max='100'; rng.step='1'; rng.style.cssText='width:150px;accent-color:#00d4ff;cursor:pointer;';
+          rng.setAttribute('aria-label','Trace detail');
+          const s2=document.createElement('span'); s2.textContent='finer'; s2.style.cssText='color:#76767e;font-size:11px;';
+          const cnt=document.createElement('span'); cnt.id='cal-trace-detail-cnt'; cnt.style.cssText='color:#9fb2bb;font-size:11px;min-width:60px;text-align:right;';
+          const done=document.createElement('button'); done.type='button'; done.textContent='✓ Done';
+          done.style.cssText='min-height:32px;padding:5px 12px;border-radius:8px;border:none;background:#00d4ff;color:#04222b;font-weight:600;cursor:pointer;';
+          done.onclick=function(){ self._dismissTraceDetail(); };
+          rng.addEventListener('change', function(){
+            const t=parseInt(rng.value,10)/100;
+            self.retraceDetail(COARSE*Math.pow(FINE/COARSE, t));
+          });
+          el.appendChild(lab); el.appendChild(s1); el.appendChild(rng); el.appendChild(s2); el.appendChild(cnt); el.appendChild(done);
+          document.body.appendChild(el);
+        }
+        const rng=document.getElementById('cal-trace-detail-rng');
+        if(rng && document.activeElement!==rng){
+          const cur=this._autoSimplify||0.0006;
+          const v=Math.round(100*Math.log(cur/COARSE)/Math.log(FINE/COARSE));
+          rng.value=String(Math.max(0, Math.min(100, v)));
+        }
+        const cnt=document.getElementById('cal-trace-detail-cnt');
+        if(cnt) cnt.textContent=(nPts||0)+' pts'+(nHoles?(' · '+nHoles+'h'):'');
+      }
+      _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el) el.remove(); }
 
       // Ask for the real length of a just-drawn line and set the working scale from it.
       // The UI may provide onNeedScaleInput(pixelLen, apply) for an inline field; otherwise

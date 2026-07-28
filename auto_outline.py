@@ -84,7 +84,7 @@ def auto_outline_full(
     outer = _outer_polygon(mask, scale, sh, sw, simplify, max_points)
     if outer is None:
         return None
-    holes = _hole_polygons(mask, scale, sh, sw, simplify, max_points, min_hole_frac) if want_holes else []
+    holes = _holes(mask, scale, sh, sw, simplify, max_points, min_hole_frac) if want_holes else []
     return {"outer": outer, "holes": holes}
 
 
@@ -154,11 +154,17 @@ def _outer_polygon(mask, scale, sh, sw, simplify, max_points):
     return [[float(x) / scale, float(y) / scale] for (x, y) in poly]
 
 
-def _hole_polygons(mask, scale, sh, sw, simplify, max_points, min_hole_frac=0.004, max_holes=6):
-    """Interior holes of the part (a box-end ring, bolt holes) as simplified closed polygons
-    in IMAGE pixel coords, largest first. Holes are the enclosed background INSIDE the part;
-    an open jaw (which opens to the exterior) is not one. Specks below min_hole_frac of the
-    part area — glare, texture — are ignored so a hole means a real feature."""
+def _holes(mask, scale, sh, sw, simplify, max_points, min_hole_frac=0.004, max_holes=6):
+    """Interior holes of the part, largest first, as TYPED shapes in IMAGE pixel coords:
+
+        {"shape": "circle",  "cx": .., "cy": .., "r": ..}      -- a round bore
+        {"shape": "polygon", "points": [[x, y], ...]}          -- a hex socket, slot, etc.
+
+    A near-circular hole is returned as a true circle, so the bore is perfectly round in the
+    DXF instead of a faceted loop; anything else keeps its corner-preserving polygon. Holes
+    are the enclosed background INSIDE the part (a box-end ring, bolt holes); an open jaw
+    opens to the exterior and is not one. Specks below min_hole_frac of the part area — glare,
+    texture — are ignored so a hole means a real feature."""
     # RETR_CCOMP gives a 2-level hierarchy: outer boundaries (no parent) and, one level down,
     # their holes (parent index >= 0). hierarchy entry = [next, prev, first_child, parent].
     cnts, hier = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
@@ -174,12 +180,37 @@ def _hole_polygons(mask, scale, sh, sw, simplify, max_points, min_hole_frac=0.00
         area = cv2.contourArea(cnt)
         if area < min_area:
             continue
-        poly = _simplify(cnt, simplify, max_points)
-        if poly is None or len(poly) < 3:
-            continue
-        holes.append((area, [[float(x) / scale, float(y) / scale] for (x, y) in poly]))
+        shape = _classify_hole(cnt, scale, simplify, max_points)
+        if shape is not None:
+            holes.append((area, shape))
     holes.sort(key=lambda h: h[0], reverse=True)
     return [h[1] for h in holes[:max_holes]]
+
+
+def _classify_hole(cnt, scale, simplify, max_points):
+    """A hole contour -> a circle when it is a genuinely round bore, else a simplified
+    polygon. Corner count is the discriminator: a plain round hole has no sharp corners,
+    while a hex / 12-point socket or a slot has several and must keep its true geometry —
+    a radius-variance test alone can't tell a hexagon from a circle (both barely vary)."""
+    pts = cnt.reshape(-1, 2).astype(np.float64)
+    n = len(pts)
+    if n < 3:
+        return None
+    m = cv2.moments(cnt)
+    if m["m00"] != 0:                           # centroid (sign of m00 cancels for a hole)
+        cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
+    else:
+        cx, cy = pts.mean(axis=0)
+    d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)
+    r = float(d.mean())
+    k = int(max(2, round(0.02 * n)))
+    corners = _nms_corners(np.abs(_turn_angles(pts, k)), np.deg2rad(30.0), max(3, k), n)
+    if r > 3.0 and len(corners) <= 1 and float(d.std()) / r < 0.08:
+        return {"shape": "circle", "cx": cx / scale, "cy": cy / scale, "r": r / scale}
+    poly = _simplify(cnt, simplify, max_points)
+    if poly is None or len(poly) < 3:
+        return None
+    return {"shape": "polygon", "points": [[float(x) / scale, float(y) / scale] for (x, y) in poly]}
 
 
 def _pick_component(labels, stats, n, seed, scale, sw, sh):

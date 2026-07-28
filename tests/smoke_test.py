@@ -171,11 +171,13 @@ def main():
         ok_h = bool(full) and len(full.get("outer") or []) >= 6 and len(holes) >= 1
         detail = f"full={bool(full)}, holes={len(holes)}"
         if ok_h:
-            hp = np.asarray(holes[0], float); hc = hp.mean(0)
-            hr = float(np.hypot(hp[:, 0] - hc[0], hp[:, 1] - hc[1]).mean())
-            ok_h = abs(hc[0] - 350) < 25 and abs(hc[1] - 250) < 25 and abs(hr - 70) < 20
-            detail = f"{len(holes)} hole(s), center~({hc[0]:.0f},{hc[1]:.0f}), r~{hr:.0f} vs 70"
-        check("auto_outline_full captures an interior hole", ok_h, detail)
+            h0 = holes[0]
+            # A clean round bore must come back as a TRUE circle (not a faceted polygon).
+            ok_h = (isinstance(h0, dict) and h0.get("shape") == "circle"
+                    and abs(h0["cx"] - 350) < 25 and abs(h0["cy"] - 250) < 25 and abs(h0["r"] - 70) < 20)
+            detail = (f"{len(holes)} hole(s), shape={h0.get('shape')}, "
+                      f"center~({h0.get('cx', 0):.0f},{h0.get('cy', 0):.0f}), r~{h0.get('r', 0):.0f} vs 70")
+        check("auto_outline_full captures an interior hole (round -> circle)", ok_h, detail)
     except Exception as e:
         check("auto_outline_full holes", False, repr(e))
 
