@@ -201,6 +201,21 @@ def main():
     except Exception as e:
         check("calibrate_image on blank image", False, repr(e))
 
+    # 3b) A lone square (no 4-pad calibration pattern) must NOT report "high" confidence —
+    #     it could be any square object, and trusting it silently yields a wrong scale.
+    try:
+        results = {}
+        for name, bg, fg in (("dark-on-bright", 200, 35), ("bright-on-dark", 40, 235)):
+            im = np.full((700, 900, 3), bg, np.uint8)
+            cv2.rectangle(im, (380, 300), (520, 440), (fg, fg, fg), -1)
+            with _quiet():
+                calx, _ = calibrate_image(im, edge_mm=40.0)
+            results[name] = calx.get("calibration_confidence")
+        ok = all(c != "high" for c in results.values())
+        check("lone square (no pattern) is never high confidence", ok, str(results))
+    except Exception as e:
+        check("lone-square confidence guard", False, repr(e))
+
     # 4) save_outputs writes calibration JSON atomically.
     if overlay is not None:
         try:

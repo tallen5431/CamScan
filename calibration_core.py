@@ -271,6 +271,10 @@ def calibrate_image(img_bgr: np.ndarray,
 
     # 1) Enhanced multi-threshold detection with fallback strategies
     rects: List[Tuple[int,int,int,int]] = []
+    # True when the ONLY detections came from Strategy 4 (last-resort square detection with NO
+    # calibration-pattern check). Such a marker might be an unrelated square object rather than
+    # the real target, so we never report it as "high" confidence — even if it refines cleanly.
+    no_pattern_fallback = False
 
     if use_robust_detection:
         # Strategy 1: IMPROVED calibration pattern detection
@@ -367,6 +371,8 @@ def calibrate_image(img_bgr: np.ndarray,
             )
             for (_score, x, y, w, h, _mean) in dets:
                 rects.append((x, y, w, h))
+            if rects:
+                no_pattern_fallback = True   # nothing pattern-verified — cap confidence below
     else:
         # Original multi-threshold approach
         for t in thresholds:
@@ -495,6 +501,14 @@ def calibrate_image(img_bgr: np.ndarray,
             draw_corners = homography_corners if homography_corners else mapped
             marker = _record_marker(overlay, draw_corners, edge_len_mm, corner_source, distortion, line_thickness, homography_corners)
             if marker is not None:
+                # "high" confidence requires the calibration PATTERN (the outer square AND its
+                # inner pads), not just one cleanly-refined square — a lone square could be any
+                # square object (a tile, a phone), and trusting it silently yields a wrong scale.
+                # Cap to "low" when the pattern isn't sufficiently present: the no-pattern
+                # Strategy-4 fallback, or fewer than 3 of the 4 inner pads found.
+                if marker["confidence"] == "high" and (no_pattern_fallback or len(inner_rects) < 3):
+                    marker["confidence"] = "low"
+                    print(f"     ⚠️  Weak pattern (inner pads={len(inner_rects)}, strat4={no_pattern_fallback}) — capping confidence to low")
                 markers.append(marker)
                 if marker["confidence"] == "low" and corner_source == "refined":
                     print(f"     ⚠️  Perspective distortion {distortion:.1f}° > {PERSPECTIVE_MAX_DEG}° — flagging low confidence")
