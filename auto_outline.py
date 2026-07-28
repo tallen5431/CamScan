@@ -296,6 +296,9 @@ def _simplify_dp(contour, simplify, max_points):
         eps *= 1.3
         approx = cv2.approxPolyDP(contour, eps, True).reshape(-1, 2)
         guard += 1
+    if len(approx) > max_points:                 # still over after the guard loop: hard-cap
+        idx = np.linspace(0, len(approx) - 1, max_points).round().astype(int)
+        approx = approx[np.unique(idx)]           # uniform decimation, honour max_points
     return approx
 
 

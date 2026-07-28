@@ -797,10 +797,14 @@ window.CalibUI = (function(){
       // If focus was inside the coach (e.g. "Got it"), move it somewhere sensible rather than
       // stranding it on <body>. If a tool click triggered the dismissal, focus is already on
       // that tool — leave it alone.
+      const wasShown = !!coach;   // only "spend" the first-run flag if a coach was actually up
       const hadFocus = coach && coach.contains(document.activeElement);
       if (coach && coach.parentNode) coach.remove();
-      coach = null; coachSeenMem = true;
-      try { localStorage.setItem('calib.coachSeen', '1'); } catch (e) {}
+      coach = null;
+      if (wasShown) {
+        coachSeenMem = true;
+        try { localStorage.setItem('calib.coachSeen', '1'); } catch (e) {}
+      }
       if (hadFocus) { try { calChip.focus(); } catch (e) {} }
     }
     function maybeShowCoach(){

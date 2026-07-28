@@ -178,6 +178,17 @@ def main():
             detail = (f"{len(holes)} hole(s), shape={h0.get('shape')}, "
                       f"center~({h0.get('cx', 0):.0f},{h0.get('cy', 0):.0f}), r~{h0.get('r', 0):.0f} vs 70")
         check("auto_outline_full captures an interior hole (round -> circle)", ok_h, detail)
+
+        # A non-round hole (a slot) must stay a corner-preserving POLYGON, not be forced round.
+        slot = np.full((500, 700, 3), 185, np.uint8)
+        cv2.circle(slot, (350, 250), 150, (55, 58, 62), -1)
+        cv2.rectangle(slot, (290, 232), (410, 268), (185, 185, 185), -1)   # a slot bore
+        with _quiet():
+            full2 = auto_outline_full(slot, seed=[350, 130])
+        h2 = ((full2 or {}).get("holes") or [None])[0]
+        ok_p = isinstance(h2, dict) and h2.get("shape") == "polygon" and len(h2.get("points") or []) >= 4
+        check("auto_outline_full keeps a non-round hole as a polygon", ok_p,
+              f"shape={h2.get('shape') if isinstance(h2, dict) else h2}")
     except Exception as e:
         check("auto_outline_full holes", False, repr(e))
 

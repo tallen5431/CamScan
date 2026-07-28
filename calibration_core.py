@@ -251,7 +251,6 @@ def calibrate_image(img_bgr: np.ndarray,
                     edge_mm: Optional[float] = None,
                     thresholds: Tuple[int,int,int] = (60, 80, 100),
                     use_robust_detection: bool = True,
-                    min_nested_squares: int = 0,
                     line_thickness: int = LINE_THICKNESS
                     ) -> Tuple[Dict[str, Any], np.ndarray]:
     """

@@ -436,11 +436,13 @@ def detect_dark_squares(
     return final
 
 
-def detect_dark_squares_robust(img, edge_mm: float = 30.0, **kwargs):
+def detect_dark_squares_robust(img, edge_mm: float = 40.0, **kwargs):
     """
     Compatibility wrapper for existing code.
 
-    edge_mm is ignored; everything is pixel-based. Unknown keyword arguments
+    edge_mm is ignored (detection is purely pixel-based; the real-mm edge is applied later in
+    calibration_core); the default is kept at 40 only to match the pipeline's EDGE_MM_DEFAULT
+    so the signature doesn't mislead. Unknown keyword arguments
     (e.g. tuning params like ``clahe_clip`` that some callers pass) are silently
     dropped instead of raising TypeError — otherwise a fallback detection strategy
     could crash the whole upload for images with few/no calibration squares.

@@ -164,7 +164,9 @@ window.CalibExport = (function(){
         const w_mm = rm.w, h_mm = rm.h, area_mm2 = rm.area;
         const w_val = unit.fromMM(w_mm);
         const h_val = unit.fromMM(h_mm);
-        csv += `Rectangle,${label},${w_val.toFixed(3)}x${h_val.toFixed(3)},${unit.label},${w_mm.toFixed(3)}x${h_mm.toFixed(3)},${area_mm2.toFixed(3)},\n`;
+        // Keep the human "WxH" in the display Value column, but leave Value_mm strictly
+        // numeric (the width); the height rides in Notes so a spreadsheet can parse the column.
+        csv += `Rectangle,${label},${w_val.toFixed(3)}x${h_val.toFixed(3)},${unit.label},${w_mm.toFixed(3)},${area_mm2.toFixed(3)},H ${h_mm.toFixed(3)} mm\n`;
 
       }else if(a.type === 'polyline'){
         const pts = a.pts || [];
@@ -308,12 +310,14 @@ window.CalibExport = (function(){
   }
 
   // Serialize a _buildDXFRequest() geometry list into a DXF string, entirely client-side —
-  // no backend. Mirrors the Python export_to_dxf() conventions so a CamScan-generated DXF is
-  // identical whichever path produced it: units = mm, per-item mm_per_px wins over the request
-  // default, and Y is flipped by image_height when the coordinates are still in image pixels
-  // (plane-mode geometry already arrives in CAD mm, Y-up, with mm_per_px = 1 and no flip).
-  // AC1015 (R2000) so LWPOLYLINE profiles import as single closed, extrudable entities.
-  const _DXF_LAYER = { line:'LINES', circle:'CIRCLES', rectangle:'RECTANGLES', polyline:'POLYLINES', text:'DIMTEXT' };
+  // no backend. Follows the Python export_to_dxf() conventions so a CamScan DXF carries
+  // equivalent geometry whichever path produced it: units = mm, and Y is flipped by
+  // image_height when coordinates are still in image pixels (plane-mode geometry already
+  // arrives in CAD mm, Y-up, with mm_per_px = 1 and no flip). POSITIONS use ONE uniform scale
+  // (the request default) so multi-marker geometry stays spatially coherent; per-item
+  // mm_per_px is used only for a shape's intrinsic SIZE (radius, text height). AC1015 (R2000)
+  // so LWPOLYLINE profiles import as single closed, extrudable entities. (Bytes are not
+  // identical to the Python/ezdxf output — that writer emits a LAYER table — but geometry matches.)
   function dxfFromGeometry(geometry, mm_per_px, image_height){
     const items = Array.isArray(geometry) ? geometry : [];
     const base = mm_per_px || 1.0;
@@ -328,27 +332,28 @@ window.CalibExport = (function(){
     g(0,'SECTION'); g(2,'ENTITIES');
 
     for(const it of items){
-      let s = parseFloat(it && it.mm_per_px);
+      let s = parseFloat(it && it.mm_per_px);      // per-item scale — intrinsic SIZE only
       if(!isFinite(s) || s === 0) s = base;
+      const pos = base;                            // uniform scale for POSITIONS (spatial coherence)
       try{
         const t = it && it.type;
         if(t === 'line'){
           g(0,'LINE'); g(100,'AcDbEntity'); g(8, layerOf(it,'LINES')); g(100,'AcDbLine');
-          g(10, num(it.x1*s)); g(20, num(flipY(it.y1)*s)); g(30,'0.0');
-          g(11, num(it.x2*s)); g(21, num(flipY(it.y2)*s)); g(31,'0.0');
+          g(10, num(it.x1*pos)); g(20, num(flipY(it.y1)*pos)); g(30,'0.0');
+          g(11, num(it.x2*pos)); g(21, num(flipY(it.y2)*pos)); g(31,'0.0');
         }else if(t === 'circle'){
           g(0,'CIRCLE'); g(100,'AcDbEntity'); g(8, layerOf(it,'CIRCLES')); g(100,'AcDbCircle');
-          g(10, num(it.center_x*s)); g(20, num(flipY(it.center_y)*s)); g(30,'0.0'); g(40, num(it.radius_px*s));
+          g(10, num(it.center_x*pos)); g(20, num(flipY(it.center_y)*pos)); g(30,'0.0'); g(40, num(it.radius_px*s));
         }else if(t === 'rectangle'){
           const pts = [[it.x1,it.y1],[it.x2,it.y1],[it.x2,it.y2],[it.x1,it.y2]];
-          _dxfPoly(g, num, pts.map(p=>[p[0]*s, flipY(p[1])*s]), true, layerOf(it,'RECTANGLES'));
+          _dxfPoly(g, num, pts.map(p=>[p[0]*pos, flipY(p[1])*pos]), true, layerOf(it,'RECTANGLES'));
         }else if(t === 'polyline'){
-          const pts = (it.points||[]).map(p=>[p[0]*s, flipY(p[1])*s]);
+          const pts = (it.points||[]).map(p=>[p[0]*pos, flipY(p[1])*pos]);
           if(pts.length) _dxfPoly(g, num, pts, !!it.closed, layerOf(it,'POLYLINES'));
         }else if(t === 'text'){
           let h = parseFloat(it.height); if(!isFinite(h) || h<=0) h = 3; h *= s;
           g(0,'TEXT'); g(100,'AcDbEntity'); g(8, layerOf(it,'DIMTEXT')); g(100,'AcDbText');
-          g(10, num(it.x*s)); g(20, num(flipY(it.y)*s)); g(30,'0.0'); g(40, num(h));
+          g(10, num(it.x*pos)); g(20, num(flipY(it.y)*pos)); g(30,'0.0'); g(40, num(h));
           g(1, String(it.text==null?'':it.text).replace(/[\r\n]+/g,' ')); g(100,'AcDbText');
         }
       }catch(e){ /* skip one malformed item, keep the rest — matches the Python writer */ }

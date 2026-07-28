@@ -2,9 +2,8 @@
 Circle detection module for CamScan - detects circles and arcs in calibrated images.
 
 Provides:
-  - detect_circles(img, ...) → list of circle detections
-  - fit_arc(points) → arc parameters
-  - export_to_dxf(circles, lines, filename) → DXF file for CAD software
+  - detect_circles_hough(img, ...) / detect_circles_contour(img, ...) → circle detections
+  - export_to_dxf(geometry, filename, mm_per_px, ...) → DXF file for CAD software
 """
 
 import cv2
@@ -215,17 +214,20 @@ def export_to_dxf(
     doc.header['$INSUNITS'] = 4  # 4 = millimeters in AutoCAD
 
     # Create layers up front with distinct ACI colors so entities are filterable and
-    # visually separable by type in CAD (they defaulted to white/color-7 before).
+    # visually separable by type in CAD (they defaulted to white/color-7 before). ELLIPSES,
+    # ANGLES and MARKER have no emitting branch below — they exist so a caller can still target
+    # them via item['layer'] (and for parity with future entity types), not because this
+    # writer produces them.
     layer_colors = {
         'LINES': 3,       # green
         'CIRCLES': 1,     # red (holes)
-        'ELLIPSES': 1,    # red (holes)
+        'ELLIPSES': 1,    # red (holes) — caller-supplied item['layer'] only
         'RECTANGLES': 5,  # blue
         'POLYLINES': 4,   # cyan
-        'ANGLES': 6,      # magenta
+        'ANGLES': 6,      # magenta — caller-supplied item['layer'] only
         'NOTES': 2,       # yellow
         'DIMTEXT': 2,     # yellow
-        'MARKER': 8,      # grey (reference)
+        'MARKER': 8,      # grey (reference) — caller-supplied item['layer'] only
     }
     for _name, _color in layer_colors.items():
         if _name not in doc.layers:

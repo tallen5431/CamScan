@@ -10,11 +10,7 @@ window.CalibGeom = (function(){
     const hx = ax + t*vx, hy = ay + t*vy;
     return Math.hypot(px-hx, py-hy);
   }
-  function angleDeg(ax,ay, bx,by){ return Math.atan2(by-ay,bx-ax)*180/Math.PI; }
-  function angleABC(a,v,b){
-    const ang = Math.abs((Math.atan2(a[1]-v[1], a[0]-v[0]) - Math.atan2(b[1]-v[1], b[0]-v[0]))*180/Math.PI);
-    return (ang>180)? 360-ang : ang;
-  }
+  // (angle helpers removed — angle measurement lives in CalibMeasure.angle, the only path used.)
 
   // Solve a dense n×n linear system A·x = b by Gaussian elimination with partial
   // pivoting. Returns the solution vector, or null if the matrix is singular (which
@@ -75,5 +71,5 @@ window.CalibGeom = (function(){
     return [[h[0],h[1],h[2]], [h[3],h[4],h[5]], [h[6],h[7],1]];
   }
 
-  return { distPtLine, angleDeg, angleABC, solveHomography, orderQuad, quadAreaPx };
+  return { distPtLine, solveHomography, orderQuad, quadAreaPx };
 })();
