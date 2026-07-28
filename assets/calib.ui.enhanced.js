@@ -587,6 +587,30 @@ window.CalibUI = (function(){
       lineThickLabel.appendChild(lineThickSlider); lineThickLabel.appendChild(lineThickValue);
       dispBody.appendChild(lineThickLabel);
 
+      // Measurement labels on/off — turn off to edit a dense outline without the readout
+      // boxes covering the points.
+      const labelsLabel = document.createElement('label');
+      const labelsChk = document.createElement('input'); labelsChk.type = 'checkbox';
+      labelsChk.checked = (overlay.opts && overlay.opts.showLabels) !== false;
+      labelsChk.onchange = () => { overlay.opts.showLabels = labelsChk.checked; if (overlay.redraw) overlay.redraw(); };
+      labelsLabel.appendChild(labelsChk); labelsLabel.appendChild(document.createTextNode(' Show measurement labels'));
+      dispBody.appendChild(labelsLabel);
+
+      // Point size — the vertex-handle radius (constant on-screen size). Smaller = easier to
+      // place a dense outline precisely; larger = easier to grab.
+      const ptSizeLabel = document.createElement('label');
+      ptSizeLabel.innerHTML = '<strong>Point size:</strong>';
+      const ptSizeSlider = document.createElement('input');
+      ptSizeSlider.type = 'range'; ptSizeSlider.min = '2'; ptSizeSlider.max = '12'; ptSizeSlider.step = '1';
+      ptSizeSlider.value = (overlay.opts && overlay.opts.handlePx) || 5;
+      ptSizeSlider.style.width = '100%'; ptSizeSlider.style.marginTop = '0.5rem';
+      const ptSizeValue = document.createElement('span');
+      ptSizeValue.textContent = `${ptSizeSlider.value}px`;
+      ptSizeValue.style.cssText = 'margin-left:0.5rem;font-weight:bold;color:var(--cal-accent);';
+      ptSizeSlider.oninput = () => { overlay.opts.handlePx = parseInt(ptSizeSlider.value); ptSizeValue.textContent = `${ptSizeSlider.value}px`; if (overlay.redraw) overlay.redraw(); };
+      ptSizeLabel.appendChild(ptSizeSlider); ptSizeLabel.appendChild(ptSizeValue);
+      dispBody.appendChild(ptSizeLabel);
+
       body.appendChild(disp);
 
       // Clear-all lives here (destructive + rare) rather than cluttering the working chrome.

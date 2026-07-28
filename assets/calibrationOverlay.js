@@ -62,6 +62,9 @@
           snap:false, snapPx:15,  // DEFAULT: off (precise clicks)
           labelScale:1.35, linePx:3,
           showGrid:false, showAnn:true, showMarkers:true,
+          showLabels:true,        // measurement labels on the canvas (turn off to edit a dense outline)
+          handlePx:5,             // vertex-handle radius in SCREEN css px — constant regardless of zoom,
+                                  // so zooming in to fix a point gives a small, precise dot over the edge
           exportVisibleOnly:true, lockMarkerId:null,
           manualMmPerPx:null,     // user-set scale (from a known length) — wins over markers
           manualHomography:null   // user-set px->mm homography (from a paper rectangle's 4
@@ -589,11 +592,19 @@
         this.updateKPI();
       }
 
+      // Vertex-handle radius in IMAGE units that renders at a CONSTANT screen size
+      // (opts.handlePx css px) regardless of zoom. Fixed image-space dots grew on screen as you
+      // zoomed in — covering the very edge you're aligning to; this keeps them small and precise.
+      _handleR(mult){
+        return this.vp.pxToImg((this.opts.handlePx || 5) * (mult || 1) * this.vp.dpr);
+      }
+
       _drawAnnotations(){
         if(!this.opts.showAnn) return;
         const c=this.ctx, unit=Units.get(this.opts.units);
         const C=Draw.colors;
-        const dotR = Draw.px(this.canvas,8), linePx=Draw.px(this.canvas,this.opts.linePx);
+        const dotR = this._handleR(), linePx=Draw.px(this.canvas,this.opts.linePx);
+        const showLabels = this.opts.showLabels !== false;
         // Selected shapes render in a high-contrast white and a bolder line so the
         // selection is unmistakable regardless of the base tool color.
         const selW = linePx*1.7;
@@ -607,12 +618,12 @@
             c.fillStyle=sel?C.selected:C.segment;
             for(const [x,y] of [a.a,a.b]){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
             const mid=[(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this.opts.labelScale, C.segment);
+            if(showLabels) Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this.opts.labelScale, C.segment);
           } else if(a.type==='note'){
             const [tx,ty]=a.p; c.fillStyle=sel?C.selected:C.note;
-            c.beginPath(); c.arc(tx,ty,Draw.px(this.canvas,9),0,Math.PI*2); c.fill();
+            c.beginPath(); c.arc(tx,ty,this._handleR(1.6),0,Math.PI*2); c.fill();
             c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
-            if(a.text){ const f=Math.round(18*this.opts.labelScale); const pad=8*this.opts.labelScale; const lx=tx+14;
+            if(a.text && showLabels){ const f=Math.round(18*this.opts.labelScale); const pad=8*this.opts.labelScale; const lx=tx+14;
               c.font=Draw.font(f); c.textAlign="left"; c.textBaseline="middle";
               const boxW=c.measureText(a.text).width + 2*pad, boxH=f+2*pad, ly=ty-boxH/2;
               c.fillStyle="rgba(0,0,0,.72)"; c.fillRect(lx,ly,boxW,boxH);
@@ -631,16 +642,29 @@
             if(closed){ c.closePath(); c.save(); c.globalAlpha=0.12; c.fillStyle=sel?C.selected:C.polyline; c.fill(); c.restore(); }
             c.stroke();
             c.fillStyle=sel?C.selected:C.polyline;
-            for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,Draw.px(this.canvas,8),0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
-            const mid=pts[Math.floor(pts.length/2)];
-            let label=this._fmtLen(mm, pxLen);
-            if(closed){
-              const unit=Units.get(this.opts.units);
-              label = this.isCalibrated()
-                ? `⬡ peri ${this._fmtLen(mm, pxLen)} · A ${unit.areaFromMM2(Measure.polygonArea(mctx, pts)).toFixed(1)} ${unit.areaLabel}`
-                : `⬡ outline`;
+            // Handles: constant small screen size; the SELECTED outline's are a touch larger so
+            // the active one is easy to grab. The generous hit tolerance (hitTolPx) makes even
+            // small dots easy to catch, so they can stay unobtrusive over a dense outline.
+            const hR = sel ? this._handleR(1.5) : dotR, ringW = Draw.px(this.canvas,1.5);
+            for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,hR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=ringW; c.stroke(); }
+            if(showLabels){
+              let label=this._fmtLen(mm, pxLen);
+              if(closed){
+                const unit=Units.get(this.opts.units);
+                label = this.isCalibrated()
+                  ? `⬡ peri ${this._fmtLen(mm, pxLen)} · A ${unit.areaFromMM2(Measure.polygonArea(mctx, pts)).toFixed(1)} ${unit.areaLabel}`
+                  : `⬡ outline`;
+              }
+              // Anchor the label above the shape's bounding box (top-centre), NOT on a middle
+              // vertex — so it floats clear above the part instead of covering the points you edit.
+              let ax, ay;
+              if(closed){
+                let minX=Infinity,maxX=-Infinity,minY=Infinity;
+                for(const [x,y] of pts){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; }
+                ax=(minX+maxX)/2; ay=minY;
+              }else{ const m=pts[Math.floor(pts.length/2)]; ax=m[0]; ay=m[1]; }
+              Draw.boxLabel(c, this.canvas, ax, ay, label, this.opts.labelScale, C.polyline);
             }
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], label, this.opts.labelScale, C.polyline);
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
             const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2);
@@ -652,18 +676,19 @@
               const pw=Math.abs(x2-x1), ph=Math.abs(y2-y1);
               rlabel = `${Math.round(pw)}×${Math.round(ph)} px • A ${Math.round(pw*ph)} px²`;
             }
-            Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, rlabel, this.opts.labelScale, C.rectangle);
+            if(showLabels) Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, rlabel, this.opts.labelScale, C.rectangle);
           } else if(a.type==='angle'){
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.angle;
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
-            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale, C.angle);
+            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); if(showLabels) Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale, C.angle);
           } else if(a.type==='circle'){
             // Shared with the PNG exporter so the live canvas and the export never
             // drift (line thickness, label size/position all come from opts here).
             if(window.CalibCircles){
               window.CalibCircles.drawCircle(c, this.canvas, a, this._dataForMeasure(), this.opts.units,
                 { selected: sel, labelScale: this.opts.labelScale, linePx: this.opts.linePx,
-                  fallbackScale: this.getScale(), allowHomography: this._allowHomography() });
+                  fallbackScale: this.getScale(), allowHomography: this._allowHomography(),
+                  showLabel: showLabels, handleR: this._handleR(1.2) });
             }
           }
         }
@@ -672,12 +697,12 @@
       _drawPreview(){
         if(this.selectedPoints.length===0 && !this.hover) return;
         const c=this.ctx, unit=Units.get(this.opts.units);
-        const linePx=Draw.px(this.canvas,this.opts.linePx), dotR=Draw.px(this.canvas,8);
+        const linePx=Draw.px(this.canvas,this.opts.linePx), dotR=this._handleR();
         // Snap cursor: when snapping is on, ring the point the next click will land on
         // (marker corner or an existing measurement's endpoint) so chaining is visible.
         if(this.opts.snap && this.hover && this.opts.mode!=='pan' && this.opts.mode!=='select'){
           c.save(); c.strokeStyle='rgba(0,212,255,.95)'; c.lineWidth=Draw.px(this.canvas,2);
-          c.beginPath(); c.arc(this.hover[0], this.hover[1], Draw.px(this.canvas,10), 0, Math.PI*2); c.stroke();
+          c.beginPath(); c.arc(this.hover[0], this.hover[1], this._handleR(1.6), 0, Math.PI*2); c.stroke();
           c.restore();
         }
         c.fillStyle='orange'; c.strokeStyle='rgba(255,200,0,.9)'; c.lineWidth=linePx;

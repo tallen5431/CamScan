@@ -28,7 +28,9 @@ import numpy as np
 # On a wrench this yields a smooth head (~27 pts) and captures the box-end hole; straight
 # runs still collapse and corners are still preserved, so it stays editable.
 _DEFAULT_SIMPLIFY = 0.0006
-_DEFAULT_MAX_POINTS = 160
+_DEFAULT_MAX_POINTS = 220   # ceiling only — the detail slider decides how many are actually used;
+                            # a higher cap lets the finest setting capture more nuance on a complex
+                            # outline (now editable thanks to the constant-size vertex handles).
 _DEFAULT_DOWNSCALE = 1300
 
 

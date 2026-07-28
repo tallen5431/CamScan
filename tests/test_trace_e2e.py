@@ -155,6 +155,18 @@ def main():
                 "return {polys:it.filter(a=>a.type==='polyline').length,circs:it.filter(a=>a.type==='circle').length};})()")
             assert fine > coarse, f"finer detail should add vertices: coarse={coarse}, fine={fine}"
             assert final["polys"] == 1 and final["circs"] == 1, f"re-trace must replace, not stack: {final}"
+
+            # Handles are a CONSTANT on-screen size: _handleR() is in image units, so
+            # _handleR()*vp.k (its on-screen size) must be invariant across zoom — zooming in
+            # yields a SMALLER image-space dot, i.e. precise placement over the edge.
+            hsize = pg.evaluate(
+                "(()=>{var o=document.querySelector('.cal-view').__overlay;var k1=o.vp.k;var r1=o._handleR();"
+                "o.vp.setZoomAround(k1*3, o.vp.centerAnchor());var k2=o.vp.k;var r2=o._handleR();o.redraw();"
+                "return {screen1:r1*k1, screen2:r2*k2, shrank:r2<r1};})()")
+            assert abs(hsize["screen1"] - hsize["screen2"]) < 1e-6 and hsize["shrank"], f"handles not constant on-screen: {hsize}"
+            # Hiding measurement labels must redraw cleanly (lets you edit a dense outline).
+            pg.evaluate("(()=>{var o=document.querySelector('.cal-view').__overlay;o.opts.showLabels=false;o.redraw();o.opts.showLabels=true;o.redraw();})()")
+
             assert not errors, f"page errors: {errors}"
             browser.close()
         print(f"E2E_RESULT: PASS (outer polyline + true-circle bore; slider re-traces coarse={coarse}->fine={fine} pts, replaced)")

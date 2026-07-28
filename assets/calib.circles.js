@@ -68,17 +68,20 @@ window.CalibCircles = (function(){
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.stroke();
 
-    // Center point.
-    const dotR = D().px(canvas, 8);
+    // Center point. Use the caller's constant-screen-size handle radius when given (live
+    // editing), else the default (PNG export, which has no viewport).
+    const dotR = (opts.handleR != null) ? opts.handleR : D().px(canvas, 8);
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#000'; ctx.lineWidth = D().px(canvas, 2); ctx.stroke();
 
-    // Labels stacked above the circle (honors the Text-Size slider). Offset the
-    // second label by a full box height so they never overlap.
-    const boxH = Math.round(22 * labelScale) + 20 * labelScale;
-    D().boxLabel(ctx, canvas, cx, cy - r - 15, diamLabel, labelScale, C.circle);
-    D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, areaLabel, labelScale, C.circle);
+    // Labels stacked above the circle (honors the Text-Size slider). Offset the second label
+    // by a full box height so they never overlap. Skipped when the caller hides labels.
+    if(opts.showLabel !== false){
+      const boxH = Math.round(22 * labelScale) + 20 * labelScale;
+      D().boxLabel(ctx, canvas, cx, cy - r - 15, diamLabel, labelScale, C.circle);
+      D().boxLabel(ctx, canvas, cx, cy - r - 15 - boxH - 8, areaLabel, labelScale, C.circle);
+    }
   }
 
   // Export circle to JSON
