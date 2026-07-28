@@ -157,6 +157,53 @@ def main():
     except Exception as e:
         check("auto-outline", False, repr(e))
 
+    # 2e) Cast-shadow robustness: a part on a warm surface throws a shadow that keeps the
+    #     surface's colour and only drops luminance. The outline must hug the PART, not bulge
+    #     into the shadow (the real side-view-wrench failure) — while a genuinely dark, neutral
+    #     part with NO shadow is still captured in full (the discount/carve must not erase it).
+    try:
+        from auto_outline import auto_outline as _ao
+
+        def _bbox(poly):
+            a = np.array(poly, float)
+            return a[:, 0].min(), a[:, 0].max(), a[:, 1].min(), a[:, 1].max()
+
+        # neutral chrome-like bar on a warm off-white surface, with a hue-preserving cast shadow
+        # hugging its underside (surface darkened ~0.62) and a bright specular edge-highlight.
+        sc = np.full((500, 900, 3), (170, 195, 210), np.uint8)
+        sc[300:360, 150:760] = (int(170 * .62), int(195 * .62), int(210 * .62))   # cast shadow band
+        cv2.GaussianBlur(sc, (0, 0), 6, dst=sc)                                    # soft penumbra
+        bt, bb, bl, br = 240, 300, 140, 770
+        cv2.rectangle(sc, (bl, bt), (br, bb), (95, 95, 97), -1)                    # bar body
+        cv2.rectangle(sc, (bl, bt + 6), (br, bt + 20), (232, 232, 234), -1)        # specular highlight
+        with _quiet():
+            p_sh = _ao(sc, seed=[(bl + br) // 2, (bt + bb) // 2])
+        ok_sh = bool(p_sh)
+        detail = f"poly={bool(p_sh)}"
+        if ok_sh:
+            x0, x1, y0, y1 = _bbox(p_sh)
+            overshoot = y1 - bb                 # px the outline dips past the bar into the shadow
+            top_gap = y0 - bt                   # px the outline misses at the highlighted top edge
+            # Shadow reaches y~360 (60px below the bar): a plain LAB distance welds it on. Allow a
+            # small penumbra margin; a regression (shadow included) overshoots by tens of px.
+            ok_sh = overshoot < 18 and top_gap < 18 and (x1 - x0) > 0.9 * (br - bl)
+            detail = f"overshoot={overshoot:.0f}px top_gap={top_gap:.0f}px (shadow reaches ~+60)"
+        check("cast shadow doesn't bulge the outline (part, not shadow)", ok_sh, detail)
+
+        # a matte-BLACK neutral bar, no shadow — must come back full height (guard vs erasing it).
+        dk = np.full((500, 900, 3), (170, 195, 210), np.uint8)
+        cv2.rectangle(dk, (200, 250), (700, 300), (18, 18, 20), -1)
+        with _quiet():
+            p_dk = _ao(dk, seed=[450, 275])
+        ok_dk = bool(p_dk)
+        if ok_dk:
+            _, _, y0, y1 = _bbox(p_dk)
+            ok_dk = abs((y1 - y0) - 50) < 14      # full ~50px bar captured, not erased by the discount
+        check("dark neutral part is not erased by shadow suppression", ok_dk,
+              f"height={ (_bbox(p_dk)[3]-_bbox(p_dk)[2]):.0f}px vs 50" if p_dk else "no poly")
+    except Exception as e:
+        check("cast-shadow robustness", False, repr(e))
+
     # 2b) auto_outline_full ALSO captures interior holes (a box-end ring, bolt holes) — what
     #     turns a flat silhouette into a printable replica. An open-jaw concavity opens to the
     #     exterior and must NOT be reported as a hole; an enclosed hole must be.
