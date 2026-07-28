@@ -9,7 +9,7 @@ from edge_finder import find_main_edges
 # ----------------------------
 # Tunables / Defaults
 # ----------------------------
-EDGE_MM_DEFAULT: float = 30.0   # default marker edge in millimeters
+EDGE_MM_DEFAULT: float = 40.0   # default marker edge in mm — matches the recommended printed marker
 PADDING_PX: int = 80            # crop padding around candidate square
 DOWNSCALE_FACTOR: float = 1.0   # speed-up for edge finder (1.0 = off)
 MAX_EDGES: int = 50             # contours to analyze inside edge_finder (increased for inner squares)

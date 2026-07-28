@@ -6,12 +6,12 @@ on a rigid card and laid flat beside the part, CamScan finds it automatically an
 derives scale + a perspective (tilt) correction — no tapping.
 
 Outputs an SVG (vector, exact millimetres — the print master) and a PNG preview.
-Usage: python tools/make_marker.py [edge_mm]   (default 30, matching the app default)
+Usage: python tools/make_marker.py [edge_mm]   (default 40, matching the app default / recommended marker)
 """
 import sys, os
 import numpy as np, cv2
 
-EDGE_MM = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
+EDGE_MM = float(sys.argv[1]) if len(sys.argv) > 1 else 40.0
 OUT = os.path.join(os.path.dirname(__file__), "..", "markers")
 os.makedirs(OUT, exist_ok=True)
 

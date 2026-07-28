@@ -1293,13 +1293,16 @@
           if(lowConf) specs.push({text:'⚠️ Approximate — verify with Set scale', cls:'cal-chip--warn'});
           // Flag a marker size restored from a previous photo so a stale remembered value
           // can't silently rescale an unrelated image without the user noticing.
-          const remembered = (!this.opts.manualMmPerPx && this._markerSizeFromMemory) ? ' (remembered)' : '';
+          const remembered = !this.opts.manualMmPerPx && this._markerSizeFromMemory;
           const src = this.opts.manualHomography
                         ? (this._manualRef ? `paper ${Math.round(this._manualRef.w)}×${Math.round(this._manualRef.h)} mm` : 'paper')
-                        : (this.opts.manualMmPerPx ? 'manual line' : `${this.currentMarkerSizeMM()??'—'} mm sq${remembered}`);
+                        : (this.opts.manualMmPerPx ? 'manual line' : `${this.currentMarkerSizeMM()??'—'} mm sq`);
           const unitPerPx=unit.fromMM(s);
           specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
                                     : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`});
+          // Remembered-size flag shows on EVERY width (including phones) — a stale value
+          // silently rescaling an unrelated photo is a correctness footgun, so never hide it.
+          if(remembered) specs.push({text:`⚠️ saved ${this.currentMarkerSizeMM()} mm sq — tap 📐 to verify`, cls:'cal-chip--warn'});
           if(!narrow) specs.push({text:`ref ${src}`});
           // A manual LINE scale is a single uniform mm/px with NO perspective correction,
           // so a tilted photo measures short — surface the flat-on nudge for that path
@@ -1323,8 +1326,8 @@
         for(const x of specs){
           if(x.action){
             const b=document.createElement('button'); b.type='button'; b.className='cal-chip cal-chip--action';
-            b.textContent=x.text; b.setAttribute('aria-label','Set a scale by drawing a line of known length');
-            b.onclick=()=>{ this.setMode('setscale'); };
+            b.textContent=x.text; b.setAttribute('aria-label','Set a scale');
+            b.onclick=()=>{ if(this._openScalePanel){ this._openScalePanel(); } else { this.setMode('setscale'); } };
             el.appendChild(b);
           }else{
             const sp=document.createElement('span'); sp.className='cal-chip'+(x.cls?' '+x.cls:''); sp.textContent=x.text; el.appendChild(sp);

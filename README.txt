@@ -23,7 +23,7 @@ uses its known real edge length to convert pixels to millimetres.
 IMPORTANT — set your real square size:
   Open "More Settings & Options" → Calibration → "Calibration square size (mm)"
   and enter the printed edge length of YOUR square. Every measurement rescales
-  instantly (no re-processing). The default assumes a 30 mm square.
+  instantly (no re-processing). The default assumes a 40 mm square (the recommended marker).
 
   You can also set the CALIB_EDGE_MM environment variable to change the default
   used at upload time, e.g.  CALIB_EDGE_MM=47.5 python app.py
