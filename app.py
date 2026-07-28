@@ -57,6 +57,17 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 SMTP_TLS = os.getenv("SMTP_TLS", "1").strip().lower() in ("1", "true", "yes", "on")
 SUBMISSIONS_DIR = os.path.join(os.path.dirname(__file__), "submissions")
 
+# --- Embedding: who may iframe CamScan ------------------------------------------------
+# CamScan is embedded on the Datum Labs replacement-parts page via an <iframe>. A CSP
+# 'frame-ancestors' directive both PERMITS that specific parent and blocks clickjacking
+# from anywhere else (top-level use at measure.datumlaboratories.com is unaffected — the
+# directive only governs framing). Override FRAME_ANCESTORS to add hosts, e.g. append
+# "http://localhost:*" while testing the embed locally. Set it empty to send no header.
+FRAME_ANCESTORS = os.getenv(
+    "FRAME_ANCESTORS",
+    "'self' https://datumlaboratories.com https://*.datumlaboratories.com",
+).strip()
+
 
 def _reap_uploads(keep_paths=()):
     """Bound the uploads/ dir by count and age so disk can't grow without limit.
@@ -126,6 +137,21 @@ server.wsgi_app = ProxyFix(
 @server.errorhandler(RequestEntityTooLarge)
 def handle_too_large(e):
     return "File too large (max bytes={})".format(MAX_CONTENT_BYTES), 413
+
+
+# Allow the Datum Labs site to embed CamScan in an iframe, and only that site. Sent on
+# every response (Dash pages, assets, /api/*) so the embed works no matter which URL the
+# parent frames. frame-ancestors supersedes the legacy X-Frame-Options for browsers that
+# support it; we send X-Frame-Options too only when framing is locked to same-origin.
+@server.after_request
+def _set_frame_policy(resp):
+    if FRAME_ANCESTORS:
+        resp.headers["Content-Security-Policy"] = "frame-ancestors " + FRAME_ANCESTORS
+        # X-Frame-Options can't express an allow-list, so we omit it when a cross-origin
+        # parent is permitted (a stray SAMEORIGIN here would defeat the embed in old browsers).
+        if FRAME_ANCESTORS in ("'self'", "'none'"):
+            resp.headers["X-Frame-Options"] = "DENY" if FRAME_ANCESTORS == "'none'" else "SAMEORIGIN"
+    return resp
 
 
 def _is_allowed_filename(filename: str) -> bool:

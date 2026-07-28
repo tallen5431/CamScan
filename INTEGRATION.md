@@ -18,6 +18,34 @@ prefix (`ProxyFix` in `app.py`). The simplest integration:
 
 Run: `python app.py` (default `PORT=8059`). Put it behind Caddy/nginx with TLS.
 
+### Embedding it on the replacement-parts page
+
+The Datum Labs site embeds CamScan in a full-screen overlay on `/replacement-parts` rather
+than sending the customer to another site. The page's `#measure` button opens an `<iframe>`
+pointing at your hosted CamScan URL (set `MEASURE_URL` in `site/replacement-parts.html`;
+today it's `https://measure.datumlaboratories.com`). The iframe URL carries `?embed=1` so
+CamScan can tell it's embedded. Modifier-click still opens CamScan in its own tab, and with
+JavaScript off the button falls back to the quote form — so the page is always safe to ship.
+
+For a browser to *allow* that embed, CamScan must permit the parent site to frame it. CamScan
+now sends a `Content-Security-Policy: frame-ancestors` header that allows **only** the Datum
+Labs site (and blocks clickjacking from anywhere else):
+
+| Variable          | Default                                                              | Purpose                                            |
+|-------------------|---------------------------------------------------------------------|----------------------------------------------------|
+| `FRAME_ANCESTORS` | `'self' https://datumlaboratories.com https://*.datumlaboratories.com` | Who may iframe CamScan (CSP `frame-ancestors`)     |
+
+- The default lets `datumlaboratories.com` and any `*.datumlaboratories.com` subdomain frame
+  the tool; every other site is refused. Top-level use at `measure.datumlaboratories.com` is
+  unaffected — the directive governs *framing* only.
+- **Testing the embed locally?** Append your dev origin, e.g.
+  `FRAME_ANCESTORS="'self' https://datumlaboratories.com https://*.datumlaboratories.com http://localhost:*"`.
+- Set `FRAME_ANCESTORS=''` to send no framing header at all, or `'self'`/`'none'` to lock it
+  to same-origin / block all framing (those two also set the legacy `X-Frame-Options`).
+- If a reverse proxy or Cloudflare in front of CamScan injects its own `X-Frame-Options:
+  SAMEORIGIN`/`DENY`, the embed will be blocked regardless of this header — strip that at the
+  proxy so only CamScan's `frame-ancestors` policy applies.
+
 ## 2. Submissions ("Send to Datum")
 
 When a customer taps **Submit to Datum**, the browser POSTs the job (annotated view images
