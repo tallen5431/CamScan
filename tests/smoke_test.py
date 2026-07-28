@@ -189,6 +189,23 @@ def main():
         ok_p = isinstance(h2, dict) and h2.get("shape") == "polygon" and len(h2.get("points") or []) >= 4
         check("auto_outline_full keeps a non-round hole as a polygon", ok_p,
               f"shape={h2.get('shape') if isinstance(h2, dict) else h2}")
+
+        # A round bore whose rim is partly eaten by a SHADOW must still snap to a clean circle
+        # at the true geometry — the robust fit sheds the localized notch (the real-wrench case).
+        shad = np.full((520, 720, 3), 185, np.uint8)
+        cv2.circle(shad, (360, 260), 160, (55, 58, 62), -1)
+        cv2.circle(shad, (360, 260), 78, (185, 185, 185), -1)                         # bright bore
+        notch = [[360, 260]] + [[int(360 + 78 * np.cos(a)), int(260 + 78 * np.sin(a))]
+                                for a in np.linspace(0, np.deg2rad(55), 10)]
+        cv2.fillPoly(shad, [np.array(notch, np.int32)], (45, 47, 50))                  # shadow notch on the rim
+        with _quiet():
+            full3 = auto_outline_full(shad, seed=[360, 130])
+        h3 = ((full3 or {}).get("holes") or [None])[0]
+        ok_s = (isinstance(h3, dict) and h3.get("shape") == "circle"
+                and abs(h3["cx"] - 360) < 22 and abs(h3["cy"] - 260) < 22 and abs(h3["r"] - 78) < 14)
+        check("shadow-notched bore still snaps to a clean circle", ok_s,
+              f"shape={h3.get('shape') if isinstance(h3, dict) else h3}, "
+              f"c=({h3.get('cx', 0):.0f},{h3.get('cy', 0):.0f}) r={h3.get('r', 0):.0f} vs 78" if isinstance(h3, dict) else str(h3))
     except Exception as e:
         check("auto_outline_full holes", False, repr(e))
 

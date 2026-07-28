@@ -192,29 +192,77 @@ def _holes(mask, scale, sh, sw, simplify, max_points, min_hole_frac=0.004, max_h
     return [h[1] for h in holes[:max_holes]]
 
 
+def _fit_circle_ls(pts):
+    """Algebraic (Kåsa) least-squares circle fit. Returns (cx, cy, r) or None."""
+    x = pts[:, 0]; y = pts[:, 1]
+    A = np.column_stack([2.0 * x, 2.0 * y, np.ones(len(x))])
+    b = x * x + y * y
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    except Exception:
+        return None
+    cx, cy, c = sol
+    v = c + cx * cx + cy * cy
+    if not np.isfinite(v) or v <= 0:
+        return None
+    return float(cx), float(cy), float(np.sqrt(v))
+
+
+def _largest_inlier_arc_frac(pts, cx, cy, inliers, bins=48):
+    """Fraction of the full circle spanned by the LARGEST CONTIGUOUS run of on-circle sectors.
+    This separates a round bore with ONE localized defect (a shadow notch — its outliers sit
+    in a single arc, so the rest is one long contiguous inlier run) from a polygon (whose
+    off-circle corners are spread all the way round, so the longest contiguous run is short)."""
+    if len(pts) == 0:
+        return 0.0
+    ang = np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx)
+    idx = (((ang + np.pi) / (2.0 * np.pi)) * bins).astype(int) % bins
+    good = np.zeros(bins, dtype=bool)
+    for b in range(bins):
+        m = idx == b
+        good[b] = bool(m.any()) and float(inliers[m].mean()) >= 0.5   # sector mostly on-circle
+    if good.all():
+        return 1.0
+    if not good.any():
+        return 0.0
+    best = run = 0
+    for v in np.concatenate([good, good]):   # doubled for cyclic wraparound
+        run = run + 1 if v else 0
+        best = max(best, run)
+    return min(best, bins) / float(bins)
+
+
 def _classify_hole(cnt, scale, simplify, max_points):
-    """A hole contour -> a circle when it is a genuinely round bore, else a simplified
-    polygon. Corner count is the discriminator: a plain round hole has no sharp corners,
-    while a hex / 12-point socket or a slot has several and must keep its true geometry —
-    a radius-variance test alone can't tell a hexagon from a circle (both barely vary)."""
+    """A hole contour -> a TRUE circle when it is a round bore — even a 12-point socket, or a
+    bore whose rim is partly eaten by shadow/glare — else a corner-preserving polygon.
+
+    Seeded from a MEDIAN radius (robust to a notch's minority of points) and refined by
+    iterated least-squares fits on the inliers, so a localized shadow defect — even a deep one
+    that adds many contour points — is shed and the bore snaps to a clean circle. The decisive
+    gate is ANGULAR (the largest contiguous on-circle arc), not a point count: a shadow notch
+    leaves one long contiguous arc, while a polygon's off-circle corners are spread all the way
+    round (short longest run). A weak point-fraction floor rejects total non-circles.
+    """
     pts = cnt.reshape(-1, 2).astype(np.float64)
     n = len(pts)
-    if n < 3:
-        return None
-    m = cv2.moments(cnt)
-    if m["m00"] != 0:                           # centroid (sign of m00 cancels for a hole)
-        cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
-    else:
-        cx, cy = pts.mean(axis=0)
-    d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)
-    r = float(d.mean())
-    # Corner detection needs a contour long enough that the +/-k turn window doesn't reach a
-    # near-antipodal point (which reads a spurious ~180-deg turn at every vertex). Below that,
-    # don't attempt circle classification — keep the hole as its polygon.
-    k = int(max(2, round(0.02 * n)))
-    corners = _nms_corners(np.abs(_turn_angles(pts, k)), np.deg2rad(30.0), max(3, k), n) if n > 4 * k else None
-    if corners is not None and r > 3.0 and len(corners) <= 1 and float(d.std()) / r < 0.08:
-        return {"shape": "circle", "cx": cx / scale, "cy": cy / scale, "r": r / scale}
+    if n >= 8:
+        cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+        r = float(np.median(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)))   # robust seed radius
+        inliers = None
+        for _ in range(4):
+            if not (r > 3.0):
+                break
+            inliers = (np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r) / r) < 0.06
+            if int(inliers.sum()) < 5:
+                break
+            fit = _fit_circle_ls(pts[inliers])
+            if fit is None:
+                break
+            cx, cy, r = fit
+        if inliers is not None and r > 3.0:
+            inliers = (np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r) / r) < 0.06  # vs final fit
+            if inliers.mean() >= 0.45 and _largest_inlier_arc_frac(pts, cx, cy, inliers) >= 0.75:
+                return {"shape": "circle", "cx": cx / scale, "cy": cy / scale, "r": r / scale}
     poly = _simplify(cnt, simplify, max_points)
     if poly is None or len(poly) < 3:
         return None
