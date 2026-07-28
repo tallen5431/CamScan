@@ -157,6 +157,28 @@ def main():
     except Exception as e:
         check("auto-outline", False, repr(e))
 
+    # 2b) auto_outline_full ALSO captures interior holes (a box-end ring, bolt holes) — what
+    #     turns a flat silhouette into a printable replica. An open-jaw concavity opens to the
+    #     exterior and must NOT be reported as a hole; an enclosed hole must be.
+    try:
+        from auto_outline import auto_outline_full
+        ring = np.full((500, 700, 3), 185, np.uint8)
+        cv2.circle(ring, (350, 250), 150, (55, 58, 62), -1)      # disc ...
+        cv2.circle(ring, (350, 250), 70, (185, 185, 185), -1)    # ... with a hole (bg shows through)
+        with _quiet():
+            full = auto_outline_full(ring, seed=[350, 130])       # seed on the ring band
+        holes = (full or {}).get("holes") or []
+        ok_h = bool(full) and len(full.get("outer") or []) >= 6 and len(holes) >= 1
+        detail = f"full={bool(full)}, holes={len(holes)}"
+        if ok_h:
+            hp = np.asarray(holes[0], float); hc = hp.mean(0)
+            hr = float(np.hypot(hp[:, 0] - hc[0], hp[:, 1] - hc[1]).mean())
+            ok_h = abs(hc[0] - 350) < 25 and abs(hc[1] - 250) < 25 and abs(hr - 70) < 20
+            detail = f"{len(holes)} hole(s), center~({hc[0]:.0f},{hc[1]:.0f}), r~{hr:.0f} vs 70"
+        check("auto_outline_full captures an interior hole", ok_h, detail)
+    except Exception as e:
+        check("auto_outline_full holes", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():

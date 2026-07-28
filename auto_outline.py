@@ -22,15 +22,26 @@ import cv2
 import numpy as np
 
 
+# Defaults shared by auto_outline / auto_outline_full. `simplify` is much finer, and the
+# working resolution higher, than the first cut — a round feature on a long part (a wrench's
+# box end) needs the extra samples to read as a smooth curve rather than a coarse polygon.
+# On a wrench this yields a smooth head (~27 pts) and captures the box-end hole; straight
+# runs still collapse and corners are still preserved, so it stays editable.
+_DEFAULT_SIMPLIFY = 0.0006
+_DEFAULT_MAX_POINTS = 160
+_DEFAULT_DOWNSCALE = 1300
+
+
 def auto_outline(
     img_bgr: np.ndarray,
     seed: Optional[Sequence[float]] = None,
     exclude_boxes: Sequence[Tuple[float, float, float, float]] = (),
-    simplify: float = 0.002,
-    max_points: int = 120,
-    downscale_to: int = 1000,
+    simplify: float = _DEFAULT_SIMPLIFY,
+    max_points: int = _DEFAULT_MAX_POINTS,
+    downscale_to: int = _DEFAULT_DOWNSCALE,
 ) -> Optional[List[List[float]]]:
-    """Return the part's outer boundary as [[x, y], ...] in IMAGE pixel coords, or None.
+    """Return the part's OUTER boundary as [[x, y], ...] in IMAGE pixel coords, or None.
+    (For interior holes too — what a printable replica needs — use auto_outline_full.)
 
     seed          : (x, y) on the part (image coords). Strongly recommended — without it
                     the largest non-excluded foreground blob is used, which may be the card.
@@ -41,6 +52,46 @@ def auto_outline(
     max_points    : cap on returned vertices (low-curvature points are dropped first, corners
                     last) — keeps the outline editable by hand.
     """
+    seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
+    if seg is None:
+        return None
+    mask, scale, sh, sw = seg
+    return _outer_polygon(mask, scale, sh, sw, simplify, max_points)
+
+
+def auto_outline_full(
+    img_bgr: np.ndarray,
+    seed: Optional[Sequence[float]] = None,
+    exclude_boxes: Sequence[Tuple[float, float, float, float]] = (),
+    simplify: float = _DEFAULT_SIMPLIFY,
+    max_points: int = _DEFAULT_MAX_POINTS,
+    downscale_to: int = _DEFAULT_DOWNSCALE,
+    want_holes: bool = True,
+    min_hole_frac: float = 0.004,
+) -> Optional[dict]:
+    """Segment the tapped part and return both its outer boundary AND its interior holes:
+
+        {"outer": [[x, y], ...], "holes": [[[x, y], ...], ...]}   (image pixel coords)
+
+    Holes are enclosed background inside the part — a box-end ring, bolt holes — which is what
+    turns a flat outline into a printable replica. A wrench's OPEN jaw is not a hole (it opens
+    to the exterior) so it stays part of `outer`. Returns None if nothing could be segmented.
+    """
+    seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
+    if seg is None:
+        return None
+    mask, scale, sh, sw = seg
+    outer = _outer_polygon(mask, scale, sh, sw, simplify, max_points)
+    if outer is None:
+        return None
+    holes = _hole_polygons(mask, scale, sh, sw, simplify, max_points, min_hole_frac) if want_holes else []
+    return {"outer": outer, "holes": holes}
+
+
+def _segment(img_bgr, seed, exclude_boxes, downscale_to):
+    """Segment the tapped part. Returns (mask, scale, sh, sw) at the downscaled resolution, or
+    None. `mask` is the filled part (255) with interior holes preserved as 0, so callers can
+    read both its outer boundary and its holes."""
     if img_bgr is None or getattr(img_bgr, "size", 0) == 0:
         return None
     H, W = img_bgr.shape[:2]
@@ -85,19 +136,50 @@ def auto_outline(
     if target is None:
         return None
 
-    # Outer boundary only (fill interior detail — holes are captured with the circle tool).
     mask = (labels == target).astype(np.uint8) * 255
+    return mask, scale, sh, sw
+
+
+def _outer_polygon(mask, scale, sh, sw, simplify, max_points):
+    """The part's outer boundary as a simplified polygon in IMAGE pixel coords, or None."""
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not cnts:
         return None
     c = max(cnts, key=cv2.contourArea)
     if cv2.contourArea(c) < 0.003 * sh * sw:
         return None
-
     poly = _simplify(c, simplify, max_points)
     if poly is None or len(poly) < 3:
         return None
     return [[float(x) / scale, float(y) / scale] for (x, y) in poly]
+
+
+def _hole_polygons(mask, scale, sh, sw, simplify, max_points, min_hole_frac=0.004, max_holes=6):
+    """Interior holes of the part (a box-end ring, bolt holes) as simplified closed polygons
+    in IMAGE pixel coords, largest first. Holes are the enclosed background INSIDE the part;
+    an open jaw (which opens to the exterior) is not one. Specks below min_hole_frac of the
+    part area — glare, texture — are ignored so a hole means a real feature."""
+    # RETR_CCOMP gives a 2-level hierarchy: outer boundaries (no parent) and, one level down,
+    # their holes (parent index >= 0). hierarchy entry = [next, prev, first_child, parent].
+    cnts, hier = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    if hier is None or len(cnts) == 0:
+        return []
+    hier = hier[0]
+    part_area = float((mask > 0).sum()) or 1.0
+    min_area = max(30.0, min_hole_frac * part_area)
+    holes = []
+    for i, cnt in enumerate(cnts):
+        if hier[i][3] < 0:                      # no parent -> outer boundary, not a hole
+            continue
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+        poly = _simplify(cnt, simplify, max_points)
+        if poly is None or len(poly) < 3:
+            continue
+        holes.append((area, [[float(x) / scale, float(y) / scale] for (x, y) in poly]))
+    holes.sort(key=lambda h: h[0], reverse=True)
+    return [h[1] for h in holes[:max_holes]]
 
 
 def _pick_component(labels, stats, n, seed, scale, sw, sh):

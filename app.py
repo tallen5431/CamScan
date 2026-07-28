@@ -513,7 +513,7 @@ def api_trace():
     """
     from flask import request, jsonify
     try:
-        from auto_outline import auto_outline
+        from auto_outline import auto_outline_full
     except Exception:
         return jsonify(ok=False, error="unavailable"), 500
 
@@ -547,19 +547,21 @@ def api_trace():
             continue
 
     try:
-        simplify = min(0.05, max(0.0008, float(data.get("simplify", 0.002))))
+        simplify = min(0.05, max(0.0003, float(data.get("simplify", 0.0006))))
     except (TypeError, ValueError):
-        simplify = 0.002
+        simplify = 0.0006
 
     try:
-        pts = auto_outline(img, seed=seed, exclude_boxes=exclude, simplify=simplify)
+        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify)
     except Exception as e:
         print(f"[trace] error: {e}")
         return jsonify(ok=False, error="trace_failed"), 500
 
-    if not pts:
+    if not res or not res.get("outer"):
         return jsonify(ok=False, error="no_outline"), 200
-    return jsonify(ok=True, points=pts)
+    # `points` is the outer boundary (unchanged shape for older clients); `holes` are interior
+    # loops (a box-end ring, bolt holes) the client drops in as extra closed profiles.
+    return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [])
 
 
 def _decode_data_url(durl):

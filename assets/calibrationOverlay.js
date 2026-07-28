@@ -1135,8 +1135,21 @@
               const mm=self.getScale() || (self.data && self.data.mm_per_px) || 0;
               self._pushHistory();
               Ann.addPolyline(self.ann, pts, mm, self.opts.units, self.opts.lockMarkerId, true);
+              // Interior holes (a box-end ring, bolt holes) come back as extra closed loops —
+              // add each as its own closed profile so the DXF carries the holes, not just the
+              // silhouette. That is what turns a flat outline into a printable replica.
+              let nHoles=0;
+              (Array.isArray(j.holes)?j.holes:[]).forEach(function(h){
+                if(Array.isArray(h) && h.length>=3){
+                  const hp=h.map(p=>[p[0]/sentScale, p[1]/sentScale]);
+                  Ann.addPolyline(self.ann, hp, mm, self.opts.units, self.opts.lockMarkerId, true);
+                  nHoles++;
+                }
+              });
               self.setMode('select'); self.requestDraw();
-              toast.update('Outline traced — drag any dot to fix it, or Undo.', 'ok'); setTimeout(toast.dismiss, 2800);
+              const msg = nHoles ? ('Outline + '+nHoles+' hole'+(nHoles>1?'s':'')+' traced — drag any dot to fix it, or Undo.')
+                                 : 'Outline traced — drag any dot to fix it, or Undo.';
+              toast.update(msg, 'ok'); setTimeout(toast.dismiss, 2800);
             }else{
               toast.update('No part found there — tap right on the part, or trace it by hand.', 'err'); setTimeout(toast.dismiss, 3400);
             }

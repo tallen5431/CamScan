@@ -60,7 +60,10 @@ part and close the loop) adds a **closed, extrudable profile** to that DXF — f
 that profile plus a thickness is the whole model, no CAD tracing on your end. **Auto-trace**
 (the ✨ button / simple-mode "Trace outline") takes it further: tap once on the part and the
 server segments it (`/api/trace` → `auto_outline.py`) into an editable outline you nudge if
-needed — a near-one-tap trace instead of clicking every vertex. The site archives the DXF/CSV and a combined
+needed — a near-one-tap trace instead of clicking every vertex. The trace preserves sharp
+corners, samples curves finely enough to read smooth, and **also captures interior holes**
+(a box-end ring, bolt holes) as their own closed profiles — so a flat part comes back as an
+extrudable outline *with its holes*, close to a printable replica, not just a silhouette. The site archives the DXF/CSV and a combined
 `measurements.json` to R2 alongside the photos, and the notification email attaches them and shows
 a dimension table per view. So a quote request arrives as importable geometry + numbers, not just
 a photo to re-measure.
