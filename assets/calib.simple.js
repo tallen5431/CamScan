@@ -62,7 +62,13 @@
   // updates the same entry in place (dedup is by the photo's source id, in CalibJob).
   function captureCurrent(){
     var J=window.CalibJob;
-    if(J && J.addView && J.hasCurrent && !J.hasCurrent()){
+    if(!J) return;
+    // A REOPENED stored view (tracked positionally by data-view-index) is already in the set.
+    // hasCurrent() keys on a fresh upload's sourceId and so reads false for it — calling addView
+    // here would re-add it under a generic "View N" label, silently relabeling e.g. "Top".
+    // Persist its edits in place instead.
+    if(J.isCurrentStored && J.isCurrentStored()){ if(J.syncOpen) J.syncOpen(); return; }
+    if(J.addView && J.hasCurrent && !J.hasCurrent()){
       var n=(J.count && J.count()) || 0;
       J.addView('View '+(n+1));
     }

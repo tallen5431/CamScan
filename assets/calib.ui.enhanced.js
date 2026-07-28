@@ -564,7 +564,10 @@ window.CalibUI = (function(){
       const textSizeLabel = document.createElement('label');
       textSizeLabel.innerHTML = '<strong>Annotation text size:</strong>';
       const textSizeSlider = document.createElement('input');
-      textSizeSlider.type = 'range'; textSizeSlider.min = '0.5'; textSizeSlider.max = '3.0'; textSizeSlider.step = '0.1';
+      // step 0.05 so the default labelScale (1.35) lands ON the grid — with step 0.1 a range
+      // input snaps 1.35 to 1.4 and the readout would show "1.4x" while the actual scale stayed
+      // 1.35 until the user dragged it.
+      textSizeSlider.type = 'range'; textSizeSlider.min = '0.5'; textSizeSlider.max = '3.0'; textSizeSlider.step = '0.05';
       textSizeSlider.value = (overlay.opts && overlay.opts.labelScale) || 1.35;
       textSizeSlider.style.width = '100%'; textSizeSlider.style.marginTop = '0.5rem';
       const textSizeValue = document.createElement('span');

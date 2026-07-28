@@ -43,6 +43,12 @@
       setStatus('⚠️ Storage is full — send or download this submission, then start a new one.', true);
       return false; }
   }
+  // Debounced persist: save() re-serializes the whole job (every view's base64 image), so
+  // calling it on every brief keystroke re-stringifies megabytes per character. Coalesce those
+  // into one write; flushSave() forces it out on blur / panel-close / unload so nothing is lost.
+  var _saveTimer=null;
+  function saveSoon(){ if(_saveTimer) clearTimeout(_saveTimer); _saveTimer=setTimeout(function(){ _saveTimer=null; save(); }, 400); }
+  function flushSave(){ if(_saveTimer){ clearTimeout(_saveTimer); _saveTimer=null; } return save(); }
   function reset(){ job = { id:'job-'+Date.now().toString(36), createdAt:new Date().toISOString(),
              brief:{ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, views:[] };
     try{ localStorage.removeItem(LS_KEY); }catch(e){} }
@@ -162,7 +168,8 @@
     input.value=job.brief[key]||'';
     input.style.cssText='width:100%;min-height:'+(opts.area?'52px':'44px')+';padding:9px 10px;background:#0e1216;'+
       'border:1px solid #29414c;border-radius:8px;color:#eef;font:15px Segoe UI,system-ui,sans-serif;box-sizing:border-box;resize:vertical;';
-    input.oninput=function(){ job.brief[key]=input.value; save(); };
+    input.oninput=function(){ job.brief[key]=input.value; saveSoon(); };   // debounced persist
+    input.onchange=function(){ job.brief[key]=input.value; flushSave(); };  // flush on blur/commit
     wrap.appendChild(lab); wrap.appendChild(input); return wrap;
   }
 
@@ -352,6 +359,10 @@
             createdAt:bundle.createdAt||new Date().toISOString(),
             brief:Object.assign({ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, bundle.brief||{}),
             views:bundle.views.slice() };
+      // The on-screen overlay belongs to the JUST-DISCARDED job; its positional data-view-index
+      // now indexes into the NEW job's views. Clear it so a later Open/save/pagehide sync can't
+      // write the old overlay's image+marks over a freshly-loaded view (silent corruption).
+      var stale=document.querySelector('.cal-view'); if(stale) stale.removeAttribute('data-view-index');
       save();   // best-effort; if the bundle is big this may hit quota — the job still works in memory
       changed();
       openPanel();
@@ -386,6 +397,10 @@
     // Persist any edits made to the side currently open BEFORE we swap it away, so flipping
     // between sides never loses work.
     syncOpenView();
+    // Re-read AFTER syncing: re-opening the side you're already on makes syncOpenView REPLACE
+    // job.views[i] with the freshly-captured record — the pre-sync `v` would reboot from the
+    // stale snapshot and drop the just-made edits.
+    v=job.views[i];
     var st=v.restore;
     // Modelling wants the full markup rail, not the stripped intake flow.
     try{ localStorage.setItem('camscan.simplemode','0'); }catch(e){}
@@ -566,6 +581,10 @@
     count: function(){ return job.views.length; },
     isEmpty: function(){ return !job.views.length; },
     hasCurrent: hasCurrent,  // is the photo on screen already captured into the set?
+    // Is the on-screen overlay an already-stored view being re-edited (tracked positionally)?
+    // Distinct from hasCurrent, which keys on a fresh upload's sourceId.
+    isCurrentStored: function(){ return currentOpenIndex() != null; },
+    syncOpen: syncOpenView,  // persist the reopened side's edits in place (no relabel)
     isEmbedded: function(){ return EMBED; }
   };
 
@@ -576,7 +595,7 @@
     // The top-bar 'New' button reloads the page; syncOpenView otherwise runs only on
     // switch/save/submit, so flush the open reopened side back into the job here too — else a
     // reload rehydrates it from its pre-edit snapshot and the new marks are silently lost.
-    window.addEventListener('pagehide', function(){ try{ syncOpenView(); }catch(e){} });
+    window.addEventListener('pagehide', function(){ try{ syncOpenView(); }catch(e){} try{ flushSave(); }catch(e){} });
   }
   if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded', boot);
 })();
