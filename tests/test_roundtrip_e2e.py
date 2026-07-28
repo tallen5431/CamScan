@@ -141,8 +141,11 @@ def main():
 
             # 6) side switcher: flip to another side and back; edits to a side must persist.
             pg.wait_for_selector("#cal-side-switcher", timeout=8000)
+            # Add the edit via the real annotation store (issues an id) — this also exercises
+            # the id-counter reservation on restore: the new mark must NOT collide with the
+            # restored polyline's id.
             pg.evaluate("(()=>{var o=document.querySelector('.cal-view').__overlay;"
-                        "o.ann.items.push({id:999,type:'note',p:[120,120],text:'edit'});o.requestDraw();})()")
+                        "window.CalibAnn.addNote(o.ann,[120,120],'edit');o.requestDraw();})()")
             pg.locator("#cal-side-switcher").get_by_role("button", name="Front").click()
             pg.wait_for_function(
                 "(()=>{var v=document.querySelector('.cal-view');return v&&v.getAttribute('data-view-index')==='1'"
@@ -155,6 +158,15 @@ def main():
                 "(()=>{var v=document.querySelector('.cal-view');return v&&v.getAttribute('data-view-index')==='0'"
                 "&&v.__overlay&&v.__overlay.img&&v.__overlay.img.naturalWidth>0"
                 "&&v.__overlay.ann.items.length===2;})()", timeout=15000)   # original + the edit persisted
+
+            # id-collision guard (restore must advance CalibAnn's id counter).
+            ids = pg.evaluate("document.querySelector('.cal-view').__overlay.ann.items.map(a=>a.id)")
+            assert len(set(ids)) == len(ids), f"annotation id collision after restore: {ids}"
+
+            # Re-capturing the reopened side must UPDATE in place, not push a duplicate.
+            pg.evaluate("window.CalibJob.addView('Top')")
+            count = pg.evaluate("window.CalibJob.count()")
+            assert count == 2, f"re-adding a reopened side should update in place, not duplicate (count={count})"
 
             assert not errors, f"page errors: {errors}"
             browser.close()

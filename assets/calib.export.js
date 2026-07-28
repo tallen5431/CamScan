@@ -50,8 +50,11 @@ window.CalibExport = (function(){
         Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale, C.segment);
       }else if(a.type==='circle'){
         if(Circles){
+          // Forward allowHomography (drawCircle defaults it to true when the key is absent),
+          // so a PNG / submission JPEG stamps the SAME diameter/area as the live canvas, the
+          // CSV, the DXF and the SVG — e.g. after a manual uniform scale disables tilt-correction.
           Circles.drawCircle(ctx, canvas, a, data, unitsKey,
-            { selected:false, labelScale, linePx, fallbackScale });
+            { selected:false, labelScale, linePx, fallbackScale, allowHomography });
         }
       }else if(a.type==='note'){
         const tx=a.p[0], ty=a.p[1];

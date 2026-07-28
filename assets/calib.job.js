@@ -58,11 +58,23 @@
     var rec;
     try{ rec=o.getViewRecord(label); }catch(e){ setStatus('Could not capture this view: '+e.message, true); return; }
     rec.capturedAt=new Date().toISOString();
-    rec.sourceId=currentSourceId();
-    var idx = rec.sourceId ? job.views.findIndex(function(v){ return v.sourceId===rec.sourceId; }) : -1;
-    if(idx>=0) job.views[idx]=rec; else job.views.push(rec);   // update-or-add: one entry per photo
-    save(); changed();
-    setStatus('✓ Saved “'+(label||rec.label||'view')+'”. Add another photo, or Send when done.');
+    // Update-or-add, one entry per photo. A REOPENED saved side is identified by its
+    // data-view-index (its rebuilt .cal-view carries no server sourceId, so sourceId dedup
+    // would miss it and PUSH a duplicate); update that entry in place. Otherwise dedupe a
+    // freshly-uploaded photo by its sourceId.
+    var openIdx=currentOpenIndex();
+    if(openIdx!=null && job.views[openIdx]){
+      rec.sourceId=job.views[openIdx].sourceId||null;   // keep the original photo's identity
+      job.views[openIdx]=rec;
+    }else{
+      rec.sourceId=currentSourceId();
+      var idx = rec.sourceId ? job.views.findIndex(function(v){ return v.sourceId===rec.sourceId; }) : -1;
+      if(idx>=0) job.views[idx]=rec; else job.views.push(rec);
+    }
+    var ok=save(); changed();
+    // Only claim success if it actually persisted; on quota failure save() already showed the
+    // amber "storage full" warning — don't clobber it with a green "✓ Saved".
+    if(ok) setStatus('✓ Saved “'+(label||rec.label||'view')+'”. Add another photo, or Send when done.');
   }
   function removeView(i){ job.views.splice(i,1); save(); changed(); }
 
@@ -546,8 +558,12 @@
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.
   function boot(){
-    reflectButton(); ensureLandingLoad();
-    new MutationObserver(function(){ reflectButton(); ensureLandingLoad(); }).observe(document.documentElement, {childList:true, subtree:true});
+    render();   // reflectButton + ensureLandingLoad + renderSideSwitcher (all signature-guarded)
+    new MutationObserver(function(){ render(); }).observe(document.documentElement, {childList:true, subtree:true});
+    // The top-bar 'New' button reloads the page; syncOpenView otherwise runs only on
+    // switch/save/submit, so flush the open reopened side back into the job here too — else a
+    // reload rehydrates it from its pre-edit snapshot and the new marks are silently lost.
+    window.addEventListener('pagehide', function(){ try{ syncOpenView(); }catch(e){} });
   }
   if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded', boot);
 })();

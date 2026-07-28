@@ -5,6 +5,15 @@ window.CalibAnn = (function(){
   let _id=1; const next=()=>_id++;
 
   function createStore(){ return { items:[], selectedId:null, hitTolPx:24 }; }
+  // Advance the module-global id counter past every id in `items`. MUST be called whenever
+  // items are installed from OUTSIDE this module (e.g. restoring a saved job), otherwise the
+  // counter is still low and the next add* reissues an id a restored item already uses — two
+  // items share an id, so selecting or deleting one silently hits both.
+  function reserveIds(items){
+    var mx = 0;
+    (items||[]).forEach(function(it){ if(it && typeof it.id==='number' && it.id>mx) mx=it.id; });
+    if(mx>=_id) _id = mx+1;
+  }
   function addSegment(s,a,b,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'segment',a:[...a],b:[...b],mm_per_px,units,markerId}); s.selectedId=id; }
   function addNote(s,p,text){ const id=next(); s.items.push({id,type:'note',p:[...p],text:String(text||'')}); s.selectedId=id; }
   function addPolyline(s,pts,mm_per_px,units,markerId,closed){ const id=next(); s.items.push({id,type:'polyline',pts:pts.map(p=>[...p]),closed:!!closed,mm_per_px,units,markerId}); s.selectedId=id; }
@@ -71,5 +80,5 @@ window.CalibAnn = (function(){
     return { image: imgSrc, calibration: calib, annotations: store.items.map(a=>JSON.parse(JSON.stringify(a))), units };
   }
 
-  return { createStore, addSegment, addNote, addPolyline, addRectangle, addAngle, addCircle, addCircle3pt, hitTest, toExportJSON };
+  return { createStore, reserveIds, addSegment, addNote, addPolyline, addRectangle, addAngle, addCircle, addCircle3pt, hitTest, toExportJSON };
 })();

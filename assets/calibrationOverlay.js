@@ -78,10 +78,15 @@
           await this._loadJSON();
           (this.data.markers||[]).forEach((m,i)=>{ if(m.id==null) m.id=i+1; });
 
-          // If the user picked a real cube size earlier this session, apply it now.
+          // If the user picked a real cube size earlier this session, apply it now — but NOT
+          // when reopening a saved view: that view already carries its own marker_size_mm in
+          // the restored calibration, and overwriting it from a stale localStorage value would
+          // silently rescale the reopened side (breaking the mm round-trip for the marker path).
           try{
             const ms=parseFloat(localStorage.getItem('calib.markerSizeMM'));
-            if(ms>0 && this.data && this.data.markers && this.data.markers.length){ this.setMarkerSizeMM(ms, true); }
+            if(!(wrap && wrap.__restore) && ms>0 && this.data && this.data.markers && this.data.markers.length){
+              this.setMarkerSizeMM(ms, true);
+            }
           }catch(e){}
 
           this._wire();
@@ -202,16 +207,20 @@
         if(this._undoStack.length){
           this._redoStack.push(this._snapshot());
           this.ann.items=this._undoStack.pop();
-          this.ann.selectedId=null; this.hover=null; this.requestDraw();
+          this.ann.selectedId=null; this.hover=null; this._invalidateTraceAnchor(); this.requestDraw();
         }
       }
       redo(){
         if(this._redoStack.length){
           this._undoStack.push(this._snapshot());
           this.ann.items=this._redoStack.pop();
-          this.ann.selectedId=null; this.hover=null; this.requestDraw();
+          this.ann.selectedId=null; this.hover=null; this._invalidateTraceAnchor(); this.requestDraw();
         }
       }
+      // History moved the items out from under the Detail slider's retrace anchor: retire the
+      // slider and drop the anchor so a later drag can't delete the wrong items or stack a
+      // duplicate outline. (See _runAutoTrace, which removes prior geometry by _autoAddedIds.)
+      _invalidateTraceAnchor(){ this._dismissTraceDetail(); this._lastAutoSeed=null; this._autoAddedIds=[]; }
       clearAll(){ this._pushHistory(); this.selectedPoints=[]; this.hover=null; this.ann.selectedId=null; this.ann.items=[]; this._autoAddedIds=[]; this._dismissTraceDetail(); this.requestDraw(); }
 
       deleteSelected(){
@@ -927,7 +936,10 @@
           this.opts.manualMmPerPx=(m.mmPerPx>0?m.mmPerPx:null);
           this.opts.manualHomography=(m.homography||null);
           this._manualRef=(m.ref||null);
-          if(Array.isArray(state.ann)) this.ann.items=state.ann.map(a=>JSON.parse(JSON.stringify(a)));
+          if(Array.isArray(state.ann)){
+            this.ann.items=state.ann.map(a=>JSON.parse(JSON.stringify(a)));
+            Ann.reserveIds(this.ann.items);   // advance the id counter past restored ids (no collisions)
+          }
           this.ann.selectedId=null; this.selectedPoints=[]; this.hover=null;
           this._undoStack=[]; this._redoStack=[];
           this.requestDraw();
@@ -956,6 +968,9 @@
         try{
           if(c.image_size){ if(c.image_size.width) c.image_size.width*=s; if(c.image_size.height) c.image_size.height*=s; }
           if(typeof c.mm_per_px==='number' && c.mm_per_px>0) c.mm_per_px=c.mm_per_px/s;
+          // pixels_per_mm is the reciprocal of mm_per_px; scale it to match (px shrink by s ->
+          // fewer px per mm) so the exported calibration JSON stays internally consistent.
+          if(typeof c.pixels_per_mm==='number' && c.pixels_per_mm>0) c.pixels_per_mm=c.pixels_per_mm*s;
           if(Array.isArray(c.homography)) c.homography=this._scaleHomography(c.homography, s);
           (c.markers||[]).forEach(m=>{
             if(Array.isArray(m.corners)) m.corners=m.corners.map(pt=>('x'in pt)?Object.assign({},pt,{x:pt.x*s,y:pt.y*s}):[pt[0]*s,pt[1]*s]);
