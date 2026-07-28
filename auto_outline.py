@@ -93,92 +93,6 @@ def auto_outline_full(
     return {"outer": outer, "holes": holes}
 
 
-# Luminance is discounted relative to colour when scoring "part vs surface". A cast shadow is
-# the SAME surface merely darkened (keeps a,b, drops L), so darkening is discounted hardest;
-# brightening is trusted more (a specular highlight is usually the part, and discounting it a
-# little keeps a bright edge-highlight from splitting the part off the darker body). Chroma
-# (a,b) always counts full weight, so a real, coloured or high-contrast part still stands out.
-_SHADOW_DARK_W = 0.40
-_SHADOW_BRIGHT_W = 0.80
-
-
-def _foreground_distance(lab, bg):
-    """Per-pixel 'this is the part, not the surface' evidence, discounting luminance so a cast
-    shadow's darkening (and a highlight's brightening) count for less than a real colour change.
-    Used as the evidence map for the shadow-robust mask; the plain LAB distance is the fallback."""
-    dL = lab[:, :, 0] - bg[0]
-    dA = lab[:, :, 1] - bg[1]
-    dB = lab[:, :, 2] - bg[2]
-    lum = np.where(dL < 0.0, _SHADOW_DARK_W * dL, _SHADOW_BRIGHT_W * dL)
-    return np.sqrt(dA * dA + dB * dB + lum * lum)
-
-
-def _shadow_mask(lab, bg, bg_std):
-    """Pixels that read as a CAST SHADOW: the same surface as the background, merely darker.
-
-    A shadow keeps the background's colour (a,b) and only drops luminance (L), so we flag pixels
-    that are markedly darker than the background AND still background-like in hue. Thresholds are
-    adaptive to the background's own spread, so a busy surface isn't over-flagged. These pixels
-    are carved out of the foreground BEFORE morphology can weld them to the part — without which
-    a cast shadow crosses Otsu and the outline bulges into it. A genuinely dark, neutral part is
-    protected by the seed/area fallback in _segment (its whole blob reads shadow-like, so the
-    discount is rejected), not by this per-pixel test."""
-    dL = lab[:, :, 0] - bg[0]
-    d_chroma = np.hypot(lab[:, :, 1] - bg[1], lab[:, :, 2] - bg[2])
-    t_dark = max(12.0, 2.0 * float(bg_std[0]))                       # how much darker than bg counts
-    t_chroma = max(10.0, 3.0 * float(np.hypot(bg_std[1], bg_std[2])))  # how bg-like the hue must stay
-    return (((dL < -t_dark) & (d_chroma < t_chroma)).astype(np.uint8)) * 255
-
-
-def _threshold_fg(dist, remove=None):
-    """Otsu-threshold a foreground-evidence map, then close pinholes and open away speckle.
-    `remove` (a 255 mask) is carved out BEFORE the close so it cannot be bridged back in — this
-    is how a cast shadow is kept from welding to the part."""
-    dist_u8 = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    _, fg = cv2.threshold(dist_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if remove is not None:
-        fg = cv2.bitwise_and(fg, cv2.bitwise_not(remove))
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k, iterations=1)
-    return fg
-
-
-def _mask_from_fg(fg, exclude_boxes, scale, seed, sw, sh):
-    """Blank excluded regions, then return the seed's (or largest) component as a 255 mask."""
-    fg = fg.copy()
-    for box in (exclude_boxes or ()):     # blank the calibration marker etc., padded a little
-        try:
-            bx, by, bw, bh = (float(v) for v in box)
-        except (TypeError, ValueError):
-            continue
-        x0 = int(bx * scale) - 4; y0 = int(by * scale) - 4
-        x1 = int((bx + bw) * scale) + 4; y1 = int((by + bh) * scale) + 4
-        cv2.rectangle(fg, (max(0, x0), max(0, y0)), (min(sw, x1), min(sh, y1)), 0, -1)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
-    if n <= 1:
-        return None
-    target = _pick_component(labels, stats, n, seed, scale, sw, sh)
-    if target is None:
-        return None
-    return (labels == target).astype(np.uint8) * 255
-
-
-def _choose_mask(mask_ss, mask_plain):
-    """Prefer the shadow-robust mask, but never let the luminance discount erase a real part.
-
-    A dark, neutral object can itself read as 'shadow-like', so if the discount collapsed the
-    blob far below the plain mask's size, trust the plain mask instead — the discount is meant
-    to trim a shadow fringe off the part, not delete the part."""
-    if mask_ss is None:
-        return mask_plain
-    if mask_plain is None:
-        return mask_ss
-    a_ss = int((mask_ss > 0).sum())
-    a_plain = int((mask_plain > 0).sum())
-    return mask_ss if a_ss >= 0.35 * a_plain else mask_plain
-
-
 def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     """Segment the tapped part. Returns (mask, scale, sh, sw) at the downscaled resolution, or
     None. `mask` is the filled part (255) with interior holes preserved as 0, so callers can
@@ -201,22 +115,33 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     if ring_px.size == 0:
         return None
     bg = np.median(ring_px, axis=0)
-    bg_std = ring_px.std(axis=0)
+    dist = np.linalg.norm(lab - bg, axis=2)
+    dist_u8 = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    _, fg = cv2.threshold(dist_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Two candidate masks. The shadow-robust one scores foreground with a luminance-discounted
-    # distance (so a cast shadow's darkening — and a bright edge-highlight's brightening — count
-    # for less than a real colour change, keeping the part connected) AND carves clearly-shadow
-    # pixels out before morphology can weld them to the part. The plain LAB-distance mask is the
-    # fallback. Prefer the shadow-robust mask, falling back to plain only if it collapsed a
-    # genuinely dark, neutral part (whose body itself reads shadow-like) — see _choose_mask.
-    shadow = _shadow_mask(lab, bg, bg_std)
-    mask_ss = _mask_from_fg(_threshold_fg(_foreground_distance(lab, bg), remove=shadow),
-                            exclude_boxes, scale, seed, sw, sh)
-    mask_plain = _mask_from_fg(_threshold_fg(np.linalg.norm(lab - bg, axis=2)),
-                               exclude_boxes, scale, seed, sw, sh)
-    mask = _choose_mask(mask_ss, mask_plain)
-    if mask is None:
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k, iterations=1)
+
+    # Blank out excluded regions (the calibration marker), padded a little.
+    for box in (exclude_boxes or ()):
+        try:
+            bx, by, bw, bh = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        x0 = int(bx * scale) - 4; y0 = int(by * scale) - 4
+        x1 = int((bx + bw) * scale) + 4; y1 = int((by + bh) * scale) + 4
+        cv2.rectangle(fg, (max(0, x0), max(0, y0)), (min(sw, x1), min(sh, y1)), 0, -1)
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
+    if n <= 1:
         return None
+
+    target = _pick_component(labels, stats, n, seed, scale, sw, sh)
+    if target is None:
+        return None
+
+    mask = (labels == target).astype(np.uint8) * 255
     return mask, scale, sh, sw
 
 
