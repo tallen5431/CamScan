@@ -72,3 +72,11 @@ ARTIFACTS in /uploads
 --------------------------------------------------------------------------------
   <name>.jpg               original upload
   <name>.calibration.json  calibration data for the viewer
+
+--------------------------------------------------------------------------------
+WEBSITE INTEGRATION, SUBMISSIONS & MAILED MARKER
+--------------------------------------------------------------------------------
+See INTEGRATION.md for deploying CamScan into a website, configuring the
+"Send to Datum" email submission (SUBMIT_TO / SMTP_* env vars), and the
+ready-to-print calibration marker in markers/ (auto-detected by CamScan).
+Generate a marker at any size with:  python tools/make_marker.py <edge_mm>
