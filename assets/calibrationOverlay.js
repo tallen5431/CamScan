@@ -88,8 +88,9 @@
           UI.build(wrap, this);           // builds the toolbar (its height defines the canvas top)
           this._layout();                  // size the canvas to the space under the toolbar + fit
           this.redraw();
-          // If no square calibrated this photo, offer the auto-detected sheet (if any) as
-          // a one-tap, tilt-corrected scale — the printerless happy path.
+          // Nudge on a soft/dark photo first, then (if no square calibrated this photo)
+          // offer the auto-detected sheet as a one-tap, tilt-corrected scale.
+          this._showQualityHint();
           this._offerDetectedPaper();
         };
         // On decode/load failure, try the server file URL (data-img-fallback) once — it
@@ -1069,6 +1070,33 @@
         row.appendChild(mkB('A4 · 210×297', guess==='a4', ()=>choose(210,297)));
         row.appendChild(mkB('US Letter · 216×279', guess==='letter', ()=>choose(215.9,279.4)));
         row.appendChild(mkB('No thanks', false, ()=>finish()));
+        box.append(t,row); document.body.appendChild(box);
+        // Stack below the quality nudge if it's showing, so the two banners don't overlap.
+        const qb=document.getElementById('cal-quality');
+        if(qb) box.style.top = (Math.round(qb.getBoundingClientRect().bottom)+8)+'px';
+      }
+
+      // A gentle, dismissable capture-quality nudge shown once on load when the photo is
+      // soft or dark (server-computed in data.quality). Never blocks — a customer can
+      // "Use it anyway" — because a false positive on a low-texture part shouldn't trap
+      // them; it just makes the accuracy cost of a bad photo visible before they measure.
+      _showQualityHint(){
+        const q = this.data && this.data.quality; if(!q || this._qualityShown) return;
+        const issues=[]; if(q.blurry) issues.push('looks a little soft'); if(q.dark) issues.push('looks dark');
+        if(!issues.length) return; this._qualityShown=true;
+        const box=document.createElement('div'); box.id='cal-quality';
+        box.style.cssText='position:fixed;z-index:43;left:50%;top:12px;transform:translateX(-50%);background:#1a1407;border:2px solid #e0a24a;border-radius:12px;padding:10px 14px;box-shadow:0 8px 28px rgba(0,0,0,.6);max-width:calc(100vw - 16px);font:14px Segoe UI,system-ui,sans-serif;color:#f0e6d0;';
+        const t=document.createElement('div');
+        t.innerHTML='📷 This photo '+issues.join(' and ')+' — a sharper, well-lit shot measures more accurately.';
+        t.style.cssText='margin-bottom:8px;';
+        const row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;';
+        const mk=(label,primary,fn)=>{ const b=document.createElement('button'); b.type='button'; b.textContent=label;
+          b.style.cssText='min-height:40px;padding:7px 13px;border-radius:8px;font-size:13px;cursor:pointer;'+(primary
+            ?'background:#e0a24a;color:#1a1206;border:none;font-weight:600;'
+            :'background:#241d10;color:#f0e6d0;border:1px solid #4a3d1f;'); b.onclick=fn; return b; };
+        row.appendChild(mk('Upload another', true, ()=>{ try{ window.location.reload(); }catch(e){} }));
+        row.appendChild(mk('Use it anyway', false, ()=>{ box.remove();
+          const po=document.getElementById('cal-paper-offer'); if(po) po.style.top='12px'; }));
         box.append(t,row); document.body.appendChild(box);
       }
 

@@ -21,6 +21,36 @@ LINE_THICKNESS: int = 3         # overlay poly thickness
 # a tilted square in testing.
 PERSPECTIVE_MAX_DEG: float = 2.5
 
+# Photo-quality thresholds (on an image downscaled so its long side is ~1000 px, to make
+# the numbers resolution-independent). Conservative on purpose — we only NUDGE, never
+# block, and a false "blurry" on a low-texture part is more annoying than a missed one.
+BLUR_MIN_VAR: float = float(os.getenv("BLUR_MIN_VAR", 35))   # Laplacian variance; below = soft
+DARK_MEAN_MAX: float = float(os.getenv("DARK_MEAN_MAX", 45)) # mean 0-255 brightness; below = dark
+
+
+def _image_quality(img_bgr: np.ndarray) -> Dict[str, Any]:
+    """Cheap capture-quality signals so the client can nudge before the user measures a
+    photo that will measure poorly. Blur via Laplacian variance (sharp photos have strong
+    edge energy; a soft/out-of-focus one does not), brightness via the mean. Best-effort:
+    any failure returns 'unknown' rather than breaking the upload."""
+    try:
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+        h, w = gray.shape[:2]
+        long_side = max(h, w)
+        if long_side > 1000:
+            s = 1000.0 / long_side
+            gray = cv2.resize(gray, (max(1, int(w * s)), max(1, int(h * s))), interpolation=cv2.INTER_AREA)
+        blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        mean = float(np.mean(gray))
+        return {
+            "blur_score": round(blur, 1),
+            "blurry": blur < BLUR_MIN_VAR,
+            "brightness": round(mean, 1),
+            "dark": mean < DARK_MEAN_MAX,
+        }
+    except Exception:
+        return {"blur_score": None, "blurry": False, "brightness": None, "dark": False}
+
 # Artifacts policy
 SAVE_OVERLAY_IMAGE: bool = False    # keep False to avoid writing overlay jpgs
 # Debug images are written into the web-served uploads/ dir under a FIXED name, so leaving
@@ -590,6 +620,7 @@ def calibrate_image(img_bgr: np.ndarray,
         "calibration_confidence": calibration_confidence,
         "homography": homography,
         "detected_rectangle": detected_rectangle,  # fallback paper corners (client confirms size)
+        "quality": _image_quality(img_bgr),        # blur/brightness nudges for the client
         "markers": markers
     }
 

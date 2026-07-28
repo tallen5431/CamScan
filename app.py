@@ -239,8 +239,10 @@ app.layout = html.Div([
                 ". A printed calibration square works too and scales automatically.",
             ], className="landing-how"),
             html.Div(
-                "One photo captures the front outline and hole positions. For a full 3D "
-                "quote, a few angles help — shoot the part flat-on for the best accuracy.",
+                "Lay the paper on the same flat surface as the part and measure features "
+                "that sit flat on it — a raised top face reads slightly large. One photo "
+                "captures the front outline and holes; a full 3D quote may need a few "
+                "angles, shot flat-on for best accuracy.",
                 className="landing-note",
             ),
             dcc.Upload(
