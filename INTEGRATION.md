@@ -61,11 +61,26 @@ The most reliable, zero-tap reference is a **rigid card with the calibration pat
 printed on it** — CamScan auto-detects it (high confidence) and derives both scale and a
 perspective (tilt) correction. Ready-to-print files are in `markers/`:
 
-- `markers/camscan-marker-30mm.svg` — **print master** (vector, exact millimetres).
-- `markers/camscan-marker-30mm.png` — preview / quick print (300 DPI).
+- `markers/camscan-marker-40mm.svg` / `.png` — **recommended** (see size note below).
+- `markers/camscan-marker-30mm.*`, `markers/camscan-marker-60mm.*` — other sizes.
 
-Regenerate at another size with `python tools/make_marker.py <edge_mm>` (the app's default
-is 30 mm — match it, or set `CALIB_EDGE_MM`).
+Regenerate at any size with `python tools/make_marker.py <edge_mm>`; the card auto-sizes to
+fit (and stays within a letter envelope). **Set the app to match your chosen marker** so
+scale is correct out of the box: `CALIB_EDGE_MM=40` (or change `EDGE_MM_DEFAULT` in
+`calibration_core.py`).
+
+**Ideal size: ~40 mm.** It's the sweet spot for a customer-facing tool:
+- Detects at **high confidence** with ≤~1% scale error from a small part (≈200 mm scene)
+  to a large one (≈550 mm) in testing — more pixel headroom than 30 mm for tilted/dim/glary
+  phone photos, the case that actually matters.
+- Small enough to lay flat beside small parts and to reposition on each face for the
+  multi-view (top/front/side) shots.
+- Its card (~103 × 64 mm) fits a standard letter envelope with room for the verification bar.
+
+Go **~60 mm** (card ~143 × 84 mm, still envelope-friendly) if your parts routinely exceed
+~250 mm — a bigger marker gives a longer scale baseline across a large face. Below ~30 mm
+starts to get marginal on imperfect photos. One marker per photo is correct; scattering
+several loose markers into one shot adds friction without helping the per-view workflow.
 
 **Printing & mailing:**
 - Print **at 100% / actual size** (turn OFF "fit to page"). The card has a verification bar

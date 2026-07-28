@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="103.0mm" height="64.0mm" viewBox="0 0 103.0 64.0">
+<rect x="0" y="0" width="103.0" height="64.0" fill="#ffffff"/>
+<text x="5.0" y="6" font-family="sans-serif" font-size="3" font-weight="700" fill="#000">CamScan calibration marker</text>
+<rect x="5.0" y="9.0" width="40.0" height="40.0" fill="#000000"/>
+<rect x="11.667" y="15.667" width="10.667" height="10.667" fill="#ffffff"/>
+<rect x="31.667" y="15.667" width="10.667" height="10.667" fill="#ffffff"/>
+<rect x="11.667" y="35.667" width="10.667" height="10.667" fill="#ffffff"/>
+<rect x="31.667" y="35.667" width="10.667" height="10.667" fill="#ffffff"/>
+<line x1="53.0" y1="13.0" x2="93.0" y2="13.0" stroke="#000" stroke-width="0.4"/>
+<line x1="53.0" y1="11.6" x2="53.0" y2="14.4" stroke="#000" stroke-width="0.4"/>
+<line x1="93.0" y1="11.6" x2="93.0" y2="14.4" stroke="#000" stroke-width="0.4"/>
+<text x="53.0" y="17.0" font-family="sans-serif" font-size="2.4" fill="#333">Verify: this bar = 40 mm</text>
+<text x="53.0" y="22.0" font-family="sans-serif" font-size="2.4" fill="#333">Square = 40 mm</text>
+<text x="5.0" y="57.5" font-family="sans-serif" font-size="2.4" fill="#333">Print at 100% (no &quot;fit to page&quot;). Keep flat &amp; rigid, in the same</text>
+<text x="5.0" y="61.0" font-family="sans-serif" font-size="2.4" fill="#333">plane as the part. CamScan finds it automatically to scale + de-tilt.</text>
+</svg>

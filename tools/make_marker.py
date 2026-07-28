@@ -19,8 +19,12 @@ os.makedirs(OUT, exist_ok=True)
 # square edge, pad top-left corners at 16.67% and 66.67% of the edge.
 PAD = 0.26667
 P0, P1 = 0.16667, 0.66667
-CARD_W, CARD_H = 85.6, 54.0            # ISO ID-1 card (mm); fits a standard envelope
 MX, MY = 5.0, 9.0                      # square top-left on the card (mm)
+# Size the card to the marker so any edge length yields a VALID (unclipped) layout:
+# the square + a right column wide enough for the verification bar (length = edge), and
+# a bottom band for the instructions. Floors at ISO ID-1 (85.6 x 54 mm) for small markers.
+CARD_W = max(85.6, MX + EDGE_MM + 10 + EDGE_MM + 8)
+CARD_H = max(54.0, MY + EDGE_MM + 15)
 
 def pads(x0, y0, s):
     p = s * PAD
