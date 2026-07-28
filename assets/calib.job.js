@@ -267,6 +267,25 @@
     return true;
   }
 
+  // Generate a DXF for a view from its captured geometry (mm, CAD Y-up), client-side.
+  function _dxfFor(v){
+    try{
+      if(v.geometry && v.geometry.geometry && window.CalibExport && window.CalibExport.dxfFromGeometry)
+        return window.CalibExport.dxfFromGeometry(v.geometry.geometry, v.geometry.mm_per_px, v.geometry.image_height);
+    }catch(e){}
+    return null;
+  }
+  // Enrich each view with the CAD-ready payload (geometry + CSV dimension table + a DXF)
+  // so both the handoff and the server submission carry model-ready data, not just an image.
+  function exportViews(withCapturedAt){
+    return job.views.map(function(v){
+      var o={ label:v.label, image:v.image, scale:v.scale, measurements:v.measurements, units:v.units,
+              geometry:(v.geometry||null), csv:(v.csv||null), dxf:_dxfFor(v) };
+      if(withCapturedAt) o.capturedAt=v.capturedAt;
+      return o;
+    });
+  }
+
   function submit(){
     if(!validate()) return;
     if(EMBED){ handoff(); return; }
@@ -277,9 +296,7 @@
   // doesn't acknowledge within a short window, fall back to our own /api/submit pipeline.
   function handoff(){
     setStatus('Adding to your quote…');
-    var msg={ type:'camscan:submit', version:1, brief:job.brief,
-      views:job.views.map(function(v){ return { label:v.label, image:v.image, scale:v.scale,
-        measurements:v.measurements, units:v.units }; }) };
+    var msg={ type:'camscan:submit', version:1, brief:job.brief, views:exportViews(false) };
     var win = hostWin || window.parent || window;
     var origin = hostOrigin;
     if(!origin){ try{ origin = document.referrer ? new URL(document.referrer).origin : '*'; }catch(e){ origin='*'; } }
@@ -293,10 +310,7 @@
   function sendToServer(){
     setStatus('Sending…');
     var payload={ id:job.id, createdAt:job.createdAt, submittedAt:new Date().toISOString(),
-      brief:job.brief,
-      views:job.views.map(function(v){ return { label:v.label, image:v.image, scale:v.scale,
-        measurements:v.measurements, units:v.units, capturedAt:v.capturedAt }; }),
-      userAgent:navigator.userAgent };
+      brief:job.brief, views:exportViews(true), userAgent:navigator.userAgent };
     fetch(apiUrl('api/submit'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
       .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
       .then(function(res){

@@ -52,6 +52,14 @@ When a customer taps **Submit to Datum**, the browser POSTs the job (annotated v
 + measurements + a short part brief) to `POST /api/submit`. The server saves it and, if SMTP
 is configured, emails it to you.
 
+**CAD-ready data travels with every view.** Each submitted view carries, besides the annotated
+image, the data that makes it fast to model: a **DXF** (mm, tilt-corrected, layered — generated
+client-side so no backend is needed), a **dimension CSV**, and the structured **geometry** (mm,
+CAD Y-up — the same input a solid generator needs). The site archives the DXF/CSV and a combined
+`measurements.json` to R2 alongside the photos, and the notification email attaches them and shows
+a dimension table per view. So a quote request arrives as importable geometry + numbers, not just
+a photo to re-measure.
+
 **Embedded on the site (the usual case):** when CamScan runs inside the replacement-parts
 embed (`?embed=1`), "Submit" instead reads **"Add to quote →"** and hands the finished views
 straight to the page's quote form via `postMessage` — so the whole job goes through the site's

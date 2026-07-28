@@ -810,9 +810,19 @@
       }
       // One view's complete record for the submission packet.
       getViewRecord(label){
-        return { label:label||'', image:this.annotatedDataURL(1600),
-                 scale:this.getScaleInfo(), measurements:this.getMeasurements(),
-                 units:this.opts.units, capturedAt:null };
+        const rec = { label:label||'', image:this.annotatedDataURL(1600),
+                      scale:this.getScaleInfo(), measurements:this.getMeasurements(),
+                      units:this.opts.units, capturedAt:null };
+        // Machine-readable geometry (mm, CAD Y-up) + a dimension-table CSV, captured now
+        // while the annotations are live. This is what makes the submission CAD-ready: the
+        // geometry is exactly the DXF/solid input, so we don't re-measure from a photo later.
+        try{
+          const scale = this.getScale() || (this.data && this.data.mm_per_px) || 0;
+          rec.geometry = Xport._buildDXFRequest(this._dataForMeasure(), this._exportStore(),
+                           { image_height:this._imgH(), mm_per_px:scale, allowHomography:this._allowHomography() });
+          rec.csv = Xport.buildCSV(this._dataForMeasure(), this._exportStore(), this.opts.units, scale, this._allowHomography());
+        }catch(e){ /* geometry is best-effort; the image + measurements still submit */ }
+        return rec;
       }
 
       // After the calibration changes (cube size or manual scale), refresh the frozen

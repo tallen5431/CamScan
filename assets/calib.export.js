@@ -117,9 +117,10 @@ window.CalibExport = (function(){
     const a=document.createElement('a'); a.download='annotations.json'; a.href=URL.createObjectURL(blob); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
   }
 
-  // Export measurements to CSV for spreadsheet analysis. fallbackScale (mm/px) is used
-  // for annotations that did not capture their own scale.
-  function exportCSV(data, store, unitsKey, fallbackScale=0, allowHomography=true){
+  // Build the measurements CSV as a string (dimension table). Exposed so the submission
+  // packet can carry the same table the "Download CSV" button produces, without a download.
+  // fallbackScale (mm/px) is used for annotations that did not capture their own scale.
+  function buildCSV(data, store, unitsKey, fallbackScale=0, allowHomography=true){
     const unit = U().get(unitsKey);
     const M = window.CalibMeasure;
 
@@ -170,7 +171,12 @@ window.CalibExport = (function(){
         csv += `Note,${label},,,,,"${text}"\n`;
       }
     }
+    return csv;
+  }
 
+  // Export measurements to CSV for spreadsheet analysis (downloads the file).
+  function exportCSV(data, store, unitsKey, fallbackScale=0, allowHomography=true){
+    const csv = buildCSV(data, store, unitsKey, fallbackScale, allowHomography);
     const blob = new Blob([csv], {type:'text/csv'});
     const link = document.createElement('a');
     link.download = 'measurements.csv';
@@ -284,6 +290,63 @@ window.CalibExport = (function(){
     }
   }
 
+  // Serialize a _buildDXFRequest() geometry list into a DXF string, entirely client-side —
+  // no backend. Mirrors the Python export_to_dxf() conventions so a CamScan-generated DXF is
+  // identical whichever path produced it: units = mm, per-item mm_per_px wins over the request
+  // default, and Y is flipped by image_height when the coordinates are still in image pixels
+  // (plane-mode geometry already arrives in CAD mm, Y-up, with mm_per_px = 1 and no flip).
+  // AC1015 (R2000) so LWPOLYLINE profiles import as single closed, extrudable entities.
+  const _DXF_LAYER = { line:'LINES', circle:'CIRCLES', rectangle:'RECTANGLES', polyline:'POLYLINES', text:'DIMTEXT' };
+  function dxfFromGeometry(geometry, mm_per_px, image_height){
+    const items = Array.isArray(geometry) ? geometry : [];
+    const base = mm_per_px || 1.0;
+    const H = image_height || 0;
+    const out = [];
+    const g = (code, val) => { out.push(String(code)); out.push(String(val)); };
+    const num = v => { const r = Math.round(v * 1e6) / 1e6; return Object.is(r, -0) ? '0.0' : String(r); };
+    const flipY = y => (H ? (H - y) : y);
+    const layerOf = (it, def) => it.layer || def;
+
+    g(0,'SECTION'); g(2,'HEADER'); g(9,'$ACADVER'); g(1,'AC1015'); g(9,'$INSUNITS'); g(70,4); g(0,'ENDSEC');
+    g(0,'SECTION'); g(2,'ENTITIES');
+
+    for(const it of items){
+      let s = parseFloat(it && it.mm_per_px);
+      if(!isFinite(s) || s === 0) s = base;
+      try{
+        const t = it && it.type;
+        if(t === 'line'){
+          g(0,'LINE'); g(100,'AcDbEntity'); g(8, layerOf(it,'LINES')); g(100,'AcDbLine');
+          g(10, num(it.x1*s)); g(20, num(flipY(it.y1)*s)); g(30,'0.0');
+          g(11, num(it.x2*s)); g(21, num(flipY(it.y2)*s)); g(31,'0.0');
+        }else if(t === 'circle'){
+          g(0,'CIRCLE'); g(100,'AcDbEntity'); g(8, layerOf(it,'CIRCLES')); g(100,'AcDbCircle');
+          g(10, num(it.center_x*s)); g(20, num(flipY(it.center_y)*s)); g(30,'0.0'); g(40, num(it.radius_px*s));
+        }else if(t === 'rectangle'){
+          const pts = [[it.x1,it.y1],[it.x2,it.y1],[it.x2,it.y2],[it.x1,it.y2]];
+          _dxfPoly(g, num, pts.map(p=>[p[0]*s, flipY(p[1])*s]), true, layerOf(it,'RECTANGLES'));
+        }else if(t === 'polyline'){
+          const pts = (it.points||[]).map(p=>[p[0]*s, flipY(p[1])*s]);
+          if(pts.length) _dxfPoly(g, num, pts, !!it.closed, layerOf(it,'POLYLINES'));
+        }else if(t === 'text'){
+          let h = parseFloat(it.height); if(!isFinite(h) || h<=0) h = 3; h *= s;
+          g(0,'TEXT'); g(100,'AcDbEntity'); g(8, layerOf(it,'DIMTEXT')); g(100,'AcDbText');
+          g(10, num(it.x*s)); g(20, num(flipY(it.y)*s)); g(30,'0.0'); g(40, num(h));
+          g(1, String(it.text==null?'':it.text).replace(/[\r\n]+/g,' ')); g(100,'AcDbText');
+        }
+      }catch(e){ /* skip one malformed item, keep the rest — matches the Python writer */ }
+    }
+
+    g(0,'ENDSEC'); g(0,'EOF');
+    // DXF is CRLF-delimited pairs of (group code, value).
+    return out.join('\r\n') + '\r\n';
+  }
+  function _dxfPoly(g, num, pts, closed, layer){
+    g(0,'LWPOLYLINE'); g(100,'AcDbEntity'); g(8, layer); g(100,'AcDbPolyline');
+    g(90, pts.length); g(70, closed ? 1 : 0);
+    for(const p of pts){ g(10, num(p[0])); g(20, num(p[1])); }
+  }
+
   // Client-side SVG export in real millimetres. Reuses the same perspective-aware
   // projection as the DXF path (plane-mm when a homography is active), needs no backend,
   // and imports directly into Illustrator/Inkscape/Fusion and most laser cutters.
@@ -346,5 +409,6 @@ window.CalibExport = (function(){
     return true;
   }
 
-  return { exportPNG, renderAnnotatedDataURL, exportJSON, exportCSV, exportDXF, exportSVG, _buildDXFRequest, _buildSVG };
+  return { exportPNG, renderAnnotatedDataURL, exportJSON, exportCSV, buildCSV, exportDXF, exportSVG,
+           dxfFromGeometry, _buildDXFRequest, _buildSVG };
 })();
