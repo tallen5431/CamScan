@@ -547,9 +547,9 @@ def api_trace():
             continue
 
     try:
-        simplify = min(0.05, max(0.001, float(data.get("simplify", 0.006))))
+        simplify = min(0.05, max(0.0008, float(data.get("simplify", 0.002))))
     except (TypeError, ValueError):
-        simplify = 0.006
+        simplify = 0.002
 
     try:
         pts = auto_outline(img, seed=seed, exclude_boxes=exclude, simplify=simplify)
