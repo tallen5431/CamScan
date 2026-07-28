@@ -350,6 +350,81 @@ window.CalibUI = (function(){
       setTimeout(() => { if (calInput) { calInput.focus(); if (calInput.select) calInput.select(); } }, 0);
     }
 
+    // One canonical "how do you want to set the scale?" chooser. Every scale entry point
+    // (the 📐 chip, the KPI "Set a scale" chip, the coach, the settings sheet) routes here
+    // instead of scattering the user across half a dozen buttons and modes. It only launches
+    // existing flows — it doesn't reimplement any scale math.
+    let scalePanel = null;
+    function closeScalePanel(){ if (scalePanel && scalePanel.parentNode) scalePanel.remove(); scalePanel = null; }
+    function openScalePanel(){
+      dismissCoach();
+      if (scalePanel) return;                 // already open — don't stack
+      scalePanel = document.createElement('div');
+      scalePanel.className = 'cal-coach';     // reuse the dimmed-backdrop + card styling
+      scalePanel.addEventListener('click', (e) => { if (e.target === scalePanel) closeScalePanel(); });
+      const card = document.createElement('div'); card.className = 'cal-coach-card';
+      card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-label', 'Set the scale');
+      card.innerHTML = '<h3>📐 Set the scale</h3>' +
+        '<p style="margin:0.1rem 0 0.6rem;color:#9aa;font-size:13px;">Pick one — every measurement rescales instantly.</p>';
+
+      // 1 — printed square / marker (fastest, most accurate): pick a size.
+      const sqHead = document.createElement('div');
+      sqHead.innerHTML = '<b>🟩 I printed a square or the CamScan marker</b><br>' +
+        '<span style="color:#9aa;font-size:12px;">Tap its printed edge size:</span>';
+      sqHead.style.cssText = 'margin:0.3rem 0 0.35rem;';
+      card.appendChild(sqHead);
+      const sizeRow = document.createElement('div');
+      sizeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.4rem;margin:0 0 0.7rem;';
+      [30, 40, 60].forEach(v => {
+        const c = document.createElement('button'); c.type = 'button'; c.className = 'cal-panel-btn';
+        c.style.cssText = 'padding:0.5rem 0.9rem;flex:0 0 auto;';
+        c.textContent = v === 40 ? `${v} mm ★` : `${v} mm`;
+        if (v === 40) c.title = 'Recommended marker size';
+        c.onclick = () => { if (overlay.setMarkerSizeMM) overlay.setMarkerSizeMM(v); if (calInput) calInput.value = String(v); closeScalePanel(); };
+        sizeRow.appendChild(c);
+      });
+      const otherBtn = document.createElement('button'); otherBtn.type = 'button'; otherBtn.className = 'cal-panel-btn';
+      otherBtn.style.cssText = 'padding:0.5rem 0.9rem;flex:0 0 auto;';
+      otherBtn.textContent = 'Other…';
+      otherBtn.onclick = () => { closeScalePanel(); openCalibration(); };
+      sizeRow.appendChild(otherBtn);
+      card.appendChild(sizeRow);
+
+      const mkBig = (emoji, title, sub, fn) => {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'cal-panel-btn';
+        b.style.cssText = 'display:flex;gap:0.6rem;align-items:flex-start;text-align:left;width:100%;margin:0.3rem 0;';
+        b.innerHTML = `<span style="font-size:18px;line-height:1.2;">${emoji}</span>` +
+          `<span><b>${title}</b><br><span style="color:#9aa;font-size:12px;">${sub}</span></span>`;
+        b.onclick = fn;
+        return b;
+      };
+      // 2 — known line (credit card / coin / ruler): presets appear as they draw.
+      card.appendChild(mkBig('📏', 'Measure something of known size',
+        'A credit card, coin, or ruler in the photo — presets appear as you draw.',
+        () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscale'); }));
+      // 3 — paper sheet (tilt-corrected).
+      card.appendChild(mkBig('📄', 'Use a sheet of paper (tilt-corrected)',
+        'Tap the 4 corners of an A4 / Letter sheet — corrects for camera angle.',
+        () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscalerect'); }));
+
+      const foot = document.createElement('div');
+      foot.style.cssText = 'display:flex;gap:0.5rem;align-items:center;margin-top:0.7rem;';
+      const verifyBtn = document.createElement('button'); verifyBtn.type = 'button'; verifyBtn.className = 'cal-coach-secondary';
+      verifyBtn.textContent = '✅ Verify'; verifyBtn.title = 'Measure a 2nd known feature to check the scale';
+      verifyBtn.onclick = () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('verifyscale'); };
+      const clearBtn = document.createElement('button'); clearBtn.type = 'button'; clearBtn.className = 'cal-coach-secondary';
+      clearBtn.textContent = '↺ Clear'; clearBtn.title = 'Clear a manual scale and fall back to the detected square';
+      clearBtn.onclick = () => { if (overlay.clearManualScale) overlay.clearManualScale(); closeScalePanel(); };
+      const doneBtn = document.createElement('button'); doneBtn.type = 'button'; doneBtn.className = 'cal-coach-primary';
+      doneBtn.textContent = 'Close'; doneBtn.style.marginLeft = 'auto'; doneBtn.onclick = () => closeScalePanel();
+      foot.append(verifyBtn, clearBtn, doneBtn);
+      card.appendChild(foot);
+
+      scalePanel.appendChild(card);
+      rootEl.appendChild(scalePanel);
+      setTimeout(() => { try { sizeRow.querySelector('button').focus(); } catch (e) {} }, 0);
+    }
+
     // ---- Focus mode ----
     let collapsed = false;
     function setCollapsed(v){
@@ -410,32 +485,39 @@ window.CalibUI = (function(){
 
       const calHint = document.createElement('div');
       calHint.textContent = 'Enter the real printed edge length of your calibration square — every measurement rescales instantly.';
-      calHint.style.cssText = 'font-size:12px;color:#9aa;margin:-0.4rem 0 0.6rem;';
+      calHint.style.cssText = 'font-size:12px;color:#9aa;margin:-0.4rem 0 0.5rem;';
       body.appendChild(calHint);
 
+      // Quick-pick the standard printed marker sizes (40 mm is the recommended one).
+      const calChips = document.createElement('div');
+      calChips.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.4rem;margin:0 0 0.7rem;';
+      [30, 40, 60].forEach(v => {
+        const c = document.createElement('button'); c.type = 'button'; c.className = 'cal-panel-btn';
+        c.style.cssText = 'padding:0.35rem 0.7rem;flex:0 0 auto;';
+        c.textContent = v === 40 ? `${v} mm ★` : `${v} mm`;
+        if (v === 40) c.title = 'Recommended marker size';
+        c.onclick = () => { if (overlay.setMarkerSizeMM) overlay.setMarkerSizeMM(v); if (calInput) calInput.value = String(v); };
+        calChips.appendChild(c);
+      });
+      body.appendChild(calChips);
+
+      // One launcher for every other way to set scale (line / paper / verify / clear),
+      // instead of four separate buttons cluttering the panel.
       const setScaleBtn = document.createElement('button');
       setScaleBtn.type = 'button'; setScaleBtn.className = 'cal-panel-btn';
-      setScaleBtn.innerHTML = '<span>📐</span><span>Set scale from a known line</span>';
-      setScaleBtn.onclick = () => { if (overlay.setMode) overlay.setMode('setscale'); details.open = false; };
+      setScaleBtn.innerHTML = '<span>📐</span><span>Set scale another way…</span>';
+      setScaleBtn.onclick = () => { details.open = false; openScalePanel(); };
       body.appendChild(setScaleBtn);
 
-      const setRectBtn = document.createElement('button');
-      setRectBtn.type = 'button'; setRectBtn.className = 'cal-panel-btn';
-      setRectBtn.innerHTML = '<span>📄</span><span>Set scale from a sheet of paper (tilt-corrected)</span>';
-      setRectBtn.onclick = () => { if (overlay.setMode) overlay.setMode('setscalerect'); details.open = false; };
-      body.appendChild(setRectBtn);
-
-      const verifyBtn = document.createElement('button');
-      verifyBtn.type = 'button'; verifyBtn.className = 'cal-panel-btn';
-      verifyBtn.innerHTML = '<span>✅</span><span>Verify scale (measure a known feature)</span>';
-      verifyBtn.onclick = () => { if (overlay.setMode) overlay.setMode('verifyscale'); details.open = false; };
-      body.appendChild(verifyBtn);
-
-      const clearScaleBtn = document.createElement('button');
-      clearScaleBtn.type = 'button'; clearScaleBtn.className = 'cal-panel-btn';
-      clearScaleBtn.innerHTML = '<span>↺</span><span>Clear manual scale (use square)</span>';
-      clearScaleBtn.onclick = () => { if (overlay.clearManualScale) overlay.clearManualScale(); };
-      body.appendChild(clearScaleBtn);
+      // Everything below is display/units chrome — collapsed by default so the setting that
+      // actually drives measurements (the scale, above) isn't buried under cosmetic sliders.
+      const disp = document.createElement('details');
+      const dispSum = document.createElement('summary');
+      dispSum.textContent = 'Display & units';
+      dispSum.style.cssText = 'margin:0.7rem 0 0.4rem;font-size:15px;font-weight:bold;cursor:pointer;';
+      disp.appendChild(dispSum);
+      const dispBody = document.createElement('div');
+      disp.appendChild(dispBody);
 
       if (Units && Units.defs) {
         const unitLabel = document.createElement('label');
@@ -447,7 +529,7 @@ window.CalibUI = (function(){
         sel.value = (overlay.opts && overlay.opts.units) || 'mm';
         sel.onchange = () => { overlay.opts.units = sel.value; if (overlay.redraw) overlay.redraw(); };
         unitLabel.appendChild(sel);
-        body.appendChild(unitLabel);
+        dispBody.appendChild(unitLabel);
       }
 
       const snapLabel = document.createElement('label');
@@ -455,7 +537,7 @@ window.CalibUI = (function(){
       snapChk.checked = !!(overlay.opts && overlay.opts.snap);
       snapChk.onchange = () => { overlay.opts.snap = snapChk.checked; if (overlay.updateKPI) overlay.updateKPI(); };
       snapLabel.appendChild(snapChk); snapLabel.appendChild(document.createTextNode(' Snap to marker corners'));
-      body.appendChild(snapLabel);
+      dispBody.appendChild(snapLabel);
 
       const noteLabel = document.createElement('label');
       noteLabel.innerHTML = '<strong>Default note text:</strong>';
@@ -463,21 +545,21 @@ window.CalibUI = (function(){
       noteInput.placeholder = 'Enter default text for notes…'; noteInput.value = overlay.noteText || '';
       noteInput.oninput = () => { overlay.noteText = noteInput.value; };
       noteLabel.appendChild(noteInput);
-      body.appendChild(noteLabel);
+      dispBody.appendChild(noteLabel);
 
       const markersLabel = document.createElement('label');
       const markersChk = document.createElement('input'); markersChk.type = 'checkbox';
       markersChk.checked = !!(overlay.opts && overlay.opts.showMarkers);
       markersChk.onchange = () => { overlay.opts.showMarkers = markersChk.checked; if (overlay.redraw) overlay.redraw(); };
       markersLabel.appendChild(markersChk); markersLabel.appendChild(document.createTextNode(' Show calibration markers'));
-      body.appendChild(markersLabel);
+      dispBody.appendChild(markersLabel);
 
       const gridLabel = document.createElement('label');
       const gridChk = document.createElement('input'); gridChk.type = 'checkbox';
       gridChk.checked = !!(overlay.opts && overlay.opts.showGrid);
       gridChk.onchange = () => { overlay.opts.showGrid = gridChk.checked; if (overlay.redraw) overlay.redraw(); };
       gridLabel.appendChild(gridChk); gridLabel.appendChild(document.createTextNode(' Show measurement grid'));
-      body.appendChild(gridLabel);
+      dispBody.appendChild(gridLabel);
 
       const textSizeLabel = document.createElement('label');
       textSizeLabel.innerHTML = '<strong>Annotation text size:</strong>';
@@ -490,7 +572,7 @@ window.CalibUI = (function(){
       textSizeValue.style.cssText = 'margin-left:0.5rem;font-weight:bold;color:var(--cal-accent);';
       textSizeSlider.oninput = () => { overlay.opts.labelScale = parseFloat(textSizeSlider.value); textSizeValue.textContent = `${textSizeSlider.value}x`; if (overlay.redraw) overlay.redraw(); };
       textSizeLabel.appendChild(textSizeSlider); textSizeLabel.appendChild(textSizeValue);
-      body.appendChild(textSizeLabel);
+      dispBody.appendChild(textSizeLabel);
 
       const lineThickLabel = document.createElement('label');
       lineThickLabel.innerHTML = '<strong>Line thickness:</strong>';
@@ -503,7 +585,9 @@ window.CalibUI = (function(){
       lineThickValue.style.cssText = 'margin-left:0.5rem;font-weight:bold;color:var(--cal-accent);';
       lineThickSlider.oninput = () => { overlay.opts.linePx = parseInt(lineThickSlider.value); lineThickValue.textContent = `${lineThickSlider.value}px`; if (overlay.redraw) overlay.redraw(); };
       lineThickLabel.appendChild(lineThickSlider); lineThickLabel.appendChild(lineThickValue);
-      body.appendChild(lineThickLabel);
+      dispBody.appendChild(lineThickLabel);
+
+      body.appendChild(disp);
 
       // Clear-all lives here (destructive + rare) rather than cluttering the working chrome.
       const clearAllBtn = document.createElement('button');
@@ -546,7 +630,7 @@ window.CalibUI = (function(){
     const calChip = document.createElement('button');
     calChip.type = 'button'; calChip.className = 'cal-icon';
     calChip.innerHTML = '<span class="cal-icon-emoji">📐</span><span class="cal-icon-text"></span>';
-    calChip.onclick = () => openCalibration();
+    calChip.onclick = () => openScalePanel();
 
     function reflectCalChip(){
       const mm = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
@@ -727,12 +811,12 @@ window.CalibUI = (function(){
       card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-label', 'Getting started');
       card.innerHTML =
         '<h3>📏 Measure in three steps</h3>' +
-        '<div class="cal-coach-step"><span class="n">1</span><span>Set your <b>calibration square size</b> (the 📐 chip up top) — or use the <b>Set&nbsp;scale</b> tool if there is no square.</span></div>' +
+        '<div class="cal-coach-step"><span class="n">1</span><span><b>Set the scale</b> (the 📐 chip up top): enter your square size, or measure a card / sheet of paper.</span></div>' +
         '<div class="cal-coach-step"><span class="n">2</span><span>Pick a <b>measuring tool</b> from the toolbar.</span></div>' +
         '<div class="cal-coach-step"><span class="n">3</span><span><b>Tap points</b> on the photo — real millimetres appear instantly.</span></div>';
       const acts = document.createElement('div'); acts.className = 'cal-coach-actions';
       const setBtn = document.createElement('button'); setBtn.type = 'button'; setBtn.className = 'cal-coach-secondary';
-      setBtn.textContent = '📐 Set square size'; setBtn.onclick = () => openCalibration();
+      setBtn.textContent = '📐 Set the scale'; setBtn.onclick = () => openScalePanel();
       const goBtn = document.createElement('button'); goBtn.type = 'button'; goBtn.className = 'cal-coach-primary';
       goBtn.textContent = 'Got it'; goBtn.onclick = () => dismissCoach();
       acts.append(setBtn, goBtn); card.appendChild(acts); coach.appendChild(card);
@@ -743,6 +827,8 @@ window.CalibUI = (function(){
     // Deterministic teardown of the document listener this build() attached (the overlay's
     // destroy() calls this when the #viewer subtree is swapped on a new upload).
     overlay._uiCleanup = () => { document.removeEventListener('click', onDocClickCloseSave); };
+    // Let overlay-owned chrome (the KPI "Set a scale" chip) route through the one chooser.
+    overlay._openScalePanel = openScalePanel;
 
     // ---- Keep the UI in sync with engine state ----
     function reflect(){
@@ -760,6 +846,19 @@ window.CalibUI = (function(){
 
     reflect();
     maybeShowCoach();
+
+    // If this photo has no usable scale, guide the user straight to the chooser instead of
+    // leaving them to notice a warning chip. Skip when the first-run coach is up (it already
+    // routes here) or when a detected paper sheet is about to be offered (avoid stacking).
+    try {
+      const uncal = !(overlay.isCalibrated && overlay.isCalibrated());
+      const paperPending = !!(overlay.data && overlay.data.detected_rectangle);
+      if (uncal && !paperPending && !coach) {
+        setTimeout(() => {
+          if (!(overlay.isCalibrated && overlay.isCalibrated()) && !scalePanel) openScalePanel();
+        }, 450);
+      }
+    } catch (e) {}
   }
 
   return { build };
