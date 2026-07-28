@@ -66,6 +66,34 @@
   }
   function removeView(i){ job.views.splice(i,1); save(); changed(); }
 
+  // ---- embed / handoff -------------------------------------------------------
+  // When CamScan is embedded on the Datum Labs site (iframe URL carries ?embed=1), "Send"
+  // hands the collected views to the parent page's quote form via postMessage instead of
+  // emailing through /api/submit — so everything lands in ONE intake. A short handshake
+  // learns the exact parent origin; if the page never acknowledges (older page, or opened
+  // standalone) we fall back to /api/submit so a submission is never lost.
+  var EMBED = /[?&]embed=1(?:&|$)/.test(location.search);
+  var hostWin = null, hostOrigin = null, handoffAck = false, handoffTimer = null;
+
+  function trustedHost(origin){
+    if(!origin) return false;
+    if(/^https?:\/\/([a-z0-9-]+\.)*datumlaboratories\.com$/i.test(origin)) return true;
+    if(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;   // local dev
+    try{ if(document.referrer && new URL(document.referrer).origin===origin) return true; }catch(e){}
+    return false;
+  }
+  window.addEventListener('message', function(e){
+    var d=e.data; if(!d || typeof d!=='object') return;
+    if(d.type==='camscan:host' && trustedHost(e.origin)){ hostWin=e.source; hostOrigin=e.origin; }
+    else if(d.type==='camscan:ack' && (e.origin===hostOrigin || trustedHost(e.origin))){
+      handoffAck=true; if(handoffTimer){ clearTimeout(handoffTimer); handoffTimer=null; }
+      setStatus('✅ Added to your quote — finish on the page.'); reset(); changed();
+      setTimeout(function(){ closePanel(); }, 1400);
+    }
+  });
+  // Announce readiness so the parent posts us its origin even if it missed our iframe load.
+  if(EMBED){ try{ (window.parent||window).postMessage({type:'camscan:child-ready', version:1}, '*'); }catch(e){} }
+
   // ---- UI ----
   var btn, panel, statusEl;
   function ensureButton(){
@@ -200,12 +228,18 @@
     var f2=field('Quantity', 'quantity', {type:'number', placeholder:'1'}); f2.style.flex='1 1 90px';
     two.appendChild(f1); two.appendChild(f2); card.appendChild(two);
     card.appendChild(field('What broke / what you need', 'whatBroke', {area:true, placeholder:'e.g. mounting tab snapped off; need an exact replacement'}));
-    card.appendChild(field('Your email (so we can reply)', 'contact', {type:'email', placeholder:'you@example.com'}));
+    card.appendChild(field(EMBED ? 'Your email (optional — the quote form will ask)' : 'Your email (so we can reply)', 'contact', {type:'email', placeholder:'you@example.com'}));
     card.appendChild(field('Anything else', 'notes', {area:true, placeholder:'tolerances, finish, deadline…'}));
+
+    if(EMBED){
+      var eh=document.createElement('div'); eh.style.cssText='font-size:12.5px;color:#7fb0c4;margin-top:10px;';
+      eh.textContent='These measured views will drop straight into the quote form on the page — you’ll add your details and send there.';
+      card.appendChild(eh);
+    }
 
     // actions
     var actions=document.createElement('div'); actions.style.cssText='display:flex;flex-wrap:wrap;gap:9px;margin-top:16px;align-items:center;';
-    var send=chip('Send to Datum', submit, true); send.style.minHeight='46px'; send.style.padding='10px 20px'; send.style.fontSize='15px';
+    var send=chip(EMBED ? 'Add to quote →' : 'Send to Datum', submit, true); send.style.minHeight='46px'; send.style.padding='10px 20px'; send.style.fontSize='15px';
     var dl=chip('Download summary', downloadSummary, false); dl.style.minHeight='46px';
     var clr=chip('Clear', function(){ if(confirm('Discard this submission and all collected views?')){ reset(); changed(); openPanel(); } }, false);
     clr.style.minHeight='46px'; clr.style.marginLeft='auto';
@@ -225,13 +259,38 @@
 
   function validate(){
     if(!job.views.length){ setStatus('Add at least one view before sending.', true); return false; }
-    var email=(job.brief.contact||'').trim();
-    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setStatus('Please add your email so we can reply.', true); return false; }
+    // Embedded: the page's quote form collects (and requires) the email, so don't ask twice.
+    if(!EMBED){
+      var email=(job.brief.contact||'').trim();
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setStatus('Please add your email so we can reply.', true); return false; }
+    }
     return true;
   }
 
   function submit(){
     if(!validate()) return;
+    if(EMBED){ handoff(); return; }
+    sendToServer();
+  }
+
+  // Embedded path: hand the collected views to the parent page's quote form. If the page
+  // doesn't acknowledge within a short window, fall back to our own /api/submit pipeline.
+  function handoff(){
+    setStatus('Adding to your quote…');
+    var msg={ type:'camscan:submit', version:1, brief:job.brief,
+      views:job.views.map(function(v){ return { label:v.label, image:v.image, scale:v.scale,
+        measurements:v.measurements, units:v.units }; }) };
+    var win = hostWin || window.parent || window;
+    var origin = hostOrigin;
+    if(!origin){ try{ origin = document.referrer ? new URL(document.referrer).origin : '*'; }catch(e){ origin='*'; } }
+    handoffAck=false;
+    try{ win.postMessage(msg, origin); }catch(e){ try{ win.postMessage(msg, '*'); }catch(_){} }
+    if(handoffTimer) clearTimeout(handoffTimer);
+    var wait = (typeof window.__CAMSCAN_HANDOFF_TIMEOUT==='number') ? window.__CAMSCAN_HANDOFF_TIMEOUT : 2200;
+    handoffTimer=setTimeout(function(){ if(!handoffAck) sendToServer(); }, wait);
+  }
+
+  function sendToServer(){
     setStatus('Sending…');
     var payload={ id:job.id, createdAt:job.createdAt, submittedAt:new Date().toISOString(),
       brief:job.brief,
@@ -287,9 +346,11 @@
   window.CalibJob = {
     addView: addView,
     open: openPanel,
+    submit: submit,          // send/hand-off the collected set (used by simple mode + tests)
     count: function(){ return job.views.length; },
     isEmpty: function(){ return !job.views.length; },
-    hasCurrent: hasCurrent   // is the photo on screen already captured into the set?
+    hasCurrent: hasCurrent,  // is the photo on screen already captured into the set?
+    isEmbedded: function(){ return EMBED; }
   };
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.

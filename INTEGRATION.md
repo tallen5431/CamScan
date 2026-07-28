@@ -52,6 +52,16 @@ When a customer taps **Submit to Datum**, the browser POSTs the job (annotated v
 + measurements + a short part brief) to `POST /api/submit`. The server saves it and, if SMTP
 is configured, emails it to you.
 
+**Embedded on the site (the usual case):** when CamScan runs inside the replacement-parts
+embed (`?embed=1`), "Submit" instead reads **"Add to quote →"** and hands the finished views
+straight to the page's quote form via `postMessage` — so the whole job goes through the site's
+one `/api/quote` pipeline (Resend + R2 + KV) rather than a second one. The two sides do an
+origin-checked handshake first (the page only accepts the job from CamScan's exact origin, and
+CamScan only talks to `*.datumlaboratories.com`). If the page never acknowledges — an older
+page, or CamScan opened standalone — CamScan **falls back to `/api/submit`** below, so a
+submission is never lost. This means CamScan needs no SMTP config to work as an embedded intake
+tool; SMTP only matters for the standalone/fallback path.
+
 Configure with environment variables:
 
 | Variable      | Default                              | Purpose                                   |
