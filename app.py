@@ -128,6 +128,27 @@ def handle_too_large(e):
     return "File too large (max bytes={})".format(MAX_CONTENT_BYTES), 413
 
 
+# --- Allow the marketing site's quote page to embed CamScan in an <iframe> ---------------
+# CamScan runs inside datumlaboratories.com/replacement-parts so a shop can measure a part
+# and hand the scaled views straight to the quote form (?embed=1 + postMessage). Permit
+# exactly those origins to frame us and refuse everyone else — a clickjacking guard.
+# Override for other deployments with EMBED_ALLOW_ORIGINS (space-separated origins).
+EMBED_ALLOW_ORIGINS = os.getenv(
+    "EMBED_ALLOW_ORIGINS",
+    "https://datumlaboratories.com https://*.datumlaboratories.com https://*.pages.dev",
+).strip()
+
+@server.after_request
+def _allow_site_embedding(resp):
+    # frame-ancestors supersedes X-Frame-Options in modern browsers; scope framing to the
+    # site (and self), and drop any restrictive X-Frame-Options a proxy might have added so
+    # it can't silently block the intended embed.
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'self' " + EMBED_ALLOW_ORIGINS
+    if resp.headers.get("X-Frame-Options"):
+        del resp.headers["X-Frame-Options"]
+    return resp
+
+
 def _is_allowed_filename(filename: str) -> bool:
     if not filename:
         return False

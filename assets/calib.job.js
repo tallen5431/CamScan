@@ -11,6 +11,38 @@
 // rest of the UI. Nothing here sets a scale or measures; it only collects finished views.
 (function(){
   'use strict';
+
+  // ---- Embed mode (running inside the site's quote page) --------------------------------
+  // When CamScan is iframed by datumlaboratories.com/replacement-parts (?embed=1), the
+  // finished views are handed to the parent window via postMessage and dropped straight into
+  // the quote form — instead of POSTing to /api/submit. Handshake: we ping the parent with
+  // "camscan:child-ready"; it replies "camscan:host" (so each learns the other's origin);
+  // on send we post "camscan:submit" (views + brief) and await "camscan:ack".
+  var EMBED = false;
+  try { EMBED = new URLSearchParams(location.search).get('embed') === '1'; } catch(e){}
+  if (!EMBED) { try { EMBED = window.self !== window.top; } catch(e){ EMBED = true; } }
+  var hostOrigin = null;
+  function parentWin(){ return (window.parent && window.parent !== window) ? window.parent : window.top; }
+  function parentOrigin(){
+    if (hostOrigin) return hostOrigin;
+    try { if (document.referrer) return new URL(document.referrer).origin; } catch(e){}
+    return null;
+  }
+  if (EMBED) {
+    window.addEventListener('message', function(e){
+      var d = e && e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'camscan:host') { hostOrigin = e.origin; return; }
+      if (d.type === 'camscan:ack') {
+        setStatus('✅ Sent ' + (d.added||0) + ' view' + (d.added===1?'':'s') + ' to your quote form.');
+        reset(); reflectButton();
+      }
+    });
+    var tellParent = function(){ try { parentWin().postMessage({ type:'camscan:child-ready' }, '*'); } catch(e){} };
+    if (document.readyState !== 'loading') tellParent(); else document.addEventListener('DOMContentLoaded', tellParent);
+    setTimeout(tellParent, 400); setTimeout(tellParent, 1200);   // in case the parent listener attaches late
+  }
+
   var LS_KEY = 'camscan.job.v1';
   // The orthographic views that let a modeller reconstruct a part without a 3D scan:
   // top gives the outline + hole pattern, front/side give heights & depths.
@@ -80,7 +112,7 @@
     if(sig===_btnSig) return;
     _btnSig=sig;
     btn.style.display = show ? 'inline-flex' : 'none';
-    btn.innerHTML = '📋 Submit to Datum' + (job.views.length ? ' ('+job.views.length+')' : '');
+    btn.innerHTML = (EMBED ? '📋 Send to quote form' : '📋 Submit to Datum') + (job.views.length ? ' ('+job.views.length+')' : '');
   }
 
   function chip(label, onClick, primary){
@@ -197,7 +229,7 @@
 
     // actions
     var actions=document.createElement('div'); actions.style.cssText='display:flex;flex-wrap:wrap;gap:9px;margin-top:16px;align-items:center;';
-    var send=chip('Send to Datum', submit, true); send.style.minHeight='46px'; send.style.padding='10px 20px'; send.style.fontSize='15px';
+    var send=chip(EMBED ? 'Add to quote form' : 'Send to Datum', submit, true); send.style.minHeight='46px'; send.style.padding='10px 20px'; send.style.fontSize='15px';
     var dl=chip('Download summary', downloadSummary, false); dl.style.minHeight='46px';
     var clr=chip('Clear', function(){ if(confirm('Discard this submission and all collected views?')){ reset(); render(); openPanel(); } }, false);
     clr.style.minHeight='46px'; clr.style.marginLeft='auto';
@@ -217,13 +249,29 @@
 
   function validate(){
     if(!job.views.length){ setStatus('Add at least one view before sending.', true); return false; }
-    var email=(job.brief.contact||'').trim();
-    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setStatus('Please add your email so we can reply.', true); return false; }
+    // Embedded, the quote form collects name / shop / email — don't ask for it twice here.
+    if(!EMBED){
+      var email=(job.brief.contact||'').trim();
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setStatus('Please add your email so we can reply.', true); return false; }
+    }
     return true;
+  }
+
+  // Embed path: hand the finished views to the parent quote form via postMessage.
+  function submitToParent(){
+    var target = parentOrigin();
+    if(!target){ setStatus('⚠️ The form isn\'t connected — reopen the measuring tool from the quote page, or use “Download summary”.', true); return; }
+    var payload={ type:'camscan:submit', id:job.id, createdAt:job.createdAt, submittedAt:new Date().toISOString(),
+      brief:job.brief,
+      views:job.views.map(function(v){ return { label:v.label, image:v.image, scale:v.scale,
+        measurements:v.measurements, units:v.units }; }) };
+    try{ parentWin().postMessage(payload, target); setStatus('Sending to your quote form…'); }
+    catch(e){ setStatus('⚠️ Could not reach the form. Try “Download summary” instead. ('+e.message+')', true); }
   }
 
   function submit(){
     if(!validate()) return;
+    if(EMBED){ submitToParent(); return; }
     setStatus('Sending…');
     var payload={ id:job.id, createdAt:job.createdAt, submittedAt:new Date().toISOString(),
       brief:job.brief,
