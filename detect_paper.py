@@ -31,17 +31,29 @@ _LETTER_ASPECT = 279.4 / 215.9
 
 
 def _order_corners(pts: np.ndarray) -> List[List[float]]:
-    """Order 4 points as TL, TR, BR, BL using the classic sum/diff trick.
-    (The client re-orders defensively too, but a sane order keeps the JSON readable.)"""
+    """Order 4 points as TL, TR, BR, BL by angle around the centroid.
+    (The client re-orders defensively too, but a sane order keeps the JSON readable.)
+
+    Angle-around-centroid is robust to rotation. The classic sum/diff trick ties near 45° — two
+    corners share the min/max of x+y (and of x-y) — so argmin/argmax return the same index
+    twice, assigning one corner two roles and dropping another (a degenerate quad → wrong
+    homography/scale). This is the same fix edge_finder._order_quad already carries.
+    """
     pts = np.asarray(pts, dtype=float).reshape(4, 2)
-    s = pts.sum(axis=1)
-    d = (pts[:, 0] - pts[:, 1])
-    tl = pts[int(np.argmin(s))]
-    br = pts[int(np.argmax(s))]
-    tr = pts[int(np.argmax(d))]
-    bl = pts[int(np.argmin(d))]
-    return [[float(tl[0]), float(tl[1])], [float(tr[0]), float(tr[1])],
-            [float(br[0]), float(br[1])], [float(bl[0]), float(bl[1])]]
+    c = pts.mean(axis=0)
+    ang = np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0])
+    ordered = pts[np.argsort(ang)]                       # a full permutation — no ties/drops
+    # Clockwise winding in image coords (y grows downward): a positive shoelace sum is clockwise.
+    area2 = 0.0
+    for i in range(4):
+        x1, y1 = ordered[i]
+        x2, y2 = ordered[(i + 1) % 4]
+        area2 += x1 * y2 - x2 * y1
+    if area2 < 0:
+        ordered = ordered[::-1]
+    start = int(np.argmin(ordered[:, 0] + ordered[:, 1]))   # rotate to start at top-left (min x+y)
+    ordered = np.roll(ordered, -start, axis=0)
+    return [[float(x), float(y)] for (x, y) in ordered]
 
 
 def detect_paper_sheet(img: np.ndarray,

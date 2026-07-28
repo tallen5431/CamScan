@@ -41,6 +41,8 @@ def detect_circles_hough(
     Returns:
         List of (center_x, center_y, radius) tuples
     """
+    if img is None or getattr(img, "size", 0) == 0:   # match detect_dark_squares/detect_paper_sheet
+        return []
     if img.ndim == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
@@ -107,6 +109,8 @@ def detect_circles_contour(
           - area: float (pixels²)
           - contour: numpy array of contour points
     """
+    if img is None or getattr(img, "size", 0) == 0:   # match detect_dark_squares/detect_paper_sheet
+        return []
     if img.ndim == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
@@ -164,6 +168,18 @@ def detect_circles_contour(
 
     # Sort by circularity (most circular first)
     circles.sort(key=lambda c: c["circularity"], reverse=True)
+
+    # RETR_LIST returns BOTH the inner and outer edge of a ring/stroke, so one physical circle
+    # can surface as two near-concentric detections. Keep the most-circular of each cluster
+    # (centres within a few px AND radii within ~15%) and drop the duplicates.
+    deduped: List[Dict[str, Any]] = []
+    for c in circles:
+        cx, cy = c["center"]; r = c["radius"]
+        if any(math.hypot(cx - k["center"][0], cy - k["center"][1]) <= max(4.0, 0.15 * r)
+               and abs(r - k["radius"]) <= 0.15 * max(r, k["radius"]) for k in deduped):
+            continue
+        deduped.append(c)
+    circles = deduped
 
     if debug:
         print(f"[CircleContour] Found {len(circles)} circular contours")
