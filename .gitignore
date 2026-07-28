@@ -34,8 +34,11 @@ __pycache__/
 Untitled*.ipynb
 untitled.*
 
-# Node (Playwright test helpers, etc.)
+# Node (Playwright test helpers, etc.) — CamScan is a Python/Dash app; these only
+# appear from ad-hoc `npm i playwright-core` used for browser tests, not the project.
 node_modules/
+package.json
+package-lock.json
 
 # Packaging
 build/
