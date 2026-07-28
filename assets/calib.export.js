@@ -59,10 +59,17 @@ window.CalibExport = (function(){
         if(a.text){ const pad=8*labelScale, f=Math.round(18*labelScale); ctx.font=Draw.font(f); ctx.textAlign="left"; ctx.textBaseline="middle"; const boxW=ctx.measureText(a.text).width + 2*pad, boxH=f+2*pad; const lx=tx+14, ly=ty-boxH/2; ctx.fillStyle="rgba(0,0,0,.72)"; ctx.fillRect(lx,ly,boxW,boxH); ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.lineWidth=Draw.px(canvas,1.5); ctx.strokeRect(lx,ly,boxW,boxH); ctx.fillStyle="#fff"; ctx.fillText(a.text, lx+pad, ly+boxH/2); }
       }else if(a.type==='polyline'){
         const pts=a.pts||[]; if(pts.length<2) continue;
-        const val=unit.fromMM(M.polyline(mctx(a), pts));
-        ctx.lineWidth=line; ctx.strokeStyle=C.polyline; ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]); ctx.stroke();
+        const m2=mctx(a);
+        const closed=!!a.closed && pts.length>=3;
+        const val=unit.fromMM(M.polyline(m2, pts, closed));
+        ctx.lineWidth=line; ctx.strokeStyle=C.polyline; ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]); for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+        if(closed){ ctx.closePath(); ctx.save(); ctx.globalAlpha=0.12; ctx.fillStyle=C.polyline; ctx.fill(); ctx.restore(); }
+        ctx.stroke();
         ctx.fillStyle=C.polyline; for(const [x,y] of pts){ ctx.beginPath(); ctx.arc(x,y,dotR,0,Math.PI*2); ctx.fill(); ctx.strokeStyle="#000"; ctx.lineWidth=Draw.px(canvas,2); ctx.stroke(); }
-        const mid = pts[Math.floor(pts.length/2)]; Draw.boxLabel(ctx, canvas, mid[0], mid[1], `${val.toFixed(3)} ${unit.label}`, labelScale, C.polyline);
+        const mid = pts[Math.floor(pts.length/2)];
+        let lab = `${val.toFixed(3)} ${unit.label}`;
+        if(closed){ const ar=unit.areaFromMM2(M.polygonArea(m2, pts)); lab = `⬡ ${val.toFixed(2)} ${unit.label} · A ${ar.toFixed(1)} ${unit.areaLabel}`; }
+        Draw.boxLabel(ctx, canvas, mid[0], mid[1], lab, labelScale, C.polyline);
       }else if(a.type==='rectangle'){
         const [x1,y1,x2,y2]=a.rect; const rm=M.rect(mctx(a), x1,y1,x2,y2); const wmm=rm.w, hmm=rm.h, amm=rm.area;
         ctx.lineWidth=line; ctx.strokeStyle=C.rectangle; ctx.strokeRect(x1,y1,x2-x1,y2-y1);
@@ -158,9 +165,15 @@ window.CalibExport = (function(){
 
       }else if(a.type === 'polyline'){
         const pts = a.pts || [];
-        const mm = M.polyline(mctx, pts);
+        const closed = !!a.closed && pts.length >= 3;
+        const mm = M.polyline(mctx, pts, closed);
         const val = unit.fromMM(mm);
-        csv += `Polyline,${label},${val.toFixed(3)},${unit.label},${mm.toFixed(3)},,${pts.length} points\n`;
+        if(closed){
+          const area_mm2 = M.polygonArea(mctx, pts);
+          csv += `Outline,${label},${val.toFixed(3)},${unit.label},${mm.toFixed(3)},${area_mm2.toFixed(3)},closed profile · ${pts.length} points\n`;
+        }else{
+          csv += `Polyline,${label},${val.toFixed(3)},${unit.label},${mm.toFixed(3)},,${pts.length} points\n`;
+        }
 
       }else if(a.type === 'angle'){
         const ang = M.angle(mctx, a.a, a.v, a.b);
@@ -240,9 +253,10 @@ window.CalibExport = (function(){
         emitText((x1+x2)/2, y1, `${fmt(rm.w)}×${fmt(rm.h)} mm`, s);
       }else if(a.type === 'polyline'){
         const pts = a.pts || [];
-        if(plane){ geometry.push({ type:'polyline', points:pts.map(p=>P(p[0],p[1])), mm_per_px:1 }); }
-        else geometry.push({ type:'polyline', points:pts, mm_per_px:s });
-        if(pts.length){ const mid=pts[Math.floor(pts.length/2)]; emitText(mid[0], mid[1], `${fmt(M.polyline(ctx, pts))} mm`, s); }
+        const closed = !!a.closed && pts.length >= 3;   // a traced part outline → closed, extrudable profile
+        if(plane){ geometry.push({ type:'polyline', points:pts.map(p=>P(p[0],p[1])), closed:closed, mm_per_px:1 }); }
+        else geometry.push({ type:'polyline', points:pts, closed:closed, mm_per_px:s });
+        if(pts.length){ const mid=pts[Math.floor(pts.length/2)]; emitText(mid[0], mid[1], `${fmt(M.polyline(ctx, pts, closed))} mm`, s); }
       }else if(a.type === 'angle'){
         // Two legs as lines on the ANGLES layer + the angle value as text at the vertex.
         const leg=(p,q)=>{ if(plane){ const A=P(p[0],p[1]), B=P(q[0],q[1]); geometry.push({ type:'line', x1:A[0],y1:A[1],x2:B[0],y2:B[1], mm_per_px:1, layer:'ANGLES' }); }
@@ -375,7 +389,8 @@ window.CalibExport = (function(){
         els.push(`<polygon points="${q.map(p=>n(p[0])+','+n(p[1])).join(' ')}" fill="none" stroke="${C.rectangle||'#0072b2'}" stroke-width="0.3"/>`);
       }else if(a.type === 'polyline'){
         const q=(a.pts||[]).map(p=>P(p[0],p[1],s)); if(!q.length) continue; q.forEach(p=>bump(p[0],p[1]));
-        els.push(`<polyline points="${q.map(p=>n(p[0])+','+n(p[1])).join(' ')}" fill="none" stroke="${C.polyline||'#e69f00'}" stroke-width="0.3"/>`);
+        const tag = (a.closed && q.length >= 3) ? 'polygon' : 'polyline';   // closed outline → <polygon>
+        els.push(`<${tag} points="${q.map(p=>n(p[0])+','+n(p[1])).join(' ')}" fill="none" stroke="${C.polyline||'#e69f00'}" stroke-width="0.3"/>`);
       }else if(a.type === 'angle'){
         const V=P(a.v[0],a.v[1],s), A=P(a.a[0],a.a[1],s), B=P(a.b[0],a.b[1],s); [V,A,B].forEach(p=>bump(p[0],p[1]));
         els.push(`<polyline points="${n(A[0])+','+n(A[1])} ${n(V[0])+','+n(V[1])} ${n(B[0])+','+n(B[1])}" fill="none" stroke="${C.angle||'#cc79a7'}" stroke-width="0.3"/>`);

@@ -291,10 +291,17 @@
               return this.requestDraw();
             }
 
-            // Polyline: a tap near the previous point (or double-tap) finishes the path.
-            if (this.opts.mode==='polyline' && this.selectedPoints.length>=2){
+            // Path / outline: a tap near the previous point (or double-tap) finishes. For a
+            // closed outline, a tap near the FIRST point instead closes the loop.
+            if ((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=2){
+              const tol=this.vp.pxToImg(14);
               const last=this.selectedPoints[this.selectedPoints.length-1];
-              if(Math.hypot(p[0]-last[0], p[1]-last[1]) < this.vp.pxToImg(12)){
+              const first=this.selectedPoints[0];
+              if(this.opts.mode==='outline' && this.selectedPoints.length>=3 &&
+                 Math.hypot(p[0]-first[0], p[1]-first[1]) < tol){
+                return this.finishPolyline();
+              }
+              if(Math.hypot(p[0]-last[0], p[1]-last[1]) < tol){
                 return this.finishPolyline();
               }
             }
@@ -356,7 +363,7 @@
         // Double-click / double-tap finishes an in-progress polyline.
         this._onDblClick = (e)=>{
           e.preventDefault();
-          if(this.opts.mode==='polyline') this.finishPolyline();
+          if(this.opts.mode==='polyline' || this.opts.mode==='outline') this.finishPolyline();
         };
         this.canvas.addEventListener('dblclick', this._onDblClick);
 
@@ -382,6 +389,7 @@
           if(k==='6') this.setMode('circle');
           if(k==='7') this.setMode('circle3pt');
           if(k==='8') this.setMode('note');
+          if(k==='9') this.setMode('outline');
           if(k==='enter') this.finishPolyline();
           if(k==='escape'){ this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
           if(k==='delete' || k==='backspace'){ e.preventDefault(); this.deleteSelected(); }
@@ -590,13 +598,26 @@
             }
           } else if(a.type==='polyline'){
             const pts=a.pts||[]; if(pts.length<2) continue;
-            const mm=Measure.polyline(this._measureCtx(a), pts);
+            const mctx=this._measureCtx(a);
+            const closed=!!a.closed && pts.length>=3;
+            const mm=Measure.polyline(mctx, pts, closed);
             let pxLen=0; for(let i=1;i<pts.length;i++) pxLen+=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
+            if(closed) pxLen+=Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.polyline;
-            c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke();
+            c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]);
+            if(closed){ c.closePath(); c.save(); c.globalAlpha=0.12; c.fillStyle=sel?C.selected:C.polyline; c.fill(); c.restore(); }
+            c.stroke();
             c.fillStyle=sel?C.selected:C.polyline;
             for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,Draw.px(this.canvas,8),0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
-            const mid=pts[Math.floor(pts.length/2)]; Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this.opts.labelScale, C.polyline);
+            const mid=pts[Math.floor(pts.length/2)];
+            let label=this._fmtLen(mm, pxLen);
+            if(closed){
+              const unit=Units.get(this.opts.units);
+              label = this.isCalibrated()
+                ? `⬡ peri ${this._fmtLen(mm, pxLen)} · A ${unit.areaFromMM2(Measure.polygonArea(mctx, pts)).toFixed(1)} ${unit.areaLabel}`
+                : `⬡ outline`;
+            }
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], label, this.opts.labelScale, C.polyline);
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
             const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2);
@@ -651,8 +672,10 @@
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this.opts.labelScale);
           }
         }
-        else if(this.opts.mode==='polyline' && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
-          c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke(); c.restore();
+        else if((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
+          c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]);
+          if(this.opts.mode==='outline' && this.selectedPoints.length>=3) c.closePath();   // preview the closing edge
+          c.stroke(); c.restore();
         }
         else if(this.opts.mode==='setscalerect' && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
           c.save(); c.setLineDash([10,8]); c.strokeStyle='rgba(0,212,255,.95)';
@@ -765,7 +788,16 @@
         const unit=Units.get(this.opts.units), ctx=this._measureCtx(a);
         const cal=this.isCalibrated();
         if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]); const t=this._fmtLen(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]),px); return {label:'Length', text:t, copy:cal?unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])).toFixed(3):String(Math.round(px))}; }
-        if(a.type==='polyline'){ const pts=a.pts||[]; let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]); const mm=Measure.polyline(ctx,pts); return {label:'Path', text:this._fmtLen(mm,px), copy:cal?unit.fromMM(mm).toFixed(3):String(Math.round(px))}; }
+        if(a.type==='polyline'){ const pts=a.pts||[]; const closed=!!a.closed && pts.length>=3;
+          let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+          if(closed) px+=Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
+          const mm=Measure.polyline(ctx,pts,closed);
+          if(closed){
+            if(cal){ const ar=unit.areaFromMM2(Measure.polygonArea(ctx,pts)); return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
+            let pa=0; for(let i=0;i<pts.length;i++){ const q0=pts[i], q1=pts[(i+1)%pts.length]; pa+=q0[0]*q1[1]-q1[0]*q0[1]; } pa=Math.abs(pa)/2;
+            return {label:'Outline', text:`peri ${Math.round(px)} px · A ${Math.round(pa)} px²`, copy:String(Math.round(px))};
+          }
+          return {label:'Path', text:this._fmtLen(mm,px), copy:cal?unit.fromMM(mm).toFixed(3):String(Math.round(px))}; }
         if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; const rm=Measure.rect(ctx,x1,y1,x2,y2);
           if(cal){ const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); return {label:'Rect', text:`${w.toFixed(3)}×${h.toFixed(3)} ${unit.label} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
           const pw=Math.abs(x2-x1),ph=Math.abs(y2-y1); return {label:'Rect', text:`${Math.round(pw)}×${Math.round(ph)} px · A ${Math.round(pw*ph)} px²`, copy:`${Math.round(pw)}x${Math.round(ph)}`}; }
@@ -899,12 +931,14 @@
       clearManualScale(){ this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null; this._rescaleAnnotations(); this.requestDraw(); }
       currentMarkerSizeMM(){ return (this.data && this.data.marker_size_mm) || null; }
 
-      // Commit the in-progress polyline (needs >=2 points). Clears the working points.
+      // Commit the in-progress path/outline. An open path needs >=2 points; a closed
+      // outline needs >=3 and stores a `closed` flag (→ a closed, extrudable DXF profile).
       finishPolyline(){
-        if(this.opts.mode==='polyline' && this.selectedPoints.length>=2){
+        const m=this.opts.mode, closed=(m==='outline');
+        if((m==='polyline' || m==='outline') && this.selectedPoints.length>=(closed?3:2)){
           const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
           this._pushHistory();
-          Ann.addPolyline(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId);
+          Ann.addPolyline(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId, closed);
         }
         this.selectedPoints=[]; this.hover=null; this.requestDraw();
       }

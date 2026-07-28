@@ -7,7 +7,7 @@ window.CalibAnn = (function(){
   function createStore(){ return { items:[], selectedId:null, hitTolPx:24 }; }
   function addSegment(s,a,b,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'segment',a:[...a],b:[...b],mm_per_px,units,markerId}); s.selectedId=id; }
   function addNote(s,p,text){ const id=next(); s.items.push({id,type:'note',p:[...p],text:String(text||'')}); s.selectedId=id; }
-  function addPolyline(s,pts,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'polyline',pts:pts.map(p=>[...p]),mm_per_px,units,markerId}); s.selectedId=id; }
+  function addPolyline(s,pts,mm_per_px,units,markerId,closed){ const id=next(); s.items.push({id,type:'polyline',pts:pts.map(p=>[...p]),closed:!!closed,mm_per_px,units,markerId}); s.selectedId=id; }
   function addRectangle(s,a,b,mm_per_px,units,markerId){ const x1=Math.min(a[0],b[0]),y1=Math.min(a[1],b[1]),x2=Math.max(a[0],b[0]),y2=Math.max(a[1],b[1]); const id=next(); s.items.push({id,type:'rectangle',rect:[x1,y1,x2,y2],mm_per_px,units,markerId}); s.selectedId=id; }
   function addAngle(s,a,v,b,mm_per_px,units,markerId){ const id=next(); s.items.push({id,type:'angle',a:[...a],v:[...v],b:[...b],mm_per_px,units,markerId}); s.selectedId=id; }
 
@@ -43,6 +43,8 @@ window.CalibAnn = (function(){
         const d=distPtLine(x,y,it.a[0],it.a[1],it.b[0],it.b[1]); if(d<bestD){bestD=d;best=it;}
       }else if(it.type==='polyline'){
         const pts=it.pts||[]; for(let i=1;i<pts.length;i++){ const d=distPtLine(x,y,pts[i-1][0],pts[i-1][1],pts[i][0],pts[i][1]); if(d<bestD){bestD=d;best=it;} }
+        // A closed outline also has the segment from the last vertex back to the first.
+        if(it.closed && pts.length>=3){ const d=distPtLine(x,y,pts[pts.length-1][0],pts[pts.length-1][1],pts[0][0],pts[0][1]); if(d<bestD){bestD=d;best=it;} }
       }else if(it.type==='rectangle'){
         const [x1,y1,x2,y2]=it.rect; const es=[[x1,y1,x2,y1],[x2,y1,x2,y2],[x2,y2,x1,y2],[x1,y2,x1,y1]];
         for(const [ax,ay,bx,by] of es){ const d=distPtLine(x,y,ax,ay,bx,by); if(d<bestD){bestD=d;best=it;} }

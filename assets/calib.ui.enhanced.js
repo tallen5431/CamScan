@@ -710,7 +710,7 @@ window.CalibUI = (function(){
 
     // ---- Tool rail / bottom dock ----
     const modeKeys = { pan:'0', select:'1', segment:'2', polyline:'3', rectangle:'4',
-                       angle:'5', circle:'6', circle3pt:'7', note:'8' };
+                       angle:'5', circle:'6', circle3pt:'7', note:'8', outline:'9' };
     // Display order (index parity with modeBtns drives reflect(); the keyboard map is
     // name-keyed, so this order is free to be the most usable one).
     const modes = [
@@ -718,6 +718,7 @@ window.CalibUI = (function(){
       ['pan',       '🖐',  'Pan',      'Pan the image'],
       ['segment',   '📏',  'Measure',  'Measure a distance'],
       ['polyline',  '〰',  'Path',     'Measure a path / perimeter (double-tap or Enter to finish)'],
+      ['outline',   '⬡',  'Outline',  'Trace a closed part outline → a to-scale, extrudable profile (tap the first point or double-tap to close)'],
       ['rectangle', '▭',  'Area',     'Measure a rectangular area'],
       ['angle',     '∠',  'Angle',    'Measure an angle'],
       ['circle',    '⭕',  'Circle',   'Measure a circle (2 points)'],
@@ -835,7 +836,9 @@ window.CalibUI = (function(){
       const mode = overlay.opts && overlay.opts.mode;
       modeBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(mode === modes[i][0])));
       ctxDelete.classList.toggle('show', !!(overlay.ann && overlay.ann.selectedId != null));
-      ctxFinish.classList.toggle('show', mode === 'polyline' && overlay.selectedPoints && overlay.selectedPoints.length >= 2);
+      const pathN = overlay.selectedPoints ? overlay.selectedPoints.length : 0;
+      ctxFinish.classList.toggle('show', (mode === 'polyline' && pathN >= 2) || (mode === 'outline' && pathN >= 3));
+      ctxFinish.innerHTML = mode === 'outline' ? '✓ Close outline' : '✓ Finish path';
       undo.disabled = !(overlay.canUndo && overlay.canUndo());
       redo.disabled = !(overlay.canRedo && overlay.canRedo());
       reflectCalChip();

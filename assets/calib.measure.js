@@ -45,11 +45,23 @@ window.CalibMeasure = (function(){
     return Math.hypot(bx-ax, by-ay) * ctx.mmPerPx;
   }
 
-  // Total length (mm) of a polyline given as [[x,y],...] image points.
-  function polyline(ctx, pts){
+  // Total length (mm) of a polyline given as [[x,y],...] image points. When `closed`,
+  // include the segment from the last point back to the first (an outline's perimeter).
+  function polyline(ctx, pts, closed){
     let sum = 0;
     for(let i=1;i<pts.length;i++) sum += length(ctx, pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1]);
+    if(closed && pts.length>=3){ const a=pts[pts.length-1], b=pts[0]; sum += length(ctx, a[0],a[1], b[0],b[1]); }
     return sum;
+  }
+
+  // Enclosed area (mm²) of a closed outline (shoelace). Projected onto the marker's plane
+  // when a homography is active, so a tilted shot gives the TRUE area; otherwise uniform.
+  function polygonArea(ctx, pts){
+    if(!pts || pts.length < 3) return 0;
+    const q = ctx.H ? pts.map(p=>_mm(ctx, p[0], p[1])) : pts.map(p=>[p[0]*ctx.mmPerPx, p[1]*ctx.mmPerPx]);
+    let area = 0;
+    for(let i=0;i<q.length;i++){ const a=q[i], b=q[(i+1)%q.length]; area += a[0]*b[1] - b[0]*a[1]; }
+    return Math.abs(area)/2;
   }
 
   // A rectangle drawn axis-aligned in image space maps to a quadrilateral on the
@@ -97,5 +109,5 @@ window.CalibMeasure = (function(){
     return d > 180 ? 360 - d : d;
   }
 
-  return { context, project, length, polyline, rect, angle, circle };
+  return { context, project, length, polyline, polygonArea, rect, angle, circle };
 })();
