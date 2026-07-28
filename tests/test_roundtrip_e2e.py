@@ -52,21 +52,24 @@ def _make_bundle_file():
     cv2.rectangle(img, (60, 60), (320, 240), (60, 62, 66), -1)
     _ok, enc = cv2.imencode(".jpg", img)
     raw = "data:image/jpeg;base64," + base64.b64encode(enc.tobytes()).decode()
+    def _view(label, mmpp, ann):
+        return {
+            "label": label, "image": raw, "units": "mm",
+            "scale": {"calibrated": True, "source": "manual line"},
+            "measurements": [], "restore": {
+                "v": 1, "w": 400, "h": 300, "raw": raw,
+                "calib": {"markers": [], "image_size": {"width": 400, "height": 300}, "marker_size_mm": None},
+                "ann": ann, "units": "mm", "manual": {"mmPerPx": mmpp, "homography": None, "ref": None},
+            },
+        }
     bundle = {
         "kind": "camscan.job", "version": 1, "id": "job-e2e", "createdAt": "2026-01-01T00:00:00Z",
         "brief": {"part": "e2e bracket", "material": "aluminium", "contact": "x@y.com"},
-        "views": [{
-            "label": "Top", "image": raw, "units": "mm",
-            "scale": {"calibrated": True, "source": "manual line"},
-            "measurements": [{"label": "Outline", "text": "peri 120 mm"}],
-            "restore": {
-                "v": 1, "w": 400, "h": 300, "raw": raw,
-                "calib": {"markers": [], "image_size": {"width": 400, "height": 300}, "marker_size_mm": None},
-                "ann": [{"id": 1, "type": "polyline", "pts": [[60, 60], [320, 60], [320, 240], [60, 240]],
-                         "closed": True, "mm_per_px": 0.1, "units": "mm", "markerId": None}],
-                "units": "mm", "manual": {"mmPerPx": 0.1, "homography": None, "ref": None},
-            },
-        }],
+        "views": [
+            _view("Top", 0.1, [{"id": 1, "type": "polyline", "pts": [[60, 60], [320, 60], [320, 240], [60, 240]],
+                                "closed": True, "mm_per_px": 0.1, "units": "mm", "markerId": None}]),
+            _view("Front", 0.2, []),
+        ],
     }
     path = os.path.join(tempfile.gettempdir(), "e2e.camscan.json")
     json.dump(bundle, open(path, "w"))
@@ -112,7 +115,7 @@ def main():
             fc.value.set_files(bundle_path)
 
             pg.wait_for_selector("#cal-job-panel", timeout=8000)
-            assert "Collected views (1)" in pg.inner_text("#cal-job-panel"), "view not loaded into panel"
+            assert "Collected views (2)" in pg.inner_text("#cal-job-panel"), "views not loaded into panel"
             pg.locator("#cal-job-panel").get_by_role("button", name="Open").first.click()
 
             pg.wait_for_function(
@@ -126,6 +129,8 @@ def main():
             assert state["n"] == 1 and state["type"] == "polyline" and state["closed"] is True, f"annotation not restored: {state}"
             assert abs(state["mmpp"] - 0.1) < 1e-9, f"manual scale not restored: {state}"
             assert state["units"] == "mm" and state["calibrated"] is True, f"scale/units not restored: {state}"
+            # A reopened side already has scale — the first-run measuring coach is suppressed.
+            assert pg.query_selector(".cal-coach") is None, "measuring coach should not show on a restored side"
 
             cap = pg.evaluate(
                 "(()=>{var o=document.querySelector('.cal-view').__overlay;var r=o.getRestoreState(1600);"
@@ -133,9 +138,27 @@ def main():
                 "mmpp:r.manual.mmPerPx}:null;})()")
             assert cap and cap["raw"] and cap["ann"] == 1 and cap["hasCalib"], f"capture snapshot malformed: {cap}"
             assert abs(cap["mmpp"] - 0.1) < 1e-9, f"capture lost manual scale: {cap}"
+
+            # 6) side switcher: flip to another side and back; edits to a side must persist.
+            pg.wait_for_selector("#cal-side-switcher", timeout=8000)
+            pg.evaluate("(()=>{var o=document.querySelector('.cal-view').__overlay;"
+                        "o.ann.items.push({id:999,type:'note',p:[120,120],text:'edit'});o.requestDraw();})()")
+            pg.locator("#cal-side-switcher").get_by_role("button", name="Front").click()
+            pg.wait_for_function(
+                "(()=>{var v=document.querySelector('.cal-view');return v&&v.getAttribute('data-view-index')==='1'"
+                "&&v.__overlay&&v.__overlay.img&&v.__overlay.img.naturalWidth>0"
+                "&&Math.abs(v.__overlay.opts.manualMmPerPx-0.2)<1e-9;})()", timeout=15000)
+            front = pg.evaluate("document.querySelector('.cal-view').__overlay.ann.items.length")
+            assert front == 0, f"Front should have no annotations, got {front}"
+            pg.locator("#cal-side-switcher").get_by_role("button", name="Top").click()
+            pg.wait_for_function(
+                "(()=>{var v=document.querySelector('.cal-view');return v&&v.getAttribute('data-view-index')==='0'"
+                "&&v.__overlay&&v.__overlay.img&&v.__overlay.img.naturalWidth>0"
+                "&&v.__overlay.ann.items.length===2;})()", timeout=15000)   # original + the edit persisted
+
             assert not errors, f"page errors: {errors}"
             browser.close()
-        print("E2E_RESULT: PASS (loaded job; reopened side editable with annotation + scale; live re-capture ok)")
+        print("E2E_RESULT: PASS (load; reopen editable; side-switch persists edits; live re-capture ok)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")

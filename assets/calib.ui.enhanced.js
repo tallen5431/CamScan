@@ -805,6 +805,9 @@ window.CalibUI = (function(){
     }
     function maybeShowCoach(){
       if (coachSeenMem) return;
+      // A reopened saved side (tagged by the job loader) already has its scale set and the
+      // customer's trace in place — the "set the scale, then measure" coach doesn't apply.
+      try { if (rootEl && rootEl.getAttribute && rootEl.getAttribute('data-view-index') != null) return; } catch (e) {}
       let seen = false; try { seen = localStorage.getItem('calib.coachSeen') === '1'; } catch (e) {}
       if (seen) return;
       coach = document.createElement('div'); coach.className = 'cal-coach';

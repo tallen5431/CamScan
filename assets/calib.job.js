@@ -303,6 +303,7 @@
   // and rehydrates the set, so a submitted part can be re-opened in CamScan with each side
   // editable (scale + the customer's trace restored) instead of re-measured from scratch.
   function saveJobToFile(){
+    syncOpenView();   // fold in any edits to the side currently open before writing the file
     if(!job.views.length){ setStatus('Add at least one view before saving.', true); return; }
     var bundle={ kind:'camscan.job', version:1, id:job.id, createdAt:job.createdAt,
                  savedAt:new Date().toISOString(), brief:job.brief, views:exportViews(true) };
@@ -355,9 +356,12 @@
   function openViewForEditing(i){
     var v=job.views[i];
     if(!v || !v.restore || !v.restore.raw){ setStatus('This view has no reloadable image data.', true); return; }
-    var st=v.restore;
     var viewer=document.getElementById('viewer');
     if(!viewer){ setStatus('Viewer is not ready — reload the page and try again.', true); return; }
+    // Persist any edits made to the side currently open BEFORE we swap it away, so flipping
+    // between sides never loses work.
+    syncOpenView();
+    var st=v.restore;
     // Modelling wants the full markup rail, not the stripped intake flow.
     try{ localStorage.setItem('camscan.simplemode','0'); }catch(e){}
     document.body.classList.remove('camscan-simple');
@@ -367,6 +371,7 @@
     var view=document.createElement('div'); view.className='cal-view'; view.id='cal-view';
     view.setAttribute('data-img', st.raw);
     view.setAttribute('data-json', calibUrl);
+    view.setAttribute('data-view-index', String(i));   // which stored view this overlay IS
     view.setAttribute('style','text-align:center;');
     view.__restore={ ann:(st.ann||[]), units:(st.units||'mm'), manual:(st.manual||null) };
     var canvas=document.createElement('canvas'); canvas.id='cal-canvas';
@@ -378,10 +383,71 @@
     var tp=document.getElementById('top-panel');
     if(tp){ tp.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;'; }
     closePanel();
+    renderSideSwitcher();
     setStatus('Opened “'+(v.label||('View '+(i+1)))+'” for editing.');
   }
 
+  // Which stored view the on-screen overlay currently IS (a normal upload has no such tag,
+  // so this reads null and syncing/highlighting safely no-op for freshly-shot photos).
+  function currentOpenIndex(){
+    var el=document.querySelector('.cal-view');
+    var a=el && el.getAttribute('data-view-index');
+    if(a==null) return null;
+    var n=parseInt(a,10); return (isNaN(n)||n<0||n>=job.views.length) ? null : n;
+  }
+  // Capture edits to the currently-open side back into the job (annotations, measurements,
+  // geometry, and the reloadable snapshot) so switching sides / saving keeps the work.
+  function syncOpenView(){
+    var idx=currentOpenIndex(); if(idx==null) return;
+    var cur=job.views[idx], o=overlay();
+    if(!cur || !o || !o.img || !o.getViewRecord) return;
+    try{
+      var rec=o.getViewRecord(cur.label||'');
+      rec.sourceId=cur.sourceId; rec.capturedAt=cur.capturedAt||new Date().toISOString();
+      job.views[idx]=rec; save();
+    }catch(e){ /* best-effort — a failed capture just keeps the previous snapshot */ }
+  }
+
+  // ---- side switcher: one-tap flipping between the loaded sides while modelling ----------
+  var _switcher=null, _switchSig=null;
+  function reloadableViews(){
+    var out=[]; job.views.forEach(function(v,i){ if(v.restore&&v.restore.raw) out.push({v:v,i:i}); });
+    return out;
+  }
+  function renderSideSwitcher(){
+    var views=reloadableViews();
+    var viewer=document.querySelector('.cal-view');
+    var simple=false; try{ simple=document.body.classList.contains('camscan-simple'); }catch(e){}
+    // Only while modelling a multi-side job: a viewer is open, full tools (not simple mode),
+    // and there is more than one reloadable side to move between.
+    var show = !!viewer && !simple && views.length>=2;
+    if(!show){ if(_switcher){ _switcher.remove(); _switcher=null; _switchSig=null; } return; }
+    var active=currentOpenIndex();
+    var sig=views.map(function(o){ return (o.v.label||'')+o.i; }).join('|')+'|'+active;
+    if(_switcher && sig===_switchSig) return;   // nothing shown changed → no rebuild (observer-safe)
+    _switchSig=sig;
+    if(!_switcher){
+      _switcher=document.createElement('div'); _switcher.id='cal-side-switcher';
+      _switcher.style.cssText='position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:37;'+
+        'display:flex;gap:7px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 20px);'+
+        'background:#12171c;border:1px solid #26323b;border-radius:12px;box-shadow:0 8px 26px rgba(0,0,0,.5);padding:7px 11px;';
+      document.body.appendChild(_switcher);
+    }
+    _switcher.textContent='';
+    var lab=document.createElement('span'); lab.textContent='Sides:'; lab.style.cssText='color:#9fb2bb;font-size:12px;';
+    _switcher.appendChild(lab);
+    views.forEach(function(o){
+      var on=(o.i===active);
+      var b=document.createElement('button'); b.type='button'; b.textContent=o.v.label||('View '+(o.i+1));
+      b.style.cssText='min-height:34px;padding:5px 11px;border-radius:8px;cursor:pointer;font:600 13px Segoe UI,system-ui,sans-serif;'+
+        (on?'background:#00d4ff;color:#04222b;border:none;':'background:#151a1f;color:#cfe6ee;border:1px solid #29414c;');
+      b.onclick=function(){ if(o.i!==currentOpenIndex()) openViewForEditing(o.i); };
+      _switcher.appendChild(b);
+    });
+  }
+
   function submit(){
+    syncOpenView();   // capture edits to the open side so the submission reflects them
     if(!validate()) return;
     if(EMBED){ handoff(); return; }
     sendToServer();
@@ -463,7 +529,7 @@
     wrap.appendChild(b); wrap.appendChild(hint); host.appendChild(wrap);
   }
 
-  function render(){ reflectButton(); ensureLandingLoad(); }
+  function render(){ reflectButton(); ensureLandingLoad(); renderSideSwitcher(); }
   // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
   function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
 
