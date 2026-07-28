@@ -4,7 +4,8 @@
     const t0=performance.now();
     (function tick(){
       if(window.CalibUnits && window.CalibGeom && window.CalibDraw && window.CalibAnn && window.CalibExport
-         && window.CalibViewport && window.CalibGestures && window.CalibUI && window.CalibMeasure) return ready();
+         && window.CalibViewport && window.CalibGestures && window.CalibUI && window.CalibMeasure
+         && window.CalibCircles) return ready();
       if(performance.now()-t0>maxMs){ console.error('[CalibrationOverlay] modules missing'); return; }
       setTimeout(tick, step);
     })();
@@ -78,7 +79,9 @@
         const wrap=this.canvas.closest('.cal-view');
         this.img = new Image(); this.img.decoding='async'; this.img.loading='eager';
         this.img.onload = async()=>{
+          if(this._destroyed) return;   // a late decode must not re-wire a torn-down overlay
           await this._loadJSON();
+          if(this._destroyed) return;   // destroyed DURING the async JSON load
           (this.data.markers||[]).forEach((m,i)=>{ if(m.id==null) m.id=i+1; });
 
           // If the user picked a real cube size earlier this session, apply it now — but NOT
@@ -113,6 +116,7 @@
         // also fails, show a visible error+retry card instead of a blank dead-end (the
         // whole toolbar is built inside onload, so a silent failure left nothing).
         this.img.onerror = ()=>{
+          if(this._destroyed) return;   // a late decode failure must not touch a torn-down overlay
           const fb = wrap && wrap.getAttribute('data-img-fallback');
           if(fb && !this._triedFallback && fb !== this.imgSrc){
             this._triedFallback = true;
@@ -256,14 +260,14 @@
             // gesture layer already turns a moved press into a drag (and no click), so we
             // just need to suppress the click for a no-move grab so it doesn't dup a point.
             if(this._precisionMode() && this.selectedPoints.length){
-              const tol=this.vp.pxToImg(22); let bi=-1, bd=tol;
+              const tol=this.vp.pxToImg(22*this.vp.dpr); let bi=-1, bd=tol;
               for(let i=0;i<this.selectedPoints.length;i++){
                 const d=Math.hypot(pt[0]-this.selectedPoints[i][0], pt[1]-this.selectedPoints[i][1]);
                 if(d<=bd){ bd=d; bi=i; }
               }
               if(bi>=0){ this._selDrag=bi; this._suppressClick=true; this.drag=null; return this.requestDraw(); }
             }
-            this.ann.hitTolPx = this.vp.pxToImg(18);
+            this.ann.hitTolPx = this.vp.pxToImg(18*this.vp.dpr);
             const hit = Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
             this.ann.selectedId = hit ? hit.id : this.ann.selectedId;
             this.drag = hit ? this._makeDragHandle(hit, pt) : null;
@@ -299,7 +303,7 @@
             const p = this.opts.snap ? this._maybeSnap(pt) : pt;
 
             if (this.opts.mode==='select'){
-              this.ann.hitTolPx = this.vp.pxToImg(18);
+              this.ann.hitTolPx = this.vp.pxToImg(18*this.vp.dpr);
               const hit = Ann.hitTest(this.ann, p[0], p[1], hitVisible);
               this.ann.selectedId = hit ? hit.id : null;
               return this.requestDraw();
@@ -320,7 +324,7 @@
             // Path / outline: a tap near the previous point (or double-tap) finishes. For a
             // closed outline, a tap near the FIRST point instead closes the loop.
             if ((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=2){
-              const tol=this.vp.pxToImg(14);
+              const tol=this.vp.pxToImg(14*this.vp.dpr);
               const last=this.selectedPoints[this.selectedPoints.length-1];
               const first=this.selectedPoints[0];
               if(this.opts.mode==='outline' && this.selectedPoints.length>=3 &&
@@ -478,7 +482,14 @@
         // Tear down the document/window listeners UI.build() attached (save-menu
         // outside-click, toolbar scroll-cue resize) so they don't accumulate per upload.
         try{ this._uiCleanup && this._uiCleanup(); }catch(e){}
-        const box=document.getElementById('cal-scale-input'); if(box) box.remove();
+        // Remove the floating, body-appended UI this overlay spawned. These live OUTSIDE the
+        // .cal-view subtree, so node-reuse/reapRemoved never clean them; the Detail slider is
+        // the worst — it carries a live listener bound to THIS (now dead) overlay, so a stray
+        // drag would fire retraceDetail() on a discarded store. Retire them all here.
+        try{ this._dismissTraceDetail(); }catch(e){}
+        if(this._armToast){ try{ this._armToast.dismiss(); }catch(e){} this._armToast=null; }
+        ['cal-scale-input', 'cal-rect-input', 'cal-verify', 'cal-paper-offer', 'cal-quality']
+          .forEach(id=>{ const n=document.getElementById(id); if(n) n.remove(); });
       }
 
       // --- helpers -------------------------------------------------------------
@@ -491,7 +502,7 @@
       // coordinates — which otherwise froze fine (<snapPx) vertex adjustments while snap
       // was on, the exact mode snapping is meant to serve.
       _maybeSnap(pt, excludeItem){
-        const tol = this.vp.pxToImg(this.opts.snapPx);
+        const tol = this.vp.pxToImg(this.opts.snapPx*this.vp.dpr);
         let best=null, bestD=tol;
         const consider=(x,y)=>{ const d=Math.hypot(pt[0]-x, pt[1]-y); if(d<bestD){ bestD=d; best=[x,y]; } };
         for(const m of (this.data?.markers||[])) for(const p of (m.corners||[])) consider(p.x, p.y);
@@ -570,7 +581,7 @@
 
       // --- draw ----------------------------------------------------------------
       redraw(){
-        this.ann.hitTolPx = this.vp.pxToImg(18);
+        this.ann.hitTolPx = this.vp.pxToImg(18*this.vp.dpr);
         const c=this.ctx;
         // Paint the whole backing store with the base surface tone before drawing the
         // image, so the letterbox bars match the app's chrome instead of the hard pure
@@ -1789,11 +1800,23 @@
       }
     }
     if(document.readyState!=='loading') initScan(); else document.addEventListener('DOMContentLoaded', initScan);
+    // Coalesce bursts of mutations into ONE rescan per frame. The observer watches the whole
+    // document (so it survives Dash replacing the #viewer subtree), and unrelated churn — the
+    // KPI chip rebuilds on every drag frame — would otherwise run a full-document initScan per
+    // mutation. reapRemoved must run synchronously (the removed nodes aren't in the DOM by the
+    // next frame); only the rescan is deferred.
+    let _scanQueued=false;
+    function queueScan(){
+      if(_scanQueued) return;
+      _scanQueued=true;
+      requestAnimationFrame(()=>{ _scanQueued=false; initScan(); });
+    }
     new MutationObserver((mutations)=>{
       for(const m of mutations) if(m.removedNodes && m.removedNodes.length) reapRemoved(m.removedNodes);
-      initScan();
-    // Also watch data-img/data-json: when Dash reuses the .cal-view node and only updates
-    // those attributes for a new photo, there is no childList change to trigger a rescan.
-    }).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-img','data-json']});
+      queueScan();
+    // Watch data-img: when Dash reuses the .cal-view node and only swaps the image attribute
+    // for a new photo, there is no childList change to trigger a rescan. data-img (the image
+    // data URL) is the photo's identity, so watching it alone is sufficient and precise.
+    }).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-img']});
   });
 })();
