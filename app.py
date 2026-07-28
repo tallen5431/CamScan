@@ -142,10 +142,26 @@ def _resolve_edge_mm_from_env():
     if not v:
         return None
     try:
-        return float(v)
+        val = float(v)
     except ValueError:
         print(f"[App] ⚠️ Invalid CALIB_EDGE_MM='{v}', ignoring.")
         return None
+    # A non-positive edge length would yield a zero/negative mm_per_px (a mirrored or
+    # divide-by-zero scale) that is still reported high-confidence — reject it like the DXF
+    # endpoint rejects a non-positive mm_per_px.
+    if not (val > 0):
+        print(f"[App] ⚠️ Non-positive CALIB_EDGE_MM='{v}', ignoring.")
+        return None
+    return val
+
+
+def _json_body():
+    """The request's JSON body as a dict — never raises on a non-object or invalid body.
+    A bare number / array / string, or malformed JSON, all coerce to {} so an endpoint can
+    .get() safely and return a clean 4xx instead of letting an AttributeError escape as a 500."""
+    from flask import request
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 server = Flask(__name__)
@@ -489,7 +505,7 @@ def export_dxf():
     except ImportError:
         return "DXF export requires ezdxf: pip install ezdxf", 500
 
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     geometry = data.get("geometry", [])
     if not isinstance(geometry, list) or not geometry:
         return "No geometry provided", 400
@@ -556,7 +572,7 @@ def api_trace():
     except Exception:
         return jsonify(ok=False, error="unavailable"), 500
 
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     durl = data.get("image")
     if not isinstance(durl, str) or "," not in durl:
         return jsonify(ok=False, error="no_image"), 400
@@ -582,7 +598,8 @@ def api_trace():
         seed = None
 
     exclude = []
-    for box in (data.get("exclude") or []):
+    raw_exclude = data.get("exclude")
+    for box in (raw_exclude if isinstance(raw_exclude, (list, tuple)) else []):
         try:
             if len(box) == 4:
                 exclude.append(tuple(float(v) for v in box))
@@ -651,6 +668,8 @@ def _save_submission(data):
 
     images = []
     for i, v in enumerate(data.get("views") or []):
+        if not isinstance(v, dict):
+            continue
         durl = v.get("image")
         if not durl:
             continue
@@ -754,16 +773,19 @@ def submit_part():
     """Receive a multi-view part submission, save it, and email it to Datum (if SMTP is
     configured). Always saves so nothing is lost; returns an honest message either way."""
     from flask import request
-    data = request.get_json(silent=True) or {}
+    data = _json_body()
     views = data.get("views")
     if not isinstance(views, list) or not views:
         return {"ok": False, "error": "No views to submit — add at least one."}, 400
+    if not all(isinstance(v, dict) for v in views):
+        return {"ok": False, "error": "Malformed submission — each view must be an object."}, 400
 
     try:
         record = _save_submission(data)
     except Exception as e:
+        # Log the detail server-side; don't echo the raw exception string back to the client.
         print(f"[Submit] save failed: {e}")
-        return {"ok": False, "error": f"Could not save the submission: {e}"}, 500
+        return {"ok": False, "error": "Could not save the submission on the server."}, 500
 
     if SMTP_HOST:
         try:
