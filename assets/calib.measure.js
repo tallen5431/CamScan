@@ -6,8 +6,9 @@
 // values. Without a homography (or when a manual scale is set) it falls back to the
 // uniform mm/px scale, so behaviour is unchanged for straight-on shots.
 //
-// NOTE: this only helps for geometry COPLANAR with the marker. Circles are left on
-// the uniform scale for now (a circle on a tilted plane is an ellipse in the photo).
+// NOTE: this only helps for geometry COPLANAR with the marker. A 3-point circle is
+// tilt-corrected by projecting its rim points onto the plane and refitting (see circle());
+// a 2-point circle has no rim points, so it stays on the uniform scale (approximate on tilt).
 window.CalibMeasure = (function(){
   // Build a measurement context.
   //   cal             : calibration JSON (.homography, .marker_size_mm, .mm_per_px)
@@ -67,6 +68,27 @@ window.CalibMeasure = (function(){
     return { w: w, h: h, area: w*h };
   }
 
+  // Circle / hole measurement. When a homography is active AND the circle carries its
+  // three rim points (the 3-point tool keeps them), we project those points onto the
+  // plane — where the hole is a true circle again — and fit the circle THERE, so a hole
+  // photographed at an angle (an ellipse in the image) reads its real diameter. A 2-point
+  // circle has no rim points, so it falls back to the uniform scale (approximate on tilt).
+  // Returns { radiusMM, diameterMM, areaMM2, centerMM, corrected }.
+  function circle(ctx, c){
+    if(ctx && ctx.H && c && Array.isArray(c.pts) && c.pts.length>=3){
+      const P = c.pts.slice(0,3).map(p => _mm(ctx, p[0], p[1]));  // rim points -> plane mm
+      const Circ = window.CalibCircles;
+      const fit = Circ && Circ.fitCircleFromPoints(P);
+      if(fit && fit.radius>0){
+        const r = fit.radius;
+        return { radiusMM:r, diameterMM:2*r, areaMM2:Math.PI*r*r, centerMM:fit.center, corrected:true };
+      }
+    }
+    const s = (c && c.mm_per_px) || (ctx && ctx.mmPerPx) || 0;
+    const r = ((c && c.radius) || 0) * s;
+    return { radiusMM:r, diameterMM:2*r, areaMM2:Math.PI*r*r, centerMM:null, corrected:false };
+  }
+
   // True planar angle (degrees) at vertex v, with a,v,b as image points [x,y].
   function angle(ctx, a, v, b){
     let A=a, V=v, B=b;
@@ -75,5 +97,5 @@ window.CalibMeasure = (function(){
     return d > 180 ? 360 - d : d;
   }
 
-  return { context, project, length, polyline, rect, angle };
+  return { context, project, length, polyline, rect, angle, circle };
 })();

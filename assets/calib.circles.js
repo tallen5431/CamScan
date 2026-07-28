@@ -36,14 +36,23 @@ window.CalibCircles = (function(){
     const [cx, cy] = circle.center;
     const r = circle.radius;
 
+    // Perspective-aware diameter: a 3-point circle projects its rim points onto the plane
+    // and refits, so a tilted hole reads true; a 2-point circle stays uniform. The circle
+    // is still DRAWN as the image-space shape (below) — only the numbers are rectified.
+    const M = window.CalibMeasure;
+    const mctx = M ? M.context(data, circle.mm_per_px || opts.fallbackScale, opts.allowHomography !== false) : null;
+    const cm = (M && mctx) ? M.circle(mctx, circle) : null;
+
     // When there's no scale yet, label in raw pixels rather than a fake "⌀ 0.000 mm"
     // that reads like a real zero-diameter result.
-    const calibrated = mm_per_px > 0;
+    const calibrated = cm ? (cm.diameterMM > 0) : (mm_per_px > 0);
+    const diamMM = cm ? cm.diameterMM : (2 * r * mm_per_px);
+    const areaMM2 = cm ? cm.areaMM2 : (Math.PI * r * r * mm_per_px * mm_per_px);
     const diamLabel = calibrated
-      ? `⌀ ${unit.fromMM(2 * r * mm_per_px).toFixed(3)} ${unit.label}`
+      ? `⌀ ${unit.fromMM(diamMM).toFixed(3)} ${unit.label}`
       : `⌀ ${Math.round(2 * r)} px`;
     const areaLabel = calibrated
-      ? `A ${unit.areaFromMM2(Math.PI * r * r * mm_per_px * mm_per_px).toFixed(3)} ${unit.areaLabel}`
+      ? `A ${unit.areaFromMM2(areaMM2).toFixed(3)} ${unit.areaLabel}`
       : `A ${Math.round(Math.PI * r * r)} px²`;
 
     const selected = !!opts.selected;

@@ -616,8 +616,9 @@
             // Shared with the PNG exporter so the live canvas and the export never
             // drift (line thickness, label size/position all come from opts here).
             if(window.CalibCircles){
-              window.CalibCircles.drawCircle(c, this.canvas, a, this.data, this.opts.units,
-                { selected: sel, labelScale: this.opts.labelScale, linePx: this.opts.linePx, fallbackScale: this.getScale() });
+              window.CalibCircles.drawCircle(c, this.canvas, a, this._dataForMeasure(), this.opts.units,
+                { selected: sel, labelScale: this.opts.labelScale, linePx: this.opts.linePx,
+                  fallbackScale: this.getScale(), allowHomography: this._allowHomography() });
             }
           }
         }
@@ -766,12 +767,12 @@
           if(cal){ const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); return {label:'Rect', text:`${w.toFixed(3)}×${h.toFixed(3)} ${unit.label} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
           const pw=Math.abs(x2-x1),ph=Math.abs(y2-y1); return {label:'Rect', text:`${Math.round(pw)}×${Math.round(ph)} px · A ${Math.round(pw*ph)} px²`, copy:`${Math.round(pw)}x${Math.round(ph)}`}; }
         if(a.type==='angle'){ const ang=Measure.angle(ctx,a.a,a.v,a.b); return {label:'Angle', text:`${ang.toFixed(2)}°`, copy:ang.toFixed(2)}; }
-        if(a.type==='circle'){ const scale=(a.mm_per_px||this.getScale()||0); let t=this._fmtLen(2*a.radius*scale, 2*a.radius);
-          // Linear measurements are rectified by the homography, but circles are left on
-          // the uniform (foreshortened) scale — so a diameter on a tilted shot is only
-          // approximate. Say so, since the KPI otherwise advertises "perspective-corrected".
-          if(cal && this._perspectiveActive()) t += ' • ⌀ not tilt-corrected';
-          return {label:'⌀', text:t, copy:cal?unit.fromMM(2*a.radius*scale).toFixed(3):String(Math.round(2*a.radius))}; }
+        if(a.type==='circle'){ const cm=Measure.circle(ctx, a); let t=this._fmtLen(cm.diameterMM, 2*a.radius);
+          // A 3-point circle is tilt-corrected (rim points refit on the plane); a 2-point
+          // circle can't be, so flag it as approximate on a tilted shot and point at 3-pt.
+          if(cal && cm.corrected) t += ' • ⟂ tilt-corrected';
+          else if(cal && this._perspectiveActive()) t += ' • ⌀ approx on tilt — use 3-pt';
+          return {label:'⌀', text:t, copy:cal?unit.fromMM(cm.diameterMM).toFixed(3):String(Math.round(2*a.radius))}; }
         if(a.type==='note'){ return {label:'Note', text:(a.text||''), copy:(a.text||'')}; }
         return null;
       }

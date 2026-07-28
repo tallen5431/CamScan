@@ -27,7 +27,10 @@ window.CalibAnn = (function(){
     const fitted=Circles.fitCircleFromPoints(pts);
     if(!fitted) return;
     const id=next();
-    s.items.push({id,type:'circle',center:[...fitted.center],radius:fitted.radius,mm_per_px,units,markerId});
+    // Keep the 3 rim points: they let the measurement project them onto the plane and
+    // refit the circle there, so a hole shot at an angle reads its TRUE diameter.
+    s.items.push({id,type:'circle',center:[...fitted.center],radius:fitted.radius,
+                  pts:pts.slice(0,3).map(p=>[p[0],p[1]]),mm_per_px,units,markerId});
     s.selectedId=id;
   }
 

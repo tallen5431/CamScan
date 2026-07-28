@@ -110,13 +110,15 @@ window.CalibExport = (function(){
         csv += `Line,${label},${val.toFixed(3)},${unit.label},${mm.toFixed(3)},,\n`;
 
       }else if(a.type === 'circle'){
-        // Circles stay on the uniform scale (not perspective-corrected yet).
-        const r_mm = a.radius * mm_per_px;
-        const d_mm = 2 * r_mm;
-        const area_mm2 = Math.PI * r_mm * r_mm;
+        // 3-point circles are tilt-corrected (rim points refit on the plane); 2-point
+        // circles stay on the uniform scale. M.circle() handles both.
+        const cm = M.circle(mctx, a);
+        const r_mm = cm.radiusMM, d_mm = cm.diameterMM;
+        const area_mm2 = cm.areaMM2;
         const circum_mm = 2 * Math.PI * r_mm;
         const d_val = unit.fromMM(d_mm);
-        csv += `Circle,${label},${d_val.toFixed(3)},${unit.label},${d_mm.toFixed(3)},${area_mm2.toFixed(3)},Circumference: ${circum_mm.toFixed(2)}mm\n`;
+        const note = cm.corrected ? '; tilt-corrected' : '';
+        csv += `Circle,${label},${d_val.toFixed(3)},${unit.label},${d_mm.toFixed(3)},${area_mm2.toFixed(3)},Circumference: ${circum_mm.toFixed(2)}mm${note}\n`;
 
       }else if(a.type === 'rectangle'){
         const [x1,y1,x2,y2] = a.rect;
@@ -184,16 +186,18 @@ window.CalibExport = (function(){
         else geometry.push({ type:'line', x1:a.a[0], y1:a.a[1], x2:a.b[0], y2:a.b[1], mm_per_px:s });
         emitText((a.a[0]+a.b[0])/2, (a.a[1]+a.b[1])/2, `${fmt(M.length(ctx, a.a[0],a.a[1], a.b[0],a.b[1]))} mm`, s);
       }else if(a.type === 'circle'){
-        if(plane){
-          // Position the centre on the rectified plane (so it sits correctly among the
-          // perspective-projected lines), but size the radius with the SAME uniform
-          // scale used everywhere the circle is shown and measured (canvas, PNG, CSV,
-          // JSON). This keeps the exported diameter equal to the number the user saw.
-          // (A true tilt-corrected hole is an ellipse — that is a separate enhancement.)
+        const cm = M.circle(ctx, a);
+        if(cm.corrected && cm.centerMM){
+          // Tilt-corrected hole: centre and radius fitted on the plane (CAD Y-up), so the
+          // DXF circle is a true circle at true size — what the shop actually machines.
+          geometry.push({ type:'circle', center_x:cm.centerMM[0], center_y:-cm.centerMM[1], radius_px:cm.radiusMM, mm_per_px:1 });
+        }else if(plane){
+          // 2-point circle under a homography: centre on the plane, radius on the uniform
+          // scale (a 2-point circle can't recover the ellipse) — matches the shown number.
           const c=P(a.center[0], a.center[1]);
           geometry.push({ type:'circle', center_x:c[0], center_y:c[1], radius_px:a.radius*s, mm_per_px:1 });
         }else if(Circles){ const c = Circles.circleToJSON(a, data, 'mm'); c.mm_per_px = s; geometry.push(c); }
-        emitText(a.center[0], a.center[1], `⌀ ${fmt(2*a.radius*s)} mm`, s);
+        emitText(a.center[0], a.center[1], `⌀ ${fmt(cm.diameterMM)} mm`, s);
       }else if(a.type === 'rectangle'){
         const [x1, y1, x2, y2] = a.rect;
         // Closed profile so CAD can extrude it directly.
@@ -286,7 +290,11 @@ window.CalibExport = (function(){
         const V=P(a.v[0],a.v[1],s), A=P(a.a[0],a.a[1],s), B=P(a.b[0],a.b[1],s); [V,A,B].forEach(p=>bump(p[0],p[1]));
         els.push(`<polyline points="${n(A[0])+','+n(A[1])} ${n(V[0])+','+n(V[1])} ${n(B[0])+','+n(B[1])}" fill="none" stroke="${C.angle||'#cc79a7'}" stroke-width="0.3"/>`);
       }else if(a.type === 'circle'){
-        const c=P(a.center[0],a.center[1],s), r=a.radius*s; bump(c[0]-r,c[1]-r); bump(c[0]+r,c[1]+r);
+        const cm = M.circle(ctx, a);
+        let c, r;
+        if(cm.corrected && cm.centerMM){ c=[cm.centerMM[0], cm.centerMM[1]]; r=cm.radiusMM; }  // true plane circle
+        else { c=P(a.center[0],a.center[1],s); r=a.radius*s; }
+        bump(c[0]-r,c[1]-r); bump(c[0]+r,c[1]+r);
         els.push(`<circle cx="${n(c[0])}" cy="${n(c[1])}" r="${n(r)}" fill="none" stroke="${C.circle||'#56b4e9'}" stroke-width="0.3"/>`);
       }
     }
