@@ -792,7 +792,7 @@
       getScaleInfo(){
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
         let source='none';
-        if(this.opts.manualHomography) source='paper/rectangle (tilt-corrected)';
+        if(this.opts.manualHomography) source='paper/rectangle';   // perspective flag conveys tilt-correction
         else if(this.opts.manualMmPerPx) source='manual line';
         else if(this.currentMarkerSizeMM()) source=`printed square ${this.currentMarkerSizeMM()} mm`;
         return { calibrated:s>0, mm_per_px:s, unit:unit.label,

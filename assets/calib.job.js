@@ -53,10 +53,10 @@
     var rec;
     try{ rec=o.getViewRecord(label); }catch(e){ setStatus('Could not capture this view: '+e.message, true); return; }
     rec.capturedAt=new Date().toISOString();
-    job.views.push(rec); save(); render();
+    job.views.push(rec); save(); changed();
     setStatus('✓ Added “'+label+'”. Tap ⬅ New to add another view, or Send when you\'re done.');
   }
-  function removeView(i){ job.views.splice(i,1); save(); render(); }
+  function removeView(i){ job.views.splice(i,1); save(); changed(); }
 
   // ---- UI ----
   var btn, panel, statusEl;
@@ -199,7 +199,7 @@
     var actions=document.createElement('div'); actions.style.cssText='display:flex;flex-wrap:wrap;gap:9px;margin-top:16px;align-items:center;';
     var send=chip('Send to Datum', submit, true); send.style.minHeight='46px'; send.style.padding='10px 20px'; send.style.fontSize='15px';
     var dl=chip('Download summary', downloadSummary, false); dl.style.minHeight='46px';
-    var clr=chip('Clear', function(){ if(confirm('Discard this submission and all collected views?')){ reset(); render(); openPanel(); } }, false);
+    var clr=chip('Clear', function(){ if(confirm('Discard this submission and all collected views?')){ reset(); changed(); openPanel(); } }, false);
     clr.style.minHeight='46px'; clr.style.marginLeft='auto';
     actions.appendChild(send); actions.appendChild(dl); actions.appendChild(clr);
     card.appendChild(actions);
@@ -235,7 +235,7 @@
       .then(function(res){
         if(res.ok && res.j && res.j.ok){
           setStatus('✅ '+(res.j.message||'Sent to Datum Laboratories. We\'ll be in touch.'));
-          reset(); reflectButton();
+          reset(); changed();
           setTimeout(function(){ closePanel(); }, 2200);
         } else {
           setStatus('⚠️ '+((res.j&&res.j.error)||'Could not send. Try “Download summary” and email it to us.'), true);
@@ -272,6 +272,16 @@
   function row(k,v){ return '<tr><td style="padding:3px 12px 3px 0;color:#555;vertical-align:top;">'+esc(k)+'</td><td style="padding:3px 0;">'+esc(v||'—')+'</td></tr>'; }
 
   function render(){ reflectButton(); }
+  // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
+  function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
+
+  // Minimal API so the simple-mode layer can drive submission without duplicating logic.
+  window.CalibJob = {
+    addView: addView,
+    open: openPanel,
+    count: function(){ return job.views.length; },
+    isEmpty: function(){ return !job.views.length; }
+  };
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.
   function boot(){
