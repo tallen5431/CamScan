@@ -215,6 +215,64 @@ def main():
     except Exception as e:
         check("_is_allowed_filename", False, repr(e))
 
+    # 8) Reloadable job round-trip: /api/submit persistence writes job.camscan.json (raw
+    #    image + calibration + editable annotations), keeps submission.json lean, and skips
+    #    the bundle when no view carries a reloadable snapshot.
+    try:
+        import base64
+        import json as _json
+        import app as _app
+        _okenc, _enc = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        durl = "data:image/jpeg;base64," + base64.b64encode(_enc.tobytes()).decode()
+        with tempfile.TemporaryDirectory() as d:
+            _app.SUBMISSIONS_DIR = d
+            payload = {"id": "smoke", "brief": {"part": "p"}, "views": [{
+                "label": "Top", "image": durl,
+                "restore": {"raw": durl, "calib": {"markers": [], "marker_size_mm": 40},
+                            "ann": [{"id": 1, "type": "polyline", "pts": [[1, 1], [2, 2]], "mm_per_px": 0.1}],
+                            "units": "mm", "manual": {"mmPerPx": None}}}]}
+            with _quiet():
+                rec = _app._save_submission(payload)
+                rec2 = _app._save_submission({"id": "s2", "brief": {}, "views": [{"label": "T", "image": durl}]})
+            bp = rec.get("bundle")
+            bundle = _json.load(open(bp)) if bp else {}
+            sub = _json.load(open(os.path.join(rec["dir"], "submission.json")))
+            lean = all("image" not in v and "restore" not in v for v in sub["views"])
+            reloadable = (bundle.get("kind") == "camscan.job"
+                          and bundle["views"][0]["restore"]["raw"].startswith("data:image/")
+                          and bundle["views"][0]["restore"]["ann"][0]["type"] == "polyline")
+            guard = rec2.get("bundle") is None          # no restore data -> no bundle written
+        check("job round-trip: bundle persisted, submission lean, guard",
+              bool(bp) and reloadable and lean and guard,
+              f"bundle={bool(bp)}, reloadable={reloadable}, lean={lean}, guard={guard}")
+    except Exception as e:
+        check("job round-trip persistence", False, repr(e))
+
+    # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
+    #    scales calibration + annotations by the SAME factor as the raw image (homography
+    #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
+    #    invariant here for the perspective (homography) and uniform (mm_per_px) paths.
+    try:
+        def _applyH(H, p):
+            x, y = p
+            w = H[2][0] * x + H[2][1] * y + H[2][2]
+            return ((H[0][0] * x + H[0][1] * y + H[0][2]) / w,
+                    (H[1][0] * x + H[1][1] * y + H[1][2]) / w)
+        def _d(a, b):
+            return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+        H = [[0.0011, 6e-5, -0.12], [4e-5, 0.0012, -0.18], [1.8e-7, 9e-8, 1.0]]
+        MM, s = 40.0, 1600.0 / 4032.0
+        p1, p2 = (220, 640), (980, 705)
+        Hs = [[H[r][0] / s, H[r][1] / s, H[r][2]] for r in range(3)]
+        q1, q2 = (p1[0] * s, p1[1] * s), (p2[0] * s, p2[1] * s)
+        persp = abs(MM * _d(_applyH(H, p1), _applyH(H, p2)) - MM * _d(_applyH(Hs, q1), _applyH(Hs, q2)))
+        mmpp = 0.0995
+        uni = abs(_d(p1, p2) * mmpp - _d(q1, q2) * (mmpp / s))
+        check("reload downscale preserves mm (scale invariant)", persp < 1e-9 and uni < 1e-9,
+              f"perspErr={persp:.2e}, uniformErr={uni:.2e}")
+    except Exception as e:
+        check("scale invariant", False, repr(e))
+
     if _failures:
         print(f"\nSMOKE_RESULT: FAIL ({', '.join(_failures)})")
         return 1
