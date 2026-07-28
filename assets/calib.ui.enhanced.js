@@ -778,7 +778,10 @@ window.CalibUI = (function(){
     const ctxFinish = document.createElement('button'); ctxFinish.type = 'button'; ctxFinish.className = 'cal-ctx-finish';
     ctxFinish.innerHTML = '✓ Finish path'; ctxFinish.setAttribute('aria-label', 'Finish the current path');
     ctxFinish.onclick = () => { if (overlay.finishPolyline) overlay.finishPolyline(); };
-    ctx.append(ctxDelete, ctxFinish);
+    const ctxAuto = document.createElement('button'); ctxAuto.type = 'button'; ctxAuto.className = 'cal-ctx-finish';
+    ctxAuto.innerHTML = '✨ Auto-trace'; ctxAuto.setAttribute('aria-label', 'Auto-detect the part outline — then tap the part');
+    ctxAuto.onclick = () => { if (overlay.armAutoOutline) overlay.armAutoOutline(); reflect(); };
+    ctx.append(ctxDelete, ctxAuto, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -839,6 +842,8 @@ window.CalibUI = (function(){
       const pathN = overlay.selectedPoints ? overlay.selectedPoints.length : 0;
       ctxFinish.classList.toggle('show', (mode === 'polyline' && pathN >= 2) || (mode === 'outline' && pathN >= 3));
       ctxFinish.innerHTML = mode === 'outline' ? '✓ Close outline' : '✓ Finish path';
+      // Offer auto-trace whenever the Outline tool is active and no trace is in progress.
+      ctxAuto.classList.toggle('show', mode === 'outline' && pathN === 0);
       undo.disabled = !(overlay.canUndo && overlay.canUndo());
       redo.disabled = !(overlay.canRedo && overlay.canRedo());
       reflectCalChip();

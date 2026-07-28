@@ -57,7 +57,10 @@ image, the data that makes it fast to model: a **DXF** (mm, tilt-corrected, laye
 client-side so no backend is needed), a **dimension CSV**, and the structured **geometry** (mm,
 CAD Y-up — the same input a solid generator needs). The **Outline** tool (trace around a flat
 part and close the loop) adds a **closed, extrudable profile** to that DXF — for a flat part
-that profile plus a thickness is the whole model, no CAD tracing on your end. The site archives the DXF/CSV and a combined
+that profile plus a thickness is the whole model, no CAD tracing on your end. **Auto-trace**
+(the ✨ button / simple-mode "Trace outline") takes it further: tap once on the part and the
+server segments it (`/api/trace` → `auto_outline.py`) into an editable outline you nudge if
+needed — a near-one-tap trace instead of clicking every vertex. The site archives the DXF/CSV and a combined
 `measurements.json` to R2 alongside the photos, and the notification email attaches them and shows
 a dimension table per view. So a quote request arrives as importable geometry + numbers, not just
 a photo to re-measure.

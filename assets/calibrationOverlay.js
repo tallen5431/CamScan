@@ -291,6 +291,13 @@
               return this.requestDraw();
             }
 
+            // Outline auto-trace: when armed, a tap seeds server-side segmentation of the
+            // part under it (instead of adding a vertex) → a full editable outline in one tap.
+            if(this.opts.mode==='outline' && this._autoOutlineArm){
+              this._autoOutlineArm=false;
+              return this.autoOutline(p);
+            }
+
             // Path / outline: a tap near the previous point (or double-tap) finishes. For a
             // closed outline, a tap near the FIRST point instead closes the loop.
             if ((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=2){
@@ -941,6 +948,86 @@
           Ann.addPolyline(this.ann, this.selectedPoints, mm, this.opts.units, this.opts.lockMarkerId, closed);
         }
         this.selectedPoints=[]; this.hover=null; this.requestDraw();
+      }
+
+      // Resolve an API path against the app's request-path prefix (works behind a proxy).
+      _apiUrl(path){
+        let base='/';
+        try{ const cfg=JSON.parse(document.getElementById('_dash-config').textContent); base=cfg.requests_pathname_prefix||'/'; }catch(e){}
+        if(base.charAt(base.length-1)!=='/') base+='/';
+        return base + String(path).replace(/^\//,'');
+      }
+
+      // A small transient status pill (self-contained — the overlay has no toast system).
+      // Returns { update(msg, kind), dismiss() }.
+      _toast(msg, opts){
+        opts=opts||{};
+        const el=document.createElement('div');
+        el.style.cssText='position:fixed;left:50%;bottom:88px;transform:translateX(-50%);z-index:70;'+
+          'background:#12171c;color:#e8eef2;border:1px solid #2a3a44;border-radius:10px;padding:10px 14px;'+
+          'font:600 13px Segoe UI,system-ui,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:90vw;text-align:center;';
+        el.textContent=msg; document.body.appendChild(el);
+        let timer=null;
+        const api={
+          update(m, kind){ el.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
+          dismiss(){ if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
+        };
+        if(opts.autoMs) timer=setTimeout(api.dismiss, opts.autoMs);
+        return api;
+      }
+
+      // Arm the next tap (in Outline mode) to auto-trace the part it lands on.
+      armAutoOutline(){
+        if(this.opts.mode!=='outline') this.setMode('outline');
+        this.selectedPoints=[]; this.hover=null;
+        this._autoOutlineArm=true;
+        if(this._armToast) this._armToast.dismiss();
+        this._armToast=this._toast('Tap the part to trace it automatically.', {autoMs:5000});
+        this.requestDraw();
+      }
+
+      // Auto-trace the part under `seed` (image coords): POST the photo to the server, which
+      // segments the tapped object and returns a simplified polygon; we drop it in as an
+      // editable, closed outline and switch to Select so the customer can drag any point.
+      autoOutline(seed){
+        if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        if(!this.img){ return; }
+        const self=this;
+        const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
+        const sentScale=Math.min(1, 1600/Math.max(natW, natH));   // cap the POST size; map results back
+        const cw=Math.max(1,Math.round(natW*sentScale)), ch=Math.max(1,Math.round(natH*sentScale));
+        const cnv=document.createElement('canvas'); cnv.width=cw; cnv.height=ch;
+        cnv.getContext('2d').drawImage(this.img, 0, 0, cw, ch);
+        let durl; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){ return; }
+
+        const exclude=[];
+        try{
+          ((this.data && this.data.markers) || []).forEach(function(m){
+            const cs=m.corners||[]; if(cs.length<4) return;
+            const xs=cs.map(c=>c.x), ys=cs.map(c=>c.y);
+            const x=Math.min.apply(null,xs), y=Math.min.apply(null,ys);
+            exclude.push([x*sentScale, y*sentScale, (Math.max.apply(null,xs)-x)*sentScale, (Math.max.apply(null,ys)-y)*sentScale]);
+          });
+        }catch(e){}
+        const seedSent = seed ? [seed[0]*sentScale, seed[1]*sentScale] : null;
+
+        const toast=this._toast('Finding the outline…');
+        fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude }) })
+          .then(r=>r.json())
+          .then(function(j){
+            if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){
+              const pts=j.points.map(p=>[p[0]/sentScale, p[1]/sentScale]);   // back to image coords
+              const mm=self.getScale() || (self.data && self.data.mm_per_px) || 0;
+              self._pushHistory();
+              Ann.addPolyline(self.ann, pts, mm, self.opts.units, self.opts.lockMarkerId, true);
+              self.setMode('select'); self.requestDraw();
+              toast.update('Outline traced — drag any dot to fix it, or Undo.', 'ok'); setTimeout(toast.dismiss, 2800);
+            }else{
+              toast.update('No part found there — tap right on the part, or trace it by hand.', 'err'); setTimeout(toast.dismiss, 3400);
+            }
+          })
+          .catch(function(){ toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
       }
 
       // Ask for the real length of a just-drawn line and set the working scale from it.

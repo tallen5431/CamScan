@@ -132,6 +132,31 @@ def main():
     except Exception as e:
         check("tilted marker refinement", False, repr(e))
 
+    # 2d) Auto-outline: a seed tap on a part segments it into an editable polygon that
+    #     matches the true shape and excludes a nearby (foreground) calibration card.
+    try:
+        from auto_outline import auto_outline
+        sc = np.full((640, 900, 3), 185, np.uint8)
+        part = np.array([[120, 200], [520, 210], [515, 300], [300, 305], [305, 520], [190, 515]], np.int32)
+        cv2.fillPoly(sc, [part], (45, 48, 52))
+        cv2.rectangle(sc, (600, 60), (860, 300), (245, 245, 245), -1)   # white card (also foreground)
+        cv2.rectangle(sc, (650, 110), (810, 250), (25, 25, 25), -1)     # marker
+        gt = np.zeros((640, 900), np.uint8); cv2.fillPoly(gt, [part], 255)
+        with _quiet():
+            pts = auto_outline(sc, seed=[280, 260], exclude_boxes=[(650, 110, 160, 140)])
+        ok = bool(pts) and 4 <= len(pts) <= 120
+        if ok:
+            m = np.zeros((640, 900), np.uint8); cv2.fillPoly(m, [np.array(pts, np.int32)], 255)
+            inter = int(np.logical_and(m > 0, gt > 0).sum()); union = int(np.logical_or(m > 0, gt > 0).sum())
+            iou = inter / union if union else 0.0
+            no_card = not any(600 <= x <= 860 and 60 <= y <= 300 for (x, y) in pts)
+            check("auto-outline segments the part (IoU>0.85, card excluded)", iou > 0.85 and no_card,
+                  f"IoU={iou:.3f}, {len(pts)} pts, card_excluded={no_card}")
+        else:
+            check("auto-outline segments the part", False, f"pts={pts}")
+    except Exception as e:
+        check("auto-outline", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():

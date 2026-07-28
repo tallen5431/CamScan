@@ -107,10 +107,10 @@
     var r2=document.createElement('div'); r2.className='row'; r2.style.marginTop='9px';
     var neu=document.createElement('button'); neu.className='ghost'; neu.textContent='📷 Add another photo';
     neu.onclick=function(){ captureCurrent(); triggerUpload(); };   // store this one, then pick the next — no reload
-    var trace=document.createElement('button'); trace.className='ghost'; trace.textContent='✏️ Trace outline';
-    // Drop into markup with the Outline tool armed: tap around the part, close the loop, and
-    // it becomes a to-scale, extrudable DXF profile that rides along with the submission.
-    trace.onclick=function(){ setSimple(false); applyMode(true); var o=overlay(); if(o&&o.setMode) o.setMode('outline'); };
+    var trace=document.createElement('button'); trace.className='ghost'; trace.textContent='✨ Trace outline';
+    // Drop into markup and arm auto-trace: one tap on the part outlines it (draggable to
+    // fix), producing a to-scale, extrudable DXF profile that rides along with the submission.
+    trace.onclick=function(){ setSimple(false); applyMode(true); var o=overlay(); if(o){ if(o.armAutoOutline) o.armAutoOutline(); else if(o.setMode) o.setMode('outline'); } };
     var sub=document.createElement('button'); sub.className='prim'; sub.textContent='Review & Submit'+(n?' ('+n+')':'');
     sub.onclick=function(){ captureCurrent(); if(window.CalibJob) window.CalibJob.open(); };
     var adv=document.createElement('button'); adv.className='adv'; adv.textContent='Mark up ▸';

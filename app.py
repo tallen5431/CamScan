@@ -502,6 +502,66 @@ def export_dxf():
     )
 
 
+@server.route("/api/trace", methods=["POST"])
+def api_trace():
+    """Auto-trace a part outline from a seed tap.
+
+    Body: { image: dataURL, seed: [x,y]|null, exclude: [[x,y,w,h],...], simplify: float }
+    Returns { ok, points:[[x,y],...] } in the POSTed image's pixel coords, which the client
+    turns into an editable, closed outline. Kept lenient — a failure to segment is a normal
+    200 {ok:false} so the UI can say 'tap the part' rather than showing an error page.
+    """
+    from flask import request, jsonify
+    try:
+        from auto_outline import auto_outline
+    except Exception:
+        return jsonify(ok=False, error="unavailable"), 500
+
+    data = request.get_json(silent=True) or {}
+    durl = data.get("image")
+    if not isinstance(durl, str) or "," not in durl:
+        return jsonify(ok=False, error="no_image"), 400
+    try:
+        _mime, raw = _decode_data_url(durl)
+        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
+    if img is None:
+        return jsonify(ok=False, error="bad_image"), 400
+
+    seed = data.get("seed")
+    if isinstance(seed, (list, tuple)) and len(seed) == 2:
+        try:
+            seed = [float(seed[0]), float(seed[1])]
+        except (TypeError, ValueError):
+            seed = None
+    else:
+        seed = None
+
+    exclude = []
+    for box in (data.get("exclude") or []):
+        try:
+            if len(box) == 4:
+                exclude.append(tuple(float(v) for v in box))
+        except (TypeError, ValueError):
+            continue
+
+    try:
+        simplify = min(0.05, max(0.001, float(data.get("simplify", 0.006))))
+    except (TypeError, ValueError):
+        simplify = 0.006
+
+    try:
+        pts = auto_outline(img, seed=seed, exclude_boxes=exclude, simplify=simplify)
+    except Exception as e:
+        print(f"[trace] error: {e}")
+        return jsonify(ok=False, error="trace_failed"), 500
+
+    if not pts:
+        return jsonify(ok=False, error="no_outline"), 200
+    return jsonify(ok=True, points=pts)
+
+
 def _decode_data_url(durl):
     """('data:image/jpeg;base64,...') -> (mimetype, raw_bytes)."""
     header, b64 = durl.split(",", 1)
