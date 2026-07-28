@@ -88,10 +88,17 @@
           UI.build(wrap, this);           // builds the toolbar (its height defines the canvas top)
           this._layout();                  // size the canvas to the space under the toolbar + fit
           this.redraw();
-          // Nudge on a soft/dark photo first, then (if no square calibrated this photo)
-          // offer the auto-detected sheet as a one-tap, tilt-corrected scale.
-          this._showQualityHint();
-          this._offerDetectedPaper();
+          // Reopening a saved view? Restore its annotations + scale overrides and skip the
+          // first-shot nudges (it already has a scale, and the marks are the customer's work).
+          if(wrap && wrap.__restore){
+            const st=wrap.__restore; wrap.__restore=null;
+            this._applyRestore(st);
+          }else{
+            // Nudge on a soft/dark photo first, then (if no square calibrated this photo)
+            // offer the auto-detected sheet as a one-tap, tilt-corrected scale.
+            this._showQualityHint();
+            this._offerDetectedPaper();
+          }
         };
         // On decode/load failure, try the server file URL (data-img-fallback) once — it
         // survives HTTPS/proxy cases the base64 data-URI can trip on — then, if that
@@ -861,7 +868,114 @@
                            { image_height:this._imgH(), mm_per_px:scale, allowHomography:this._allowHomography() });
           rec.csv = Xport.buildCSV(this._dataForMeasure(), this._exportStore(), this.opts.units, scale, this._allowHomography());
         }catch(e){ /* geometry is best-effort; the image + measurements still submit */ }
+        // Full reloadable snapshot (raw image + calibration + editable annotations) so this
+        // exact view can be re-OPENED and modelled later, not just re-measured from a photo.
+        try{ rec.restore = this.getRestoreState(1600); }catch(e){ /* best-effort */ }
         return rec;
+      }
+
+      // ---- Reloadable per-view state (the Save / Load job round-trip) ------------------
+      // The raw (un-annotated) image as a downscaled JPEG data URL — a clean surface to
+      // re-edit on (the annotated image would bake the marks in).
+      rawDataURL(maxDim){
+        try{
+          const W=this.img.naturalWidth||this.img.width, H=this.img.naturalHeight||this.img.height;
+          const s=Math.min(1,(maxDim||1600)/Math.max(W,H));
+          const cw=Math.max(1,Math.round(W*s)), ch=Math.max(1,Math.round(H*s));
+          const cnv=document.createElement('canvas'); cnv.width=cw; cnv.height=ch;
+          cnv.getContext('2d').drawImage(this.img,0,0,cw,ch);
+          return cnv.toDataURL('image/jpeg',0.85);
+        }catch(e){ return null; }
+      }
+
+      // A complete, reloadable snapshot of THIS view in ONE pixel space: the raw image plus
+      // the calibration, the editable annotation layer, and any manual scale overrides.
+      // Downscaled to keep the bundle small (localStorage / e-mail / postMessage-friendly);
+      // calibration and annotations are scaled by the SAME factor, so a reloaded view
+      // measures IDENTICALLY — real millimetres are preserved, not just pixel positions.
+      getRestoreState(maxDim){
+        if(!this.img) return null;
+        const W=this.img.naturalWidth||this.img.width, H=this.img.naturalHeight||this.img.height;
+        if(!W||!H) return null;
+        const md=maxDim||1600, s=Math.min(1,md/Math.max(W,H));
+        const raw=this.rawDataURL(md);
+        if(!raw) return null;
+        return {
+          v:1, w:Math.round(W*s), h:Math.round(H*s),
+          raw:raw,
+          calib:this._scaleCalib(JSON.parse(JSON.stringify(this.data||{})), s),
+          ann:(this.ann.items||[]).map(a=>this._scaleAnnItem(JSON.parse(JSON.stringify(a)), s)),
+          units:this.opts.units,
+          manual:{
+            mmPerPx:(this.opts.manualMmPerPx>0 ? this.opts.manualMmPerPx/s : null),
+            homography:(this.opts.manualHomography ? this._scaleHomography(this.opts.manualHomography, s) : null),
+            ref:this._scaleRef(this._manualRef, s)
+          }
+        };
+      }
+
+      // Apply a snapshot onto THIS freshly-booted overlay. The image + calibration already
+      // arrived via the .cal-view data-img/data-json the loader read; here we restore the
+      // annotation layer and the manual scale overrides (which don't live in the calibration
+      // JSON), then redraw. Everything is in the snapshot's downscaled space already, so
+      // there is no scaling to do at load time.
+      _applyRestore(state){
+        try{
+          if(!state) return;
+          if(state.units) this.opts.units=state.units;
+          const m=state.manual||{};
+          this.opts.manualMmPerPx=(m.mmPerPx>0?m.mmPerPx:null);
+          this.opts.manualHomography=(m.homography||null);
+          this._manualRef=(m.ref||null);
+          if(Array.isArray(state.ann)) this.ann.items=state.ann.map(a=>JSON.parse(JSON.stringify(a)));
+          this.ann.selectedId=null; this.selectedPoints=[]; this.hover=null;
+          this._undoStack=[]; this._redoStack=[];
+          this.requestDraw();
+        }catch(e){ /* a partial restore still shows the image + calibration */ }
+      }
+
+      // H maps image px -> (unit square | plane mm). For downscaled px' = s*px we need
+      // H'(px') == H(px); since [x,y,1] = diag(1/s,1/s,1)*[x',y',1], H' = H*diag(1/s,1/s,1)
+      // — i.e. scale the first two COLUMNS by 1/s. (s === 1 leaves H untouched.)
+      _scaleHomography(Hm, s){
+        if(s===1 || !Array.isArray(Hm)) return Hm;
+        try{ return Hm.map(row=>{ const r=row.slice(); r[0]=r[0]/s; r[1]=r[1]/s; return r; }); }
+        catch(e){ return Hm; }
+      }
+      _scalePts(pts, s){ return (s===1||!Array.isArray(pts))?pts:pts.map(p=>Array.isArray(p)?[p[0]*s,p[1]*s]:p); }
+      _scaleRef(ref, s){
+        if(!ref || s===1) return ref||null;
+        try{
+          const r=JSON.parse(JSON.stringify(ref));
+          ['corners','pts','points','quad'].forEach(k=>{ if(Array.isArray(r[k])) r[k]=this._scalePts(r[k], s); });
+          return r;
+        }catch(e){ return ref; }
+      }
+      _scaleCalib(c, s){
+        if(!c || s===1) return c;
+        try{
+          if(c.image_size){ if(c.image_size.width) c.image_size.width*=s; if(c.image_size.height) c.image_size.height*=s; }
+          if(typeof c.mm_per_px==='number' && c.mm_per_px>0) c.mm_per_px=c.mm_per_px/s;
+          if(Array.isArray(c.homography)) c.homography=this._scaleHomography(c.homography, s);
+          (c.markers||[]).forEach(m=>{
+            if(Array.isArray(m.corners)) m.corners=m.corners.map(pt=>('x'in pt)?Object.assign({},pt,{x:pt.x*s,y:pt.y*s}):[pt[0]*s,pt[1]*s]);
+            if(m.center){ if('x'in m.center){ m.center.x*=s; m.center.y*=s; } else if(Array.isArray(m.center)){ m.center=[m.center[0]*s,m.center[1]*s]; } }
+            if(typeof m.edge_px==='number') m.edge_px*=s;
+            if(typeof m.mm_per_px==='number' && m.mm_per_px>0) m.mm_per_px=m.mm_per_px/s;
+          });
+          return c;
+        }catch(e){ return c; }
+      }
+      _scaleAnnItem(a, s){
+        if(!a || s===1) return a;
+        try{
+          ['a','b','v','p','center'].forEach(k=>{ if(Array.isArray(a[k])) a[k]=[a[k][0]*s,a[k][1]*s]; });
+          if(Array.isArray(a.pts)) a.pts=a.pts.map(p=>[p[0]*s,p[1]*s]);
+          if(Array.isArray(a.rect)) a.rect=a.rect.map(v=>v*s);
+          if(typeof a.radius==='number') a.radius=a.radius*s;
+          if(typeof a.mm_per_px==='number' && a.mm_per_px>0) a.mm_per_px=a.mm_per_px/s;
+          return a;
+        }catch(e){ return a; }
       }
 
       // After the calibration changes (cube size or manual scale), refresh the frozen

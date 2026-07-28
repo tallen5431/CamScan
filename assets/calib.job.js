@@ -213,9 +213,16 @@
         var sc=v.scale&&v.scale.calibrated ? (v.scale.source||'scaled')+(v.scale.perspective?' · tilt-corrected':'') : 'no scale';
         meta.innerHTML='<div style="font-weight:600;">'+esc(v.label||'View '+(i+1))+'</div>'+
           '<div style="font-size:12px;color:#9fb2bb;">'+mm+' measurement'+(mm===1?'':'s')+' · '+esc(sc)+'</div>';
+        var btns=document.createElement('div'); btns.style.cssText='display:flex;gap:6px;flex:0 0 auto;';
+        if(v.restore && v.restore.raw){
+          var open=chip('Open', function(){ openViewForEditing(i); }, false);
+          open.style.minHeight='36px'; open.style.padding='5px 10px'; open.title='Re-open this side in CamScan to model it';
+          btns.appendChild(open);
+        }
         var del=chip('Remove', function(){ removeView(i); openPanel(); }, false);
         del.style.minHeight='36px'; del.style.padding='5px 10px';
-        vr.appendChild(im); vr.appendChild(meta); vr.appendChild(del); card.appendChild(vr);
+        btns.appendChild(del);
+        vr.appendChild(im); vr.appendChild(meta); vr.appendChild(btns); card.appendChild(vr);
       });
     }
 
@@ -240,10 +247,12 @@
     // actions
     var actions=document.createElement('div'); actions.style.cssText='display:flex;flex-wrap:wrap;gap:9px;margin-top:16px;align-items:center;';
     var send=chip(EMBED ? 'Add to quote →' : 'Send to Datum', submit, true); send.style.minHeight='46px'; send.style.padding='10px 20px'; send.style.fontSize='15px';
+    var save=chip('💾 Save job', saveJobToFile, false); save.style.minHeight='46px'; save.title='Save every side to a .camscan.json you can re-open here later';
+    var load=chip('⤓ Load job', pickJobFile, false); load.style.minHeight='46px'; load.title='Open a saved .camscan.json and re-edit each side';
     var dl=chip('Download summary', downloadSummary, false); dl.style.minHeight='46px';
     var clr=chip('Clear', function(){ if(confirm('Discard this submission and all collected views?')){ reset(); changed(); openPanel(); } }, false);
     clr.style.minHeight='46px'; clr.style.marginLeft='auto';
-    actions.appendChild(send); actions.appendChild(dl); actions.appendChild(clr);
+    actions.appendChild(send); actions.appendChild(save); actions.appendChild(load); actions.appendChild(dl); actions.appendChild(clr);
     card.appendChild(actions);
 
     statusEl=document.createElement('div'); statusEl.id='cal-job-status';
@@ -280,10 +289,96 @@
   function exportViews(withCapturedAt){
     return job.views.map(function(v){
       var o={ label:v.label, image:v.image, scale:v.scale, measurements:v.measurements, units:v.units,
-              geometry:(v.geometry||null), csv:(v.csv||null), dxf:_dxfFor(v) };
+              geometry:(v.geometry||null), csv:(v.csv||null), dxf:_dxfFor(v),
+              // The reloadable snapshot (raw image + calibration + editable annotations) so
+              // the receiver can re-open this side in CamScan and model it, not just re-measure.
+              restore:(v.restore||null) };
       if(withCapturedAt) o.capturedAt=v.capturedAt;
       return o;
     });
+  }
+
+  // ---- Save / Load a whole job as a portable .camscan.json bundle -------------------
+  // Save writes every collected view's reloadable snapshot to one file; Load reads it back
+  // and rehydrates the set, so a submitted part can be re-opened in CamScan with each side
+  // editable (scale + the customer's trace restored) instead of re-measured from scratch.
+  function saveJobToFile(){
+    if(!job.views.length){ setStatus('Add at least one view before saving.', true); return; }
+    var bundle={ kind:'camscan.job', version:1, id:job.id, createdAt:job.createdAt,
+                 savedAt:new Date().toISOString(), brief:job.brief, views:exportViews(true) };
+    var blob=new Blob([JSON.stringify(bundle)], {type:'application/json'});
+    var name='camscan-job-'+((job.brief.part||job.id||'part').replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'')||'part')+'.camscan.json';
+    var a=document.createElement('a'); a.download=name; a.href=URL.createObjectURL(blob); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1500);
+    setStatus('Saved '+job.views.length+' view'+(job.views.length===1?'':'s')+' to '+name+' — load it back any time.');
+  }
+
+  function loadJobFromFile(file){
+    if(!file){ return; }
+    var reader=new FileReader();
+    reader.onload=function(){
+      var bundle;
+      try{ bundle=JSON.parse(reader.result); }catch(e){ setStatus('That file is not a valid CamScan job.', true); return; }
+      if(!bundle || bundle.kind!=='camscan.job' || !Array.isArray(bundle.views)){
+        setStatus('That is not a CamScan job bundle (.camscan.json).', true); return;
+      }
+      job={ id:bundle.id||('job-'+Date.now().toString(36)),
+            createdAt:bundle.createdAt||new Date().toISOString(),
+            brief:Object.assign({ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, bundle.brief||{}),
+            views:bundle.views.slice() };
+      save();   // best-effort; if the bundle is big this may hit quota — the job still works in memory
+      changed();
+      openPanel();
+      var reloadable=job.views.filter(function(v){ return v.restore&&v.restore.raw; }).length;
+      setStatus('Loaded '+job.views.length+' view'+(job.views.length===1?'':'s')+'. '+
+        (reloadable?('Tap “Open” on a view to edit it.'):'These views have no reloadable image data.'), !reloadable);
+    };
+    reader.readAsText(file);
+  }
+
+  // A single hidden file input drives every "Load job" entry point.
+  var _loadInput=null;
+  function pickJobFile(){
+    if(!_loadInput){
+      _loadInput=document.createElement('input'); _loadInput.type='file';
+      _loadInput.accept='.json,.camscan.json,application/json'; _loadInput.style.display='none';
+      _loadInput.addEventListener('change', function(){ var f=_loadInput.files&&_loadInput.files[0]; _loadInput.value=''; if(f) loadJobFromFile(f); });
+      document.body.appendChild(_loadInput);
+    }
+    _loadInput.click();
+  }
+
+  // Re-open a saved view as an editable overlay WITHOUT a Dash reload: build the same
+  // .cal-view the upload callback makes (raw image + calibration), stash the annotations on
+  // it, and let the overlay loader (initScan) boot on it. The overlay applies __restore once
+  // the image + calibration have loaded. This is the "model each side" surface.
+  function openViewForEditing(i){
+    var v=job.views[i];
+    if(!v || !v.restore || !v.restore.raw){ setStatus('This view has no reloadable image data.', true); return; }
+    var st=v.restore;
+    var viewer=document.getElementById('viewer');
+    if(!viewer){ setStatus('Viewer is not ready — reload the page and try again.', true); return; }
+    // Modelling wants the full markup rail, not the stripped intake flow.
+    try{ localStorage.setItem('camscan.simplemode','0'); }catch(e){}
+    document.body.classList.remove('camscan-simple');
+
+    var calibUrl='data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(st.calib||{markers:[]}));
+    var wrap=document.createElement('div'); wrap.className='cal-wrap';
+    var view=document.createElement('div'); view.className='cal-view'; view.id='cal-view';
+    view.setAttribute('data-img', st.raw);
+    view.setAttribute('data-json', calibUrl);
+    view.setAttribute('style','text-align:center;');
+    view.__restore={ ann:(st.ann||[]), units:(st.units||'mm'), manual:(st.manual||null) };
+    var canvas=document.createElement('canvas'); canvas.id='cal-canvas';
+    canvas.style.display='block'; canvas.style.margin='0 auto';
+    view.appendChild(canvas); wrap.appendChild(view);
+    viewer.textContent=''; viewer.appendChild(wrap);   // loader destroys the old overlay + boots this one
+
+    // Tuck the landing/upload card off-screen (same treatment the upload callback uses).
+    var tp=document.getElementById('top-panel');
+    if(tp){ tp.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;'; }
+    closePanel();
+    setStatus('Opened “'+(v.label||('View '+(i+1)))+'” for editing.');
   }
 
   function submit(){
@@ -352,7 +447,23 @@
   }
   function row(k,v){ return '<tr><td style="padding:3px 12px 3px 0;color:#555;vertical-align:top;">'+esc(k)+'</td><td style="padding:3px 0;">'+esc(v||'—')+'</td></tr>'; }
 
-  function render(){ reflectButton(); }
+  // Put a "Load a saved job" entry on the landing card, so a modeller can re-open a
+  // submitted part before any photo is on screen (the submit button only appears once a
+  // view exists). Injected once; the guard also stops the subtree observer from looping.
+  function ensureLandingLoad(){
+    var host=document.querySelector('.landing-card');
+    if(!host || host.querySelector('#cal-landing-load')) return;
+    var wrap=document.createElement('div'); wrap.id='cal-landing-load';
+    wrap.style.cssText='margin-top:14px;padding-top:14px;border-top:1px solid #26262b;text-align:center;';
+    var b=document.createElement('button'); b.type='button'; b.textContent='⤓ Load a saved job (.camscan.json)';
+    b.style.cssText='min-height:44px;padding:9px 14px;border-radius:9px;cursor:pointer;background:#151a1f;color:#cfe6ee;border:1px solid #29414c;font:600 13px Segoe UI,system-ui,sans-serif;';
+    b.onclick=pickJobFile;
+    var hint=document.createElement('div'); hint.textContent='Re-open a submitted part to model each side.';
+    hint.style.cssText='font-size:12px;color:#76767e;margin-top:7px;';
+    wrap.appendChild(b); wrap.appendChild(hint); host.appendChild(wrap);
+  }
+
+  function render(){ reflectButton(); ensureLandingLoad(); }
   // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
   function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
 
@@ -369,8 +480,8 @@
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.
   function boot(){
-    reflectButton();
-    new MutationObserver(function(){ reflectButton(); }).observe(document.documentElement, {childList:true, subtree:true});
+    reflectButton(); ensureLandingLoad();
+    new MutationObserver(function(){ reflectButton(); ensureLandingLoad(); }).observe(document.documentElement, {childList:true, subtree:true});
   }
   if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded', boot);
 })();

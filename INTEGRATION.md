@@ -106,7 +106,44 @@ python app.py
 `submissions/` is git-ignored. It grows with each submission — back it up / prune per your
 retention policy. Customer photos are customer data; add a short retention note to your site.
 
-## 3. The mailed calibration marker (recommended)
+## 3. Re-opening a submitted part in CamScan (the round-trip)
+
+Intake produces model-ready data; this closes the loop so you can **re-open a submission in
+CamScan with every side already editable** — scale set and the customer's trace in place — and
+just refine + export a DXF per side, instead of re-measuring from a photo.
+
+**Save / Load job.** In the submission panel, **💾 Save job** writes the whole set to a
+`*.camscan.json` file; **⤓ Load job** (also on the landing screen, for opening a part before any
+photo is taken) reads one back and restores every view. Each view's snapshot carries the **raw
+image + calibration + the editable annotation layer**, downscaled with the calibration and
+annotations scaled by the *same* factor so a reloaded side measures **identically** — real
+millimetres are preserved, not just pixel positions. Tap **Open** on a collected view to reopen
+it in the full markup tools (it drops out of the stripped intake flow, since this is modelling).
+
+**Automatic with each submission.** When a submission reaches CamScan's own server
+(`/api/submit` — the standalone / fallback path), the server also writes
+`submissions/<id>/job.camscan.json` and attaches it to the notification email (size-guarded, so
+a big multi-view job can't blow past mailbox limits — it's saved on the server regardless).
+Download it and **Load job** to model the part.
+
+**Embedded path (the usual case).** When CamScan is embedded, the job is handed to your site via
+`postMessage`, not `/api/submit`. CamScan now includes the reloadable snapshot on each view
+(`views[].restore`), so your page can persist/forward it. To make the embedded path reloadable,
+assemble and store a bundle in your existing CamScan message handler (the origin-checked one that
+already reads `d.brief` / `d.views`):
+
+```js
+// d = the { type:'camscan:submit', version:1, brief, views } message from CamScan
+const jobBundle = JSON.stringify({ kind: 'camscan.job', version: 1, brief: d.brief, views: d.views });
+// Save jobBundle as job.camscan.json next to the photos (R2) and/or attach it to the quote
+// email — it already contains views[].restore (raw image + calibration + annotations).
+```
+
+Load that `job.camscan.json` back into CamScan (⤓ Load job) to reopen each side. The `restore`
+payload adds weight to the handoff — if you don't want to archive it, delete `views[].restore`
+before storing and the rest of the intake is unchanged.
+
+## 4. The mailed calibration marker (recommended)
 
 The most reliable, zero-tap reference is a **rigid card with the calibration pattern
 printed on it** — CamScan auto-detects it (high confidence) and derives both scale and a
@@ -148,7 +185,7 @@ automatically, so the customer doesn't tap corners. (A standard credit/ID card �
 85.60 × 53.98 mm — also works as a known-size reference via the manual Paper/known-length
 tools, but it isn't auto-detected.)
 
-## 4. What one photo can and can't measure (set expectations)
+## 5. What one photo can and can't measure (set expectations)
 
 A single photo + a flat reference measures accurately only **in the plane of the reference**.
 A feature standing above it (the top face of a thick part) reads a few percent large
