@@ -232,59 +232,69 @@ def export_to_dxf(
             doc.layers.add(_name, color=_color)
 
     def _flip_y(y_px: float) -> float:
-        return (image_height_px - y_px) if image_height_px else y_px
+        # `is not None`, not truthiness: a genuine image_height_px of 0 would otherwise skip
+        # the flip silently. (0 is degenerate but should flip about 0, not be ignored.)
+        return (image_height_px - y_px) if image_height_px is not None else y_px
 
     def _layer(item, default):
         return item.get('layer') or default
 
+    # Positions (and the Y-flip origin) use ONE uniform scale so the drawing stays spatially
+    # coherent. Scaling each item's POSITION by its own local mm_per_px would place features
+    # measured against different markers at inconsistent coordinates — a hole could land
+    # outside the part it belongs to. Per-item mm_per_px is used only for a shape's intrinsic
+    # SIZE (radius, text height), where the item's local scale is the right one.
+    pos_s = mm_per_px if mm_per_px else 1.0
+
     for item in geometry:
-        # Per-item scale wins over the request default so multi-marker exports are correct.
         try:
-            s = float(item.get("mm_per_px") or mm_per_px)
+            size_s = float(item.get("mm_per_px") or mm_per_px)
         except (TypeError, ValueError):
-            s = mm_per_px
-        if not s:
-            s = mm_per_px
+            size_s = mm_per_px
+        if not size_s:
+            size_s = pos_s
 
         # Skip (don't abort) on a single malformed item — one bad entry must not
         # drop every other valid shape from the export.
         try:
             itype = item.get("type")
             if itype == "circle":
-                cx = item["center_x"] * s
-                cy = _flip_y(item["center_y"]) * s
-                r = item["radius_px"] * s
+                cx = item["center_x"] * pos_s
+                cy = _flip_y(item["center_y"]) * pos_s
+                r = item["radius_px"] * size_s
                 msp.add_circle((cx, cy), r, dxfattribs={'layer': _layer(item, 'CIRCLES')})
 
             elif itype == "line":
-                x1 = item["x1"] * s
-                y1 = _flip_y(item["y1"]) * s
-                x2 = item["x2"] * s
-                y2 = _flip_y(item["y2"]) * s
+                x1 = item["x1"] * pos_s
+                y1 = _flip_y(item["y1"]) * pos_s
+                x2 = item["x2"] * pos_s
+                y2 = _flip_y(item["y2"]) * pos_s
                 msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': _layer(item, 'LINES')})
 
             elif itype == "rectangle":
-                x1 = item["x1"] * s
-                x2 = item["x2"] * s
-                y1 = _flip_y(item["y1"]) * s
-                y2 = _flip_y(item["y2"]) * s
+                x1 = item["x1"] * pos_s
+                x2 = item["x2"] * pos_s
+                y1 = _flip_y(item["y1"]) * pos_s
+                y2 = _flip_y(item["y2"]) * pos_s
                 # Closed LWPOLYLINE so the profile is directly extrudable in CAD
                 # (a duplicate coincident vertex is NOT a closed profile).
                 points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
                 msp.add_lwpolyline(points, close=True, dxfattribs={'layer': _layer(item, 'RECTANGLES')})
 
             elif itype == "polyline":
-                points = [(p[0] * s, _flip_y(p[1]) * s) for p in item.get("points", [])]
+                points = [(p[0] * pos_s, _flip_y(p[1]) * pos_s) for p in item.get("points", [])]
                 if points:
                     msp.add_lwpolyline(points, close=bool(item.get("closed")),
                                        dxfattribs={'layer': _layer(item, 'POLYLINES')})
 
             elif itype == "text":
-                tx = item["x"] * s
-                ty = _flip_y(item["y"]) * s
-                h = float(item.get("height", 3.0)) * s
+                tx = item["x"] * pos_s
+                ty = _flip_y(item["y"]) * pos_s
+                # `or 3.0` so an explicit height:None (key present, value None) still gets the
+                # default instead of raising and dropping the whole text entity.
+                h = float(item.get("height") or 3.0) * size_s
                 if h <= 0:
-                    h = 2.5
+                    h = 2.5 * size_s
                 t = msp.add_text(str(item.get("text", "")),
                                  dxfattribs={'layer': _layer(item, 'DIMTEXT'), 'height': h})
                 # set_placement across ezdxf versions; fall back to the raw insert point.

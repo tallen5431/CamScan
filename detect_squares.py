@@ -60,21 +60,22 @@ def _prepare_gray(img: np.ndarray, enhance_contrast: bool = True) -> np.ndarray:
     return cv2.GaussianBlur(gray, (5, 5), 0)
 
 
-def _bright_mask(gray: np.ndarray) -> np.ndarray:
-    """
-    Single Otsu-based mask suitable for your use:
-      - we threshold inverted (dark foreground)
-      - do light morphology
-      - invert to get bright foreground
-    """
+def _dark_mask(gray: np.ndarray) -> np.ndarray:
+    """Otsu dark-foreground mask + light morphology. Detects dark pads/squares (e.g. on a
+    glary surface where the calibration pads are not the brightest regions)."""
     _, dark = cv2.threshold(
         gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k, iterations=1)
     dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN,  k, iterations=1)
-    bright = cv2.bitwise_not(dark)
-    return bright
+    return dark
+
+
+def _bright_mask(gray: np.ndarray) -> np.ndarray:
+    """Bright-foreground mask (the inverse of the dark mask) — the default for our printed
+    calibration square, whose four pads are the bright regions."""
+    return cv2.bitwise_not(_dark_mask(gray))
 
 
 def _iou_xywh(a, b) -> float:
@@ -290,8 +291,18 @@ def detect_dark_squares(
     h_img, w_img = gray.shape[:2]
     frame_area = float(h_img * w_img)
 
-    # We only really care about bright pads for your pipeline.
-    bright_mask = _bright_mask(gray)
+    # Build the detection mask(s) by polarity: 'bright' (default, our printed square's pads),
+    # 'dark' (dark pads/squares), or 'both' (candidates from each). Previously polarity was
+    # ignored and only the bright mask was ever used, so the 'dark'/'both' fallback strategies
+    # in calibration_core were silent no-ops.
+    _pol = (polarity or "bright").lower()
+    _masks = []
+    if _pol in ("bright", "both"):
+        _masks.append(_bright_mask(gray))
+    if _pol in ("dark", "both"):
+        _masks.append(_dark_mask(gray))
+    if not _masks:
+        _masks.append(_bright_mask(gray))
 
     # IMPROVED: Adaptive brightness thresholds using percentiles
     # Works better for dark backgrounds and varying lighting
@@ -319,12 +330,13 @@ def detect_dark_squares(
 
     candidates: List[Detection] = []
 
-    # Only bright mask branch is relevant for Cell 2 (EVEN FASTER).
-    contours, _ = cv2.findContours(
-        bright_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
-    )
+    # Collect contours from each polarity mask (one for 'bright'/'dark', both for 'both').
+    contours = []
+    for _m in _masks:
+        _cs, _ = cv2.findContours(_m, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours.extend(_cs)
     if debug:
-        print(f"[detect_dark_squares] bright contours: {len(contours)}")
+        print(f"[detect_dark_squares] polarity={_pol}, contours: {len(contours)}")
 
     for c in contours:
         area = cv2.contourArea(c)

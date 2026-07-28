@@ -6,7 +6,12 @@ import os, base64, uuid, time, tempfile
 # and OOM-kill the process — a classic decompression bomb. 50 MP comfortably covers real
 # phone/DSLR photos while refusing pathological inputs. Override with MAX_IMAGE_PIXELS.
 MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", 50 * 1000 * 1000))
-os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(MAX_IMAGE_PIXELS))
+# Let OpenCV decode up to a small margin PAST our cap, so an image just over the limit still
+# decodes far enough for _decode_b64_image's explicit pixel check to reject it with the clear
+# "image is too large, resize it" message — instead of imdecode raising first and surfacing a
+# generic "not a valid image". Anything egregiously larger is still refused by OpenCV, so the
+# decompression-bomb guard holds (a 10% margin adds at most ~10% to a bounded allocation).
+os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(int(MAX_IMAGE_PIXELS * 1.1)))
 
 from flask import Flask, send_from_directory, url_for
 from dash import Dash, html, dcc, Input, Output, State, no_update
@@ -31,8 +36,13 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 # Allowed image extensions (lowercase, no leading dot)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"}
 
-# Maximum upload size in bytes (default 8 MiB) — override with env MAX_CONTENT_LENGTH_BYTES
-MAX_CONTENT_BYTES = int(os.getenv("MAX_CONTENT_LENGTH_BYTES", 8 * 1024 * 1024))
+# Maximum request-body size in bytes. This must comfortably exceed the largest RAW image we
+# advertise (8 MB), because uploads arrive base64-encoded inside a Dash JSON callback body
+# (~1.37x the raw bytes + envelope) — an 8 MB photo is ~11 MB on the wire. It must ALSO fit a
+# multi-view "Submit to Datum" payload, which now carries a reloadable snapshot (raw image +
+# calibration + annotations) per view. 32 MiB covers both with headroom while still bounding
+# request size. Override with MAX_CONTENT_LENGTH_BYTES.
+MAX_CONTENT_BYTES = int(os.getenv("MAX_CONTENT_LENGTH_BYTES", 32 * 1024 * 1024))
 
 # Retention caps for the uploads/ dir. Every upload persists a .jpg + .calibration.json
 # and nothing deleted them, so the dir grew without bound. Keep at most this many recent
@@ -69,6 +79,15 @@ FRAME_ANCESTORS = os.getenv(
 ).strip()
 
 
+def _upload_stem(name):
+    """The logical-upload key shared by a photo and its calibration JSON:
+    'foo-ab12.jpg' and 'foo-ab12.calibration.json' both map to 'foo-ab12'."""
+    low = name.lower()
+    if low.endswith(".calibration.json"):
+        return name[:-len(".calibration.json")]
+    return os.path.splitext(name)[0]
+
+
 def _reap_uploads(keep_paths=()):
     """Bound the uploads/ dir by count and age so disk can't grow without limit.
     Only removes finished upload artifacts; never the paths in keep_paths (the pair we
@@ -92,18 +111,28 @@ def _reap_uploads(keep_paths=()):
                 entries.append((path, os.path.getmtime(path)))
             except OSError:
                 continue
-        entries.sort(key=lambda e: e[1], reverse=True)  # newest first
+        # Group by logical upload: each upload writes a "<stem>.jpg" and its
+        # "<stem>.calibration.json", so reap them together — never orphan one half of a pair
+        # (which left the viewer's data-json pointing at a JSON whose image was already gone).
+        # The count/age caps now bound UPLOADS, not individual files.
+        groups = {}
+        for path, mtime in entries:
+            g = groups.setdefault(_upload_stem(os.path.basename(path)), {"paths": [], "mtime": 0.0})
+            g["paths"].append(path)
+            g["mtime"] = max(g["mtime"], mtime)   # the newer file dates the whole upload
+        ordered = sorted(groups.values(), key=lambda g: g["mtime"], reverse=True)  # newest first
 
         now = time.time()
         age_limit = MAX_UPLOAD_AGE_HOURS * 3600 if MAX_UPLOAD_AGE_HOURS > 0 else None
-        for idx, (path, mtime) in enumerate(entries):
+        for idx, g in enumerate(ordered):
             too_many = MAX_UPLOAD_FILES > 0 and idx >= MAX_UPLOAD_FILES
-            too_old = age_limit is not None and (now - mtime) > age_limit
+            too_old = age_limit is not None and (now - g["mtime"]) > age_limit
             if too_many or too_old:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+                for path in g["paths"]:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
     except OSError:
         pass
 
@@ -257,9 +286,10 @@ def _decode_b64_image(contents: str):
     img_bytes = base64.b64decode(b64data)
     np_arr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    # Defense in depth: OPENCV_IO_MAX_IMAGE_PIXELS makes imdecode return None on an
-    # over-cap image, but re-check explicitly so oversized inputs are rejected with a
-    # clear message rather than a generic "not a valid image".
+    # OPENCV_IO_MAX_IMAGE_PIXELS is set 10% above MAX_IMAGE_PIXELS, so an image just over our
+    # cap still decodes far enough to reach this explicit check and be rejected with a clear
+    # "too large, resize it" message; anything egregiously larger is refused by OpenCV first
+    # (imdecode raises / returns None) and surfaces as the generic "not a valid image".
     if img is not None:
         h, w = img.shape[:2]
         if w * h > MAX_IMAGE_PIXELS:
@@ -464,10 +494,19 @@ def export_dxf():
     if not isinstance(geometry, list) or not geometry:
         return "No geometry provided", 400
 
-    try:
-        mm_per_px = float(data.get("mm_per_px", 1.0)) or 1.0
-    except (TypeError, ValueError):
+    # Require a positive scale. `... or 1.0` would silently turn a client-sent 0 into 1.0
+    # (exporting pixels-as-mm) and let a negative through (mirrored/negatively-scaled DXF);
+    # reject a present-but-invalid scale instead, and only default when it is missing.
+    raw_scale = data.get("mm_per_px", None)
+    if raw_scale is None:
         mm_per_px = 1.0
+    else:
+        try:
+            mm_per_px = float(raw_scale)
+        except (TypeError, ValueError):
+            return "Invalid mm_per_px", 400
+        if not (mm_per_px > 0):
+            return "mm_per_px must be > 0", 400
 
     # Image height (pixels) lets us flip the Y axis: image coordinates grow downward,
     # CAD coordinates grow upward. Without this the exported part comes out mirrored.
@@ -528,6 +567,10 @@ def api_trace():
         img = None
     if img is None:
         return jsonify(ok=False, error="bad_image"), 400
+    # Same decompression-bomb guard the upload path applies (this endpoint decodes untrusted
+    # image bytes too): refuse an over-cap frame rather than segmenting a huge allocation.
+    if img.shape[0] * img.shape[1] > MAX_IMAGE_PIXELS:
+        return jsonify(ok=False, error="too_large"), 400
 
     seed = data.get("seed")
     if isinstance(seed, (list, tuple)) and len(seed) == 2:
@@ -652,6 +695,13 @@ def _save_submission(data):
     return {"dir": out_dir, "images": images, "bundle": bundle_path}
 
 
+def _header_safe(value, limit=200):
+    """A single-line, length-capped string safe to place in an e-mail header (strips CR/LF
+    and other control characters that could inject headers or break serialization)."""
+    s = "".join(ch for ch in str(value or "") if ch == " " or (ch.isprintable() and ch not in "\r\n"))
+    return s.strip()[:limit]
+
+
 def _send_submission_email(data, record):
     """Email the submission to SUBMIT_TO via SMTP with the annotated views attached.
     Raises on failure so the caller can fall back."""
@@ -661,10 +711,13 @@ def _send_submission_email(data, record):
     msg = EmailMessage()
     msg["From"] = SUBMIT_FROM or SMTP_USER
     msg["To"] = SUBMIT_TO
-    contact = (brief.get("contact") or "").strip()
+    # Customer-supplied fields go into headers — strip CR/LF (and cap length) so a stray
+    # newline can't inject headers or make send_message raise and turn a real submission into
+    # a reported "couldn't email it" failure.
+    contact = _header_safe(brief.get("contact"))
     if contact:
         msg["Reply-To"] = contact
-    part = (brief.get("part") or data.get("id") or "part").strip()
+    part = _header_safe(brief.get("part") or data.get("id") or "part") or "part"
     msg["Subject"] = f"CamScan part submission — {part}"
     msg.set_content("\n".join(_submission_lines(data)))
     for fn, path in record.get("images", []):

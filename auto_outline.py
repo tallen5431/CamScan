@@ -206,9 +206,12 @@ def _classify_hole(cnt, scale, simplify, max_points):
         cx, cy = pts.mean(axis=0)
     d = np.hypot(pts[:, 0] - cx, pts[:, 1] - cy)
     r = float(d.mean())
+    # Corner detection needs a contour long enough that the +/-k turn window doesn't reach a
+    # near-antipodal point (which reads a spurious ~180-deg turn at every vertex). Below that,
+    # don't attempt circle classification — keep the hole as its polygon.
     k = int(max(2, round(0.02 * n)))
-    corners = _nms_corners(np.abs(_turn_angles(pts, k)), np.deg2rad(30.0), max(3, k), n)
-    if r > 3.0 and len(corners) <= 1 and float(d.std()) / r < 0.08:
+    corners = _nms_corners(np.abs(_turn_angles(pts, k)), np.deg2rad(30.0), max(3, k), n) if n > 4 * k else None
+    if corners is not None and r > 3.0 and len(corners) <= 1 and float(d.std()) / r < 0.08:
         return {"shape": "circle", "cx": cx / scale, "cy": cy / scale, "r": r / scale}
     poly = _simplify(cnt, simplify, max_points)
     if poly is None or len(poly) < 3:
@@ -245,6 +248,15 @@ def _pick_component(labels, stats, n, seed, scale, sw, sh):
         if area < 0.005 * total or area > 0.9 * total:   # skip speckle and background inversions
             continue
         if area > best_area:
+            best, best_area = i, area
+    if best is not None:
+        return best
+    # Nothing in (0.5%, 90%]: a close-up part can legitimately fill >90% of the frame. Rather
+    # than give up, take the largest non-background blob below a looser ceiling so a full-frame
+    # part still traces (the >90% cap only exists to avoid grabbing a background inversion).
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if 0.005 * total < area <= 0.98 * total and area > best_area:
             best, best_area = i, area
     return best
 
@@ -302,7 +314,9 @@ def _simplify_adaptive(contour, peri, simplify, max_points):
     corner_thresh = np.deg2rad(32.0)                 # turn sharper than this is a real corner
 
     ang = np.abs(_turn_angles(C, k))
-    corners = _nms_corners(ang, corner_thresh, min_sep=max(3, k), n=n)
+    # Only trust corner detection when the contour is long enough that the +/-k window stays
+    # well short of antipodal; a tiny contour would otherwise read a false corner everywhere.
+    corners = _nms_corners(ang, corner_thresh, min_sep=max(3, k), n=n) if n > 4 * k else []
 
     # Guard: a noisy boundary could nominate more "corners" than the vertex budget. Keep
     # only the sharpest, so max_points still bounds the result.
