@@ -335,6 +335,11 @@ window.CalibExport = (function(){
       let s = parseFloat(it && it.mm_per_px);      // per-item scale — intrinsic SIZE only
       if(!isFinite(s) || s === 0) s = base;
       const pos = base;                            // uniform scale for POSITIONS (spatial coherence)
+      // Note: in the rare multi-marker, no-homography case where an item's frozen mm_per_px
+      // differs from base, a line/rect/polyline's exported LENGTH (pos-scaled) can differ from
+      // its baked-in dimension text (per-item-scaled). Spatially-coherent geometry is the right
+      // trade there; plane-mode (homography) exports — the recommended path — have base===1 and
+      // are exact. Single-scale exports (s===base) are unchanged.
       try{
         const t = it && it.type;
         if(t === 'line'){

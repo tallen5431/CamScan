@@ -168,6 +168,20 @@ def main():
             count = pg.evaluate("window.CalibJob.count()")
             assert count == 2, f"re-adding a reopened side should update in place, not duplicate (count={count})"
 
+            # Removing an EARLIER view while a later one is open must re-index the open side's
+            # positional tag (data-loss guard): open Front (index 1), remove Top (index 0) ->
+            # Front's data-view-index must shift to 0, not dangle at 1 (which would overwrite
+            # the wrong view on the next sync).
+            pg.locator("#cal-side-switcher").get_by_role("button", name="Front").click()
+            pg.wait_for_function("document.querySelector('.cal-view').getAttribute('data-view-index')==='1'", timeout=15000)
+            pg.evaluate("window.CalibJob.open()")
+            pg.wait_for_selector("#cal-job-panel", timeout=8000)
+            pg.locator("#cal-job-panel").get_by_role("button", name="Remove").first.click()   # removes Top (row 0)
+            pg.wait_for_function("window.CalibJob.count()===1", timeout=8000)
+            after = pg.evaluate("(()=>{var v=document.querySelector('.cal-view');"
+                                "return {idx:v.getAttribute('data-view-index'), count:window.CalibJob.count()};})()")
+            assert after["idx"] == "0" and after["count"] == 1, f"removeView must re-index the open side: {after}"
+
             assert not errors, f"page errors: {errors}"
             browser.close()
         print("E2E_RESULT: PASS (load; reopen editable; side-switch persists edits; live re-capture ok)")

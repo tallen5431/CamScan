@@ -296,13 +296,13 @@ def detect_dark_squares(
     # ignored and only the bright mask was ever used, so the 'dark'/'both' fallback strategies
     # in calibration_core were silent no-ops.
     _pol = (polarity or "bright").lower()
-    _masks = []
+    _specs = []   # (mask, is_bright) — the flag lets the brightness gate below stay polarity-aware
     if _pol in ("bright", "both"):
-        _masks.append(_bright_mask(gray))
+        _specs.append((_bright_mask(gray), True))
     if _pol in ("dark", "both"):
-        _masks.append(_dark_mask(gray))
-    if not _masks:
-        _masks.append(_bright_mask(gray))
+        _specs.append((_dark_mask(gray), False))
+    if not _specs:
+        _specs.append((_bright_mask(gray), True))
 
     # IMPROVED: Adaptive brightness thresholds using percentiles
     # Works better for dark backgrounds and varying lighting
@@ -330,15 +330,15 @@ def detect_dark_squares(
 
     candidates: List[Detection] = []
 
-    # Collect contours from each polarity mask (one for 'bright'/'dark', both for 'both').
-    contours = []
-    for _m in _masks:
+    # Collect contours from each polarity mask, tagged with the polarity they came from.
+    contours = []   # (contour, is_bright)
+    for _m, _isb in _specs:
         _cs, _ = cv2.findContours(_m, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours.extend(_cs)
+        contours.extend((c, _isb) for c in _cs)
     if debug:
         print(f"[detect_dark_squares] polarity={_pol}, contours: {len(contours)}")
 
-    for c in contours:
+    for c, _is_bright in contours:
         area = cv2.contourArea(c)
         if area <= 0:
             continue
@@ -394,8 +394,15 @@ def detect_dark_squares(
             continue
         mean_val = float(np.mean(roi))
 
-        if use_brightness and mean_val < bright_thresh:
-            continue
+        # Polarity-aware brightness gate: a BRIGHT pad must be bright enough; a DARK pad (the
+        # glary-surface fallback) is the inverse — it must be darker than the image average.
+        # Applying the bright gate to dark candidates rejected every one, which left the
+        # dark/both fallbacks non-functional even after the dark mask was built.
+        if use_brightness:
+            if _is_bright and mean_val < bright_thresh:
+                continue
+            if (not _is_bright) and mean_val >= auto_mean:
+                continue
 
         # simple score: geometric + brightness + relative size
         size_ratio = area / frame_area

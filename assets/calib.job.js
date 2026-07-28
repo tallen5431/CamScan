@@ -76,7 +76,20 @@
     // amber "storage full" warning — don't clobber it with a green "✓ Saved".
     if(ok) setStatus('✓ Saved “'+(label||rec.label||'view')+'”. Add another photo, or Send when done.');
   }
-  function removeView(i){ job.views.splice(i,1); save(); changed(); }
+  function removeView(i){
+    job.views.splice(i,1);
+    // A reopened side is tracked by a POSITIONAL data-view-index; the splice shifts every
+    // later index, so re-sync the open overlay's tag — otherwise a later syncOpenView/addView
+    // writes the open side's record over the WRONG (shifted) view and loses data.
+    var el=document.querySelector('.cal-view');
+    var a=el && el.getAttribute('data-view-index');
+    if(a!=null){
+      var oi=parseInt(a,10);
+      if(oi===i) el.removeAttribute('data-view-index');          // the open side itself was removed
+      else if(oi>i) el.setAttribute('data-view-index', String(oi-1));
+    }
+    save(); changed();
+  }
 
   // ---- embed / handoff -------------------------------------------------------
   // When CamScan is embedded on the Datum Labs site (iframe URL carries ?embed=1), "Send"
