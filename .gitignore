@@ -1,5 +1,6 @@
 # Uploads & generated artifacts
 uploads/
+submissions/
 *_overlay.jpg
 debug_detected_rects.jpg
 debug_out/

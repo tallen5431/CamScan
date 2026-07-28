@@ -74,15 +74,42 @@ window.CalibExport = (function(){
     }
   }
 
-  function exportPNG(img, data, store, showGrid, showMarkers, unitsKey, labelScale=1.4, linePx=3, allowHomography=true){
-    const w = img.naturalWidth || img.width; const h = img.naturalHeight || img.height;
-    const off = document.createElement('canvas'); off.width = w; off.height = h; const ctx = off.getContext('2d');
+  // Render the image + annotations onto an offscreen canvas, optionally downscaled so its
+  // long side is <= maxDim. Shared by the PNG download and the submission-packet capture
+  // so what the customer submits matches exactly what they saw.
+  function _renderAnnotated(img, data, store, opts){
+    opts = opts || {};
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    // Render at full resolution first (so the annotation line/label sizing — which is
+    // canvas-size-relative — is identical to the PNG download), then downscale cleanly.
+    const full = document.createElement('canvas'); full.width = iw; full.height = ih;
+    const ctx = full.getContext('2d');
     ctx.drawImage(img, 0, 0);
     const fallback = (data && data.mm_per_px) || 0;
-    if(showGrid) D().drawGrid(ctx, w, h);
-    if(showMarkers) D().drawMarkers(ctx, off, data, linePx);
-    _drawAnnotations(ctx, off, data, store, unitsKey, labelScale, linePx, fallback, allowHomography);
+    if(opts.showGrid) D().drawGrid(ctx, iw, ih);
+    if(opts.showMarkers) D().drawMarkers(ctx, full, data, opts.linePx != null ? opts.linePx : 3);
+    _drawAnnotations(ctx, full, data, store, opts.units, opts.labelScale != null ? opts.labelScale : 1.4,
+                     opts.linePx != null ? opts.linePx : 3, fallback, opts.allowHomography !== false);
+    const maxDim = opts.maxDim || 0;
+    if(maxDim && Math.max(iw, ih) > maxDim){
+      const s = maxDim / Math.max(iw, ih);
+      const small = document.createElement('canvas');
+      small.width = Math.max(1, Math.round(iw * s)); small.height = Math.max(1, Math.round(ih * s));
+      small.getContext('2d').drawImage(full, 0, 0, small.width, small.height);
+      return small;
+    }
+    return full;
+  }
+
+  function exportPNG(img, data, store, showGrid, showMarkers, unitsKey, labelScale=1.4, linePx=3, allowHomography=true){
+    const off = _renderAnnotated(img, data, store, { showGrid, showMarkers, units:unitsKey, labelScale, linePx, allowHomography });
     off.toBlob((blob)=>{ const a=document.createElement('a'); a.download='annotated.png'; a.href=URL.createObjectURL(blob); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }, 'image/png');
+  }
+
+  // Annotated view as a downscaled JPEG data URL (for the submission packet).
+  function renderAnnotatedDataURL(img, data, store, opts){
+    const off = _renderAnnotated(img, data, store, opts || {});
+    return off.toDataURL('image/jpeg', 0.82);
   }
 
   function exportJSON(payload){
@@ -319,5 +346,5 @@ window.CalibExport = (function(){
     return true;
   }
 
-  return { exportPNG, exportJSON, exportCSV, exportDXF, exportSVG, _buildDXFRequest, _buildSVG };
+  return { exportPNG, renderAnnotatedDataURL, exportJSON, exportCSV, exportDXF, exportSVG, _buildDXFRequest, _buildSVG };
 })();

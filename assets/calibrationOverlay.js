@@ -758,8 +758,10 @@
       // Precise value(s) of the currently-selected annotation, for the status readout
       // and copy-to-clipboard. Reuses the same perspective-aware measurement path as
       // the on-canvas labels so the readout matches exactly. Returns {label,text,copy}.
-      _selectedReadout(){
-        const a=this.ann.items.find(it=>it.id===this.ann.selectedId); if(!a) return null;
+      // Perspective-aware readout for ONE annotation: {label,text,copy}. Shared by the
+      // status strip, copy-to-clipboard, and the submission packet so all three agree.
+      _readoutFor(a){
+        if(!a) return null;
         const unit=Units.get(this.opts.units), ctx=this._measureCtx(a);
         const cal=this.isCalibrated();
         if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]); const t=this._fmtLen(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]),px); return {label:'Length', text:t, copy:cal?unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])).toFixed(3):String(Math.round(px))}; }
@@ -777,9 +779,40 @@
         if(a.type==='note'){ return {label:'Note', text:(a.text||''), copy:(a.text||'')}; }
         return null;
       }
+      _selectedReadout(){ return this._readoutFor(this.ann.items.find(it=>it.id===this.ann.selectedId)); }
       _copySelected(){
         const rd=this._selectedReadout(); if(!rd) return;
         try{ if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(rd.copy); }catch(e){}
+      }
+
+      // ---- Submission (multi-view job) capture -------------------------------------
+      // Every measurement on this view, as [{label,text}], for the review + email packet.
+      getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean).map(r=>({label:r.label, text:r.text})); }
+      // A plain-language description of how THIS view is scaled, so the shop can trust it.
+      getScaleInfo(){
+        const s=this.getScale()||0; const unit=Units.get(this.opts.units);
+        let source='none';
+        if(this.opts.manualHomography) source='paper/rectangle (tilt-corrected)';
+        else if(this.opts.manualMmPerPx) source='manual line';
+        else if(this.currentMarkerSizeMM()) source=`printed square ${this.currentMarkerSizeMM()} mm`;
+        return { calibrated:s>0, mm_per_px:s, unit:unit.label,
+                 perspective:this._perspectiveActive(), source,
+                 confidence:(this.data&&this.data.calibration_confidence)||null };
+      }
+      // The annotated image as a downscaled JPEG data URL (long side <= maxDim) — small
+      // enough to POST several per submission, clear enough to show the measurements.
+      annotatedDataURL(maxDim){
+        try{ return Xport.renderAnnotatedDataURL(this.img, this._dataForMeasure(), this._exportStore(),
+                 { showGrid:this.opts.showGrid, showMarkers:this.opts.showMarkers, units:this.opts.units,
+                   labelScale:this.opts.labelScale, linePx:this.opts.linePx,
+                   allowHomography:this._allowHomography(), maxDim:maxDim||1600 }); }
+        catch(e){ return null; }
+      }
+      // One view's complete record for the submission packet.
+      getViewRecord(label){
+        return { label:label||'', image:this.annotatedDataURL(1600),
+                 scale:this.getScaleInfo(), measurements:this.getMeasurements(),
+                 units:this.opts.units, capturedAt:null };
       }
 
       // After the calibration changes (cube size or manual scale), refresh the frozen

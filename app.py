@@ -43,6 +43,20 @@ MAX_UPLOAD_AGE_HOURS = float(os.getenv("MAX_UPLOAD_AGE_HOURS", 72))
 # in flight, never dot-prefixed atomic-write temp files).
 _REAPABLE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".json")
 
+# --- Part-submission ("Send to Datum") config ---------------------------------------
+# Where multi-view part submissions are emailed. Set SUBMIT_TO for your deployment; the
+# default is the address confirmed for Datum Laboratories. Email is sent via SMTP when
+# SMTP_HOST is configured; otherwise submissions are still saved to SUBMISSIONS_DIR and
+# the customer can download the summary — so the flow works before mail is wired up.
+SUBMIT_TO = os.getenv("SUBMIT_TO", "thomas.allen@datumlaboratories.com")
+SUBMIT_FROM = os.getenv("SUBMIT_FROM", "")          # falls back to SMTP_USER
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_TLS = os.getenv("SMTP_TLS", "1").strip().lower() in ("1", "true", "yes", "on")
+SUBMISSIONS_DIR = os.path.join(os.path.dirname(__file__), "submissions")
+
 
 def _reap_uploads(keep_paths=()):
     """Bound the uploads/ dir by count and age so disk can't grow without limit.
@@ -453,6 +467,137 @@ def export_dxf():
         mimetype="application/dxf",
         headers={"Content-Disposition": "attachment; filename=geometry.dxf"},
     )
+
+
+def _decode_data_url(durl):
+    """('data:image/jpeg;base64,...') -> (mimetype, raw_bytes)."""
+    header, b64 = durl.split(",", 1)
+    mime = ""
+    if ":" in header and ";" in header:
+        mime = header.split(";")[0].split(":", 1)[1]
+    return mime, base64.b64decode(b64)
+
+
+def _submission_lines(data):
+    """Human-readable summary lines shared by the email body and the saved record."""
+    import datetime
+    brief = data.get("brief") or {}
+    lines = ["Part submission — Datum Laboratories", ""]
+    for k, label in (("part", "Part"), ("material", "Material"), ("quantity", "Quantity"),
+                     ("whatBroke", "What broke / needed"), ("contact", "Contact"), ("notes", "Notes")):
+        v = (brief.get(k) or "").strip()
+        if v:
+            lines.append(f"{label}: {v}")
+    lines.append("")
+    for i, v in enumerate(data.get("views") or []):
+        scale = v.get("scale") or {}
+        src = scale.get("source") or "no scale"
+        if scale.get("perspective"):
+            src += " (tilt-corrected)"
+        lines.append(f"— {v.get('label') or ('View ' + str(i + 1))}  [{src}]")
+        for m in (v.get("measurements") or []):
+            lines.append(f"    {m.get('label', '')}: {m.get('text', '')}")
+    return lines
+
+
+def _save_submission(data):
+    """Persist a submission (JSON record without the bulky image data URLs + the decoded
+    images) under SUBMISSIONS_DIR so nothing is lost even if email isn't configured."""
+    import json
+    os.makedirs(SUBMISSIONS_DIR, exist_ok=True)
+    raw_id = "".join(c for c in str(data.get("id", "")) if c.isalnum() or c in ("-", "_"))[:40]
+    sub_id = raw_id or f"job-{uuid.uuid4().hex[:8]}"
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(SUBMISSIONS_DIR, f"{stamp}-{sub_id}")
+    os.makedirs(out_dir, exist_ok=True)
+
+    images = []
+    for i, v in enumerate(data.get("views") or []):
+        durl = v.get("image")
+        if not durl:
+            continue
+        try:
+            mime, raw = _decode_data_url(durl)
+        except Exception:
+            continue
+        ext = ".jpg" if "jpeg" in (mime or "") else (".png" if "png" in (mime or "") else ".img")
+        label = "".join(c for c in str(v.get("label", "view")) if c.isalnum() or c in ("-", "_")) or f"view{i + 1}"
+        fn = f"{i + 1:02d}-{label}{ext}"
+        with open(os.path.join(out_dir, fn), "wb") as f:
+            f.write(raw)
+        images.append((fn, os.path.join(out_dir, fn)))
+
+    meta = {k: val for k, val in data.items() if k != "views"}
+    meta["views"] = [{kk: vv for kk, vv in v.items() if kk != "image"} for v in (data.get("views") or [])]
+    with open(os.path.join(out_dir, "submission.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+    with open(os.path.join(out_dir, "summary.txt"), "w") as f:
+        f.write("\n".join(_submission_lines(data)))
+    return {"dir": out_dir, "images": images}
+
+
+def _send_submission_email(data, record):
+    """Email the submission to SUBMIT_TO via SMTP with the annotated views attached.
+    Raises on failure so the caller can fall back."""
+    import smtplib
+    from email.message import EmailMessage
+    brief = data.get("brief") or {}
+    msg = EmailMessage()
+    msg["From"] = SUBMIT_FROM or SMTP_USER
+    msg["To"] = SUBMIT_TO
+    contact = (brief.get("contact") or "").strip()
+    if contact:
+        msg["Reply-To"] = contact
+    part = (brief.get("part") or data.get("id") or "part").strip()
+    msg["Subject"] = f"CamScan part submission — {part}"
+    msg.set_content("\n".join(_submission_lines(data)))
+    for fn, path in record.get("images", []):
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            subtype = "jpeg" if fn.endswith(".jpg") else ("png" if fn.endswith(".png") else "octet-stream")
+            maintype = "image" if subtype in ("jpeg", "png") else "application"
+            msg.add_attachment(raw, maintype=maintype, subtype=subtype, filename=fn)
+        except Exception:
+            pass
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+        if SMTP_TLS:
+            s.starttls()
+        if SMTP_USER:
+            s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
+
+
+@server.route("/api/submit", methods=["POST"])
+def submit_part():
+    """Receive a multi-view part submission, save it, and email it to Datum (if SMTP is
+    configured). Always saves so nothing is lost; returns an honest message either way."""
+    from flask import request
+    data = request.get_json(silent=True) or {}
+    views = data.get("views")
+    if not isinstance(views, list) or not views:
+        return {"ok": False, "error": "No views to submit — add at least one."}, 400
+
+    try:
+        record = _save_submission(data)
+    except Exception as e:
+        print(f"[Submit] save failed: {e}")
+        return {"ok": False, "error": f"Could not save the submission: {e}"}, 500
+
+    if SMTP_HOST:
+        try:
+            _send_submission_email(data, record)
+            return {"ok": True, "message": "Sent to Datum Laboratories — we'll be in touch."}
+        except Exception as e:
+            print(f"[Submit] email failed: {e}")
+            return {"ok": False,
+                    "error": "We saved your submission but couldn't email it. "
+                             "Please use “Download summary” and email it to us."}, 502
+
+    # No mail transport configured (e.g. before deployment): saved on the server, and the
+    # customer still has the downloadable summary. Be honest rather than pretend it sent.
+    return {"ok": True,
+            "message": "Submission received. (Email delivery isn't configured on this server yet.)"}
 
 
 if __name__ == "__main__":
