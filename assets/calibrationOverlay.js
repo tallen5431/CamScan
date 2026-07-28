@@ -1754,7 +1754,7 @@
     window.CalibrationOverlay = window.CalibrationOverlay || CalibrationOverlay;
 
     function initScan(){
-      document.querySelectorAll('.cal-view:not([data-initialized])').forEach(el=>{
+      document.querySelectorAll('.cal-view').forEach(el=>{
         // Prefer data-img; fall back to data-img-fallback if needed (important for HTTPS/proxy)
         const primary = el.getAttribute('data-img');
         const fallback = el.getAttribute('data-img-fallback');
@@ -1763,7 +1763,16 @@
         const json=el.getAttribute('data-json');
         const canvas=el.querySelector('canvas');
         if(!img||!json||!canvas) return;
+        // (Re)initialize when this is a fresh node OR when Dash/React REUSED the node and
+        // swapped in a new photo (data-img changed). Dash reconciles #viewer's subtree in
+        // place on each upload — the node is NOT removed/re-added — so keying only on
+        // :not([data-initialized]) left the first overlay (and its FIRST image) in place, and
+        // every "Add another photo" then captured that same first photo. Reboot on a changed
+        // image, tearing down the stale overlay first so nothing leaks.
+        if(el.getAttribute('data-initialized')==='1' && el.__bootedImg===img) return;
+        if(el.__overlay && el.__overlay.destroy){ try{ el.__overlay.destroy(); }catch(e){} }
         el.setAttribute('data-initialized','1');
+        el.__bootedImg = img;
         el.__overlay = new CalibrationOverlay(canvas, img, json);
       });
     }
@@ -1783,6 +1792,8 @@
     new MutationObserver((mutations)=>{
       for(const m of mutations) if(m.removedNodes && m.removedNodes.length) reapRemoved(m.removedNodes);
       initScan();
-    }).observe(document.documentElement,{childList:true,subtree:true});
+    // Also watch data-img/data-json: when Dash reuses the .cal-view node and only updates
+    // those attributes for a new photo, there is no childList change to trigger a rescan.
+    }).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-img','data-json']});
   });
 })();
