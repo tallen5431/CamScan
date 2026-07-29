@@ -305,6 +305,32 @@ def main():
     except Exception as e:
         check("auto_outline ROI handling", False, repr(e))
 
+    # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
+    #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
+    #     must not drift when snapping is on. (Its benefit is on soft real-photo fringes; here we
+    #     lock in that it never DEGRADES a good trace.)
+    try:
+        from auto_outline import auto_outline as _ao2
+
+        def _iou3(pts, gt, shape):
+            if not pts:
+                return 0.0
+            m = np.zeros(shape, np.uint8); cv2.fillPoly(m, [np.array(pts, np.int32)], 255)
+            return int(np.logical_and(m > 0, gt > 0).sum()) / max(1, int(np.logical_or(m > 0, gt > 0).sum()))
+
+        cs = np.full((640, 900, 3), 185, np.uint8)
+        cpart = np.array([[120, 200], [520, 210], [515, 300], [300, 305], [305, 520], [190, 515]], np.int32)
+        cv2.fillPoly(cs, [cpart], (45, 48, 52))
+        gt_e = np.zeros((640, 900), np.uint8); cv2.fillPoly(gt_e, [cpart], 255)
+        with _quiet():
+            off = _ao2(cs, seed=[280, 260], edge_snap=False)
+            on = _ao2(cs, seed=[280, 260], edge_snap=True)
+        iou_off, iou_on = _iou3(off, gt_e, (640, 900)), _iou3(on, gt_e, (640, 900))
+        check("edge-snap is a no-op on a clean edge (never degrades)", iou_on > 0.98 and iou_on >= iou_off - 0.01,
+              f"snap-off IoU={iou_off:.4f} -> snap-on IoU={iou_on:.4f}")
+    except Exception as e:
+        check("edge-snap safety", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():
