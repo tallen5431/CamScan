@@ -41,6 +41,7 @@ def auto_outline(
     simplify: float = _DEFAULT_SIMPLIFY,
     max_points: int = _DEFAULT_MAX_POINTS,
     downscale_to: int = _DEFAULT_DOWNSCALE,
+    roi: Optional[Sequence[float]] = None,
 ) -> Optional[List[List[float]]]:
     """Return the part's OUTER boundary as [[x, y], ...] in IMAGE pixel coords, or None.
     (For interior holes too — what a printable replica needs — use auto_outline_full.)
@@ -53,12 +54,21 @@ def auto_outline(
                     are preserved regardless, so lowering this densifies curves, not corners.
     max_points    : cap on returned vertices (low-curvature points are dropped first, corners
                     last) — keeps the outline editable by hand.
+    roi           : (x, y, w, h) region-of-interest in image coords (the user's Area box).
+                    Segmentation is restricted to this region PLUS a background collar, which
+                    (a) gives a clean, LOCAL background estimate, (b) drops distant clutter and
+                    large cast shadows outside the box, and (c) stops a nearby object from being
+                    welded on. Coordinates are still returned in full-image space.
     """
-    seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
+    crop, seed2, excl2, ox, oy = _crop_to_roi(img_bgr, seed, exclude_boxes, roi)
+    seg = _segment(crop, seed2, excl2, downscale_to)
     if seg is None:
         return None
     mask, scale, sh, sw = seg
-    return _outer_polygon(mask, scale, sh, sw, simplify, max_points)
+    poly = _outer_polygon(mask, scale, sh, sw, simplify, max_points)
+    if poly is None:
+        return None
+    return [[x + ox, y + oy] for (x, y) in poly] if (ox or oy) else poly
 
 
 def auto_outline_full(
@@ -70,6 +80,7 @@ def auto_outline_full(
     downscale_to: int = _DEFAULT_DOWNSCALE,
     want_holes: bool = True,
     min_hole_frac: float = 0.004,
+    roi: Optional[Sequence[float]] = None,
 ) -> Optional[dict]:
     """Segment the tapped part and return both its outer boundary AND its interior holes:
 
@@ -81,8 +92,12 @@ def auto_outline_full(
     turns a flat outline into a printable replica; a round bore comes back as a true circle.
     A wrench's OPEN jaw is not a hole (it opens to the exterior) so it stays part of `outer`.
     Returns None if nothing could be segmented.
+
+    roi : (x, y, w, h) region-of-interest (the user's Area box) — see auto_outline. Restricts
+          segmentation to that region plus a background collar; results stay in image coords.
     """
-    seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
+    crop, seed2, excl2, ox, oy = _crop_to_roi(img_bgr, seed, exclude_boxes, roi)
+    seg = _segment(crop, seed2, excl2, downscale_to)
     if seg is None:
         return None
     mask, scale, sh, sw = seg
@@ -90,7 +105,60 @@ def auto_outline_full(
     if outer is None:
         return None
     holes = _holes(mask, scale, sh, sw, simplify, max_points, min_hole_frac) if want_holes else []
+    if ox or oy:
+        outer = [[x + ox, y + oy] for (x, y) in outer]
+        holes = [_offset_hole(h, ox, oy) for h in holes]
     return {"outer": outer, "holes": holes}
+
+
+def _crop_to_roi(img_bgr, seed, exclude_boxes, roi, margin_frac=0.08, min_margin=10):
+    """Crop the image to an ROI (x, y, w, h) plus a background COLLAR, translating the seed and
+    exclude boxes into crop coordinates. Returns (crop, seed', exclude', ox, oy) where (ox, oy)
+    is the crop origin to add back to results. With no/invalid ROI the inputs pass through
+    unchanged (ox = oy = 0).
+
+    The collar is essential: the segmenter builds its background model from the crop's border
+    ring, so the crop must include real background AROUND the part — even when the user drew the
+    box tight to the object. The margin scales with the box so it works at any zoom."""
+    passthrough = (img_bgr, seed, tuple(exclude_boxes or ()), 0, 0)
+    if roi is None:
+        return passthrough
+    try:
+        rx, ry, rw, rh = (float(v) for v in roi)
+    except (TypeError, ValueError):
+        return passthrough
+    if not (rw > 1 and rh > 1) or not all(np.isfinite(v) for v in (rx, ry, rw, rh)):
+        return passthrough
+    H, W = img_bgr.shape[:2]
+    m = max(min_margin, margin_frac * max(rw, rh))
+    x0 = int(max(0, np.floor(rx - m))); y0 = int(max(0, np.floor(ry - m)))
+    x1 = int(min(W, np.ceil(rx + rw + m))); y1 = int(min(H, np.ceil(ry + rh + m)))
+    if x1 - x0 < 8 or y1 - y0 < 8:                     # ROI off-frame / degenerate -> ignore it
+        return passthrough
+    crop = img_bgr[y0:y1, x0:x1]
+    seed2 = None
+    if seed is not None:
+        try:
+            seed2 = [float(seed[0]) - x0, float(seed[1]) - y0]
+        except (TypeError, ValueError, IndexError):
+            seed2 = None
+    excl2 = []
+    for box in (exclude_boxes or ()):
+        try:
+            bx, by, bw, bh = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        excl2.append((bx - x0, by - y0, bw, bh))
+    return crop, seed2, tuple(excl2), x0, y0
+
+
+def _offset_hole(h, ox, oy):
+    """Translate a typed hole (circle or polygon) from crop coords back to image coords."""
+    if isinstance(h, dict) and h.get("shape") == "circle":
+        return {**h, "cx": h["cx"] + ox, "cy": h["cy"] + oy}
+    if isinstance(h, dict) and h.get("shape") == "polygon":
+        return {"shape": "polygon", "points": [[x + ox, y + oy] for (x, y) in h["points"]]}
+    return h
 
 
 def _segment(img_bgr, seed, exclude_boxes, downscale_to):

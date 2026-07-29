@@ -561,7 +561,8 @@ def export_dxf():
 def api_trace():
     """Auto-trace a part outline from a seed tap.
 
-    Body: { image: dataURL, seed: [x,y]|null, exclude: [[x,y,w,h],...], simplify: float }
+    Body: { image: dataURL, seed: [x,y]|null, exclude: [[x,y,w,h],...], simplify: float,
+            roi: [x,y,w,h]|null }   # roi (the user's Area box) restricts segmentation to a region
     Returns { ok, points:[[x,y],...] } in the POSTed image's pixel coords, which the client
     turns into an editable, closed outline. Kept lenient — a failure to segment is a normal
     200 {ok:false} so the UI can say 'tap the part' rather than showing an error page.
@@ -611,8 +612,17 @@ def api_trace():
     except (TypeError, ValueError):
         simplify = 0.0006
 
+    roi = data.get("roi")
+    if isinstance(roi, (list, tuple)) and len(roi) == 4:
+        try:
+            roi = [float(v) for v in roi]
+        except (TypeError, ValueError):
+            roi = None
+    else:
+        roi = None
+
     try:
-        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify)
+        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify, roi=roi)
     except Exception as e:
         print(f"[trace] error: {e}")
         return jsonify(ok=False, error="trace_failed"), 500

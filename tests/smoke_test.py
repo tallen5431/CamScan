@@ -256,6 +256,55 @@ def main():
     except Exception as e:
         check("auto_outline cast-shadow handling", False, repr(e))
 
+    # 2g) ROI (the user's Area box) restricts segmentation to a region: a nearby object that
+    #     the morphology-close would otherwise weld onto the part is cropped out, and the trace
+    #     comes back cleanly on the target — in FULL-IMAGE coords. A bad/off-frame ROI is
+    #     ignored (passthrough), never a crash.
+    try:
+        from auto_outline import auto_outline as _ao, auto_outline_full as _aof
+
+        def _iou2(pts, gt, shape):
+            if not pts:
+                return 0.0
+            m = np.zeros(shape, np.uint8); cv2.fillPoly(m, [np.array(pts, np.int32)], 255)
+            return int(np.logical_and(m > 0, gt > 0).sum()) / max(1, int(np.logical_or(m > 0, gt > 0).sum()))
+
+        H, W = 500, 700
+        rimg = np.full((H, W, 3), 200, np.uint8)
+        cv2.rectangle(rimg, (120, 150), (320, 360), (55, 58, 60), -1)   # TARGET
+        cv2.rectangle(rimg, (332, 150), (470, 360), (50, 52, 54), -1)   # clutter, ~12px gap
+        gt_t = np.zeros((H, W), np.uint8); cv2.rectangle(gt_t, (120, 150), (320, 360), 255, -1)
+        seed_t = [220, 255]
+        with _quiet():
+            base = _ao(rimg, seed=seed_t)                                 # no ROI -> welds clutter on
+            roied = _ao(rimg, seed=seed_t, roi=[120, 150, 200, 210])       # ROI -> clean target
+        iou_base, iou_roi = _iou2(base, gt_t, (H, W)), _iou2(roied, gt_t, (H, W))
+        check("ROI (Area box) isolates the part from nearby clutter", iou_roi > 0.9 and iou_roi > iou_base + 0.1,
+              f"no-ROI IoU={iou_base:.3f} -> ROI IoU={iou_roi:.3f}")
+
+        # Results must be in FULL-IMAGE coords (ROI origin added back), so a hole inside the
+        # cropped part still lands at its true image position.
+        rh_img = np.full((H, W, 3), 200, np.uint8)
+        cv2.rectangle(rh_img, (120, 150), (320, 360), (55, 58, 60), -1)
+        cv2.circle(rh_img, (220, 255), 34, (200, 200, 200), -1)          # bore near the part centre
+        with _quiet():
+            full_r = _aof(rh_img, seed=[150, 175], roi=[120, 150, 200, 210])
+        hole0 = ((full_r or {}).get("holes") or [None])[0]
+        ok_coord = (isinstance(hole0, dict) and hole0.get("shape") == "circle"
+                    and abs(hole0["cx"] - 220) < 25 and abs(hole0["cy"] - 255) < 25)
+        check("ROI results map back to full-image coords", ok_coord,
+              f"bore center~({(hole0 or {}).get('cx', 0):.0f},{(hole0 or {}).get('cy', 0):.0f}) vs (220,255)"
+              if isinstance(hole0, dict) else f"hole={hole0}")
+
+        # A degenerate / off-frame ROI must be ignored (fall back to whole-image), not crash.
+        with _quiet():
+            passthru = _ao(rimg, seed=seed_t, roi=[9999, 9999, 5, 5])
+            zero_roi = _ao(rimg, seed=seed_t, roi=[0, 0, 0, 0])
+        check("bad ROI is ignored (graceful passthrough)", bool(passthru) and bool(zero_roi),
+              f"offframe_pts={len(passthru) if passthru else None}, zero_pts={len(zero_roi) if zero_roi else None}")
+    except Exception as e:
+        check("auto_outline ROI handling", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():
