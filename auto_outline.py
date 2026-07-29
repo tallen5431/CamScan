@@ -117,8 +117,33 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     bg = np.median(ring_px, axis=0)
     dist = np.linalg.norm(lab - bg, axis=2)
     dist_u8 = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # Plain split: background (near bg) vs everything else. Otsu draws ONE line, so a cast
+    # shadow — a mid-tone between the bright surface and the darker/more-saturated part — lands
+    # on the part side and the outline bulges into it.
     _, fg = cv2.threshold(dist_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
+    mask = _component(fg, exclude_boxes, scale, sw, sh, seed)
+    if mask is None:
+        return None
+
+    # Shadow refinement (purely additive). A SECOND Otsu on the foreground shoulder separates
+    # the shadow (mid distance from bg) from the part (far distance). We adopt that tighter mask
+    # only when its boundary demonstrably sits on stronger image edges than the plain one — a
+    # true part edge is a sharp gradient, a shadow's penumbra is soft — AND it still keeps the
+    # bulk of the tapped object. So a dark, low-contrast part whose own body reads shadow-like
+    # (chrome reflections, a matte-dark part) is never eaten: its refined mask either collapses
+    # or fails the edge test, and the plain mask stands.
+    refined = _shadow_refine(dist_u8, fg, small, exclude_boxes, scale, sw, sh, seed, mask)
+    if refined is not None:
+        mask = refined
+
+    return mask, scale, sh, sw
+
+
+def _component(fg, exclude_boxes, scale, sw, sh, seed):
+    """Clean a foreground binary and return the tapped/largest component as a filled mask
+    (255), interior holes preserved as 0, or None. Shared by the plain and shadow-refined
+    segmentations so both go through identical morphology, exclusion and component picking."""
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k, iterations=1)
@@ -136,13 +161,65 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
     if n <= 1:
         return None
-
     target = _pick_component(labels, stats, n, seed, scale, sw, sh)
     if target is None:
         return None
+    return (labels == target).astype(np.uint8) * 255
 
-    mask = (labels == target).astype(np.uint8) * 255
-    return mask, scale, sh, sw
+
+def _shadow_refine(dist_u8, fg_plain, small, exclude_boxes, scale, sw, sh, seed, mask_plain,
+                   min_keep_frac=0.45, edge_ratio=1.15, edge_floor=20.0):
+    """Try to shed a cast shadow welded onto the part; return the tighter mask or None.
+
+    The plain mask splits bg from foreground once, so a shadow (mid distance from the
+    background) sits with the part (far distance). A second Otsu ON THE FOREGROUND SHOULDER
+    finds the bg->shadow->part step and keeps only the far side (the part). That tighter mask
+    is adopted ONLY when both hold: (1) it retains >= min_keep_frac of the plain area — so it
+    hasn't eaten a genuine dark part whose body reads shadow-like — and (2) its boundary sits on
+    clearly stronger image gradients than the plain boundary — the real part edge is sharp,
+    a shadow's penumbra is soft. Otherwise the plain mask stands. This is why it fixes a real
+    cast shadow without repeating the reverted per-pixel rule that erased dark-chrome parts."""
+    fgvals = dist_u8[fg_plain > 0]
+    if fgvals.size < 50 or int(fgvals.max()) <= int(fgvals.min()):
+        return None                                  # foreground is one mode -> no shadow shoulder
+    t2, _ = cv2.threshold(fgvals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    fg2 = ((dist_u8 > t2).astype(np.uint8)) * 255
+    mask_alt = _component(fg2, exclude_boxes, scale, sw, sh, seed)
+    if mask_alt is None:
+        return None
+
+    a_plain = int((mask_plain > 0).sum())
+    a_alt = int((mask_alt > 0).sum())
+    if a_plain == 0 or a_alt < min_keep_frac * a_plain:
+        return None                                  # collapsed / ate the part
+
+    grad = _gradient_mag(small)
+    s_plain = _boundary_edge_score(mask_plain, grad)
+    s_alt = _boundary_edge_score(mask_alt, grad)
+    if s_alt > s_plain * edge_ratio + edge_floor:
+        return mask_alt
+    return None
+
+
+def _gradient_mag(small):
+    """Scharr gradient magnitude of the grayscale image — the edge-strength field."""
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = cv2.Scharr(gray, cv2.CV_32F, 1, 0)
+    gy = cv2.Scharr(gray, cv2.CV_32F, 0, 1)
+    return cv2.magnitude(gx, gy)
+
+
+def _boundary_edge_score(mask, grad):
+    """Median gradient magnitude sampled along the mask's outer boundary — how well the mask
+    edge coincides with a real image edge. A boundary hugging the true part edge scores high;
+    one bulged onto a shadow's soft penumbra scores low."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return 0.0
+    c = max(cnts, key=cv2.contourArea).reshape(-1, 2)
+    xs = np.clip(c[:, 0], 0, grad.shape[1] - 1)
+    ys = np.clip(c[:, 1], 0, grad.shape[0] - 1)
+    return float(np.median(grad[ys, xs]))
 
 
 def _outer_polygon(mask, scale, sh, sw, simplify, max_points):

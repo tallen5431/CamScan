@@ -209,6 +209,53 @@ def main():
     except Exception as e:
         check("auto_outline_full holes", False, repr(e))
 
+    # 2e) A cast shadow on the OUTER boundary. A shadow is the surface darkened — a mid-tone
+    #     between the bright surface and the darker part — so a single bg-vs-foreground split
+    #     welds it to the part and the trace bulges into it. The shadow refinement (a second
+    #     split on the foreground shoulder, adopted only when the tighter boundary sits on
+    #     stronger edges) must pull the outline back onto the true part edge.
+    try:
+        from auto_outline import auto_outline
+
+        def _iou(pts, gt, shape):
+            if not pts:
+                return 0.0
+            m = np.zeros(shape, np.uint8)
+            cv2.fillPoly(m, [np.array(pts, np.int32)], 255)
+            inter = int(np.logical_and(m > 0, gt > 0).sum())
+            union = int(np.logical_or(m > 0, gt > 0).sum())
+            return inter / union if union else 0.0
+
+        H, W = 600, 900
+        sc = np.full((H, W, 3), 210, np.uint8)                      # bright surface
+        cv2.rectangle(sc, (250, 180), (560, 420), (60, 62, 64), -1)  # dark matte part
+        band = np.zeros((H, W), np.uint8)
+        cv2.rectangle(band, (560, 210), (650, 470), 255, -1)         # shadow hugging the right ...
+        cv2.rectangle(band, (300, 420), (650, 470), 255, -1)         # ... and bottom of the part
+        sc[(band > 0) & (sc[:, :, 0] > 150)] = (120, 121, 123)       # surface darkened, same hue
+        gt_s = np.zeros((H, W), np.uint8); cv2.rectangle(gt_s, (250, 180), (560, 420), 255, -1)
+        with _quiet():
+            pts_s = auto_outline(sc, seed=[400, 300])
+        iou_s = _iou(pts_s, gt_s, (H, W))
+        check("cast shadow does not bulge the outer trace (IoU>0.9)", iou_s > 0.9,
+              f"IoU={iou_s:.3f} (a bulge into the shadow drops this well below 0.9)")
+
+        # 2f) The guard against the reverted regression: a dark, low-contrast part whose own
+        #     body reads shadow-like (chrome-style darker interior reflections) must still be
+        #     captured IN FULL — the refinement must decline and keep the plain mask.
+        ch = np.full((H, W, 3), 210, np.uint8)
+        cv2.rectangle(ch, (250, 180), (620, 430), (95, 97, 99), -1)   # mid-dark neutral body
+        for (cx, cy, rr) in [(330, 250, 45), (500, 340, 55), (430, 300, 40), (560, 220, 35), (300, 400, 30)]:
+            cv2.circle(ch, (cx, cy), rr, (38, 39, 41), -1)            # darker neutral reflections inside
+        gt_c = np.zeros((H, W), np.uint8); cv2.rectangle(gt_c, (250, 180), (620, 430), 255, -1)
+        with _quiet():
+            pts_c = auto_outline(ch, seed=[280, 200])
+        iou_c = _iou(pts_c, gt_c, (H, W))
+        check("dark low-contrast part is not eaten by shadow refinement (IoU>0.9)", iou_c > 0.9,
+              f"IoU={iou_c:.3f} (refinement must decline here, keeping the whole part)")
+    except Exception as e:
+        check("auto_outline cast-shadow handling", False, repr(e))
+
     # 3) No crash / no div-by-zero on an image with no calibration square.
     try:
         with _quiet():
