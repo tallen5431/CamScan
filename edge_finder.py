@@ -67,19 +67,31 @@ def _angle_score(quad: np.ndarray) -> float:
 
 
 def _score_quad(quad: np.ndarray, img_shape) -> float:
-    """Combined score: area, fill ratio, squareness, centrality."""
+    """Combined score: area, fill ratio, squareness, centrality.
+
+    Fill and aspect are measured in the quad's OWN (rotated) frame. They used to come from
+    cv2.boundingRect — the AXIS-ALIGNED box — whose area grows as the quad rotates: a
+    45°-rotated square fills only half of it, so the same marker scored ~50% for nothing but
+    camera roll (~61% at 20°, which is an ordinary hand-held angle). An upright dark
+    rectangle with about half the marker's area could then outrank the real marker and
+    calibrate the photo against the wrong object. Rotation must not change this score.
+    """
     quad = np.asarray(quad, dtype=np.float32).reshape(-1, 2)
     contour = quad.reshape(-1, 1, 2)
     area = cv2.contourArea(contour)
     if area <= 0:
         return 0.0
 
-    x, y, w, h = cv2.boundingRect(contour)
-    box_area = float(w * h) if w > 0 and h > 0 else 1.0
-    fill_ratio = float(area) / box_area
+    # Side lengths in the quad's own frame. The call site passes a minAreaRect box, so these
+    # are the rotated rectangle's true width/height (opposite sides averaged for safety if a
+    # caller ever passes a slightly irregular quad).
+    sides = [float(np.linalg.norm(quad[(i + 1) % 4] - quad[i])) for i in range(4)]
+    w = max(1e-6, (sides[0] + sides[2]) / 2.0)
+    h = max(1e-6, (sides[1] + sides[3]) / 2.0)
+    fill_ratio = min(1.0, float(area) / (w * h))
 
     # aspect penalty
-    aspect = max(w, h) / float(max(1, min(w, h)))
+    aspect = max(w, h) / min(w, h)
     aspect_penalty = max(0.0, aspect - 1.0)
 
     angle_score = _angle_score(quad)

@@ -596,6 +596,32 @@ def main():
     except Exception as e:
         check("endpoints reject non-finite / oversized untrusted input", False, repr(e))
 
+    # 8g) Marker selection must not care which way the card is rolled. _score_quad measured
+    #     fill and aspect against the AXIS-ALIGNED bounding box, whose area grows as the quad
+    #     rotates — the same marker scored ~50% at 45° and ~61% at 20° — so an upright dark
+    #     rectangle with about half its area could win and calibrate against the wrong object.
+    try:
+        from edge_finder import _score_quad, _order_quad
+        shp = (1000, 1000)
+        def _box(s, deg, side=300.0):
+            return _order_quad(cv2.boxPoints(((500.0, 500.0), (side, side), deg)))
+        scores = [_score_quad(_box(300, d), shp) for d in (0, 10, 20, 30, 45)]
+        invariant = max(scores) - min(scores) <= 1e-6 * max(scores)
+        # An upright distractor with a clearly smaller area must still lose to a rolled marker.
+        rolled = _score_quad(_box(300, 45), shp)
+        smaller_upright = _score_quad(_order_quad(cv2.boxPoints(((500.0, 500.0), (255.0, 255.0), 0))), shp)
+        beats = rolled > smaller_upright
+        # ...and an elongated quad must still be penalised (the aspect term stays alive).
+        square = _score_quad(_order_quad(cv2.boxPoints(((500.0, 500.0), (300.0, 300.0), 0))), shp)
+        oblong = _score_quad(_order_quad(cv2.boxPoints(((500.0, 500.0), (600.0, 150.0), 0))), shp)
+        aspect_alive = oblong < square
+        check("quad score is rotation-invariant, still aspect-aware",
+              invariant and beats and aspect_alive,
+              f"spread={max(scores) - min(scores):.3g}, rolled>smaller-upright={beats}, "
+              f"aspect penalised={aspect_alive}")
+    except Exception as e:
+        check("quad score is rotation-invariant, still aspect-aware", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
