@@ -622,6 +622,47 @@ def main():
     except Exception as e:
         check("quad score is rotation-invariant, still aspect-aware", False, repr(e))
 
+    # 8h) A small round bore must still come back as a CIRCLE (a diameter), not a polygon.
+    #     _largest_inlier_arc_frac counts an EMPTY angular sector as off-circle — it has to,
+    #     or a semicircular notch would read as a full bore — but at a fixed 48 bins a bore
+    #     of radius <= ~10 px in the working image has too few boundary points to fill them
+    #     all and broke its own contiguous run. Bins now scale with the point count. Guard
+    #     both directions: small circles classify, and nothing round-ish sneaks through.
+    try:
+        from auto_outline import _classify_hole
+        def _shape(mask):
+            cs, _h = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not cs:
+                return "none"
+            r = _classify_hole(max(cs, key=cv2.contourArea), 1.0, 0.0006, 220)
+            return r["shape"] if r else "none"
+        def _disc(rad, half=False):
+            m = np.zeros((4 * rad + 40, 4 * rad + 40), np.uint8)
+            c = (2 * rad + 20, 2 * rad + 20)
+            cv2.circle(m, c, rad, 255, -1)
+            if half:
+                cv2.rectangle(m, (0, 0), (m.shape[1], c[1]), 0, -1)
+            return m
+        def _ngon(n, rad):
+            m = np.zeros((4 * rad + 40, 4 * rad + 40), np.uint8)
+            c = (2 * rad + 20, 2 * rad + 20)
+            a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+            p = np.stack([c[0] + rad * np.cos(a), c[1] + rad * np.sin(a)], 1).astype(np.int32)
+            cv2.fillPoly(m, [p], 255)
+            return m
+        # Round bores down to the rasterisation limit (~r=10) must be circles.
+        circles_ok = all(_shape(_disc(r)) == "circle" for r in (70, 40, 25, 18, 14, 12, 10))
+        # A half-disc is an arc that stops — it must NOT be promoted to a full bore.
+        arcs_ok = all(_shape(_disc(r, half=True)) == "polygon" for r in (40, 12))
+        # Few-sided sockets and slots must stay polygons at small sizes too.
+        polys_ok = (all(_shape(_ngon(n, 40)) == "polygon" for n in (3, 4, 5, 6))
+                    and all(_shape(_ngon(n, 10)) == "polygon" for n in (4, 6, 8)))
+        check("small round bores classify as circles; arcs/polygons do not",
+              circles_ok and arcs_ok and polys_ok,
+              f"circles={circles_ok}, half-disc rejected={arcs_ok}, n-gons rejected={polys_ok}")
+    except Exception as e:
+        check("small round bores classify as circles; arcs/polygons do not", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
