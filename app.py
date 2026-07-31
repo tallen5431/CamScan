@@ -1,5 +1,5 @@
 # CamScan — Calibration Exporter (single-page viewer)
-import os, base64, uuid, time, tempfile
+import os, base64, uuid, time, tempfile, math
 
 # Cap the pixels OpenCV will decode BEFORE importing cv2 (the env var is read at import
 # time). A tiny, highly-compressible upload can otherwise decode to hundreds of megapixels
@@ -458,14 +458,25 @@ def on_upload(contents, filename):
     else:
         print("[App] No CALIB_EDGE_MM set; using calibration_core module default")
 
+    # The .jpg is already on disk. If anything below fails we return without a viewer, so that
+    # file is an orphan no session references — and the early return also skips _reap_uploads,
+    # so nothing trims it until the next SUCCESSFUL upload. Drop it on the way out instead.
+    def _discard_partial():
+        try:
+            os.unlink(final_path)
+        except OSError:
+            pass
+
     try:
         cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
     except Exception as e:
+        _discard_partial()
         return _upload_failed(f"⚠️ Processing error: {e}")
 
     try:
         json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
     except Exception as e:
+        _discard_partial()
         return _upload_failed(f"⚠️ Failed to save results: {e}")
 
     # Keep the uploads dir bounded, preserving the pair we just wrote.
@@ -560,13 +571,17 @@ def export_dxf():
             mm_per_px = float(raw_scale)
         except (TypeError, ValueError):
             return "Invalid mm_per_px", 400
-        if not (mm_per_px > 0):
-            return "mm_per_px must be > 0", 400
+        # `inf > 0` is True, so the positivity test alone lets Infinity through and every
+        # exported coordinate becomes inf — a 200 OK carrying a DXF no CAD tool will open.
+        if not (mm_per_px > 0) or not math.isfinite(mm_per_px):
+            return "mm_per_px must be a finite number > 0", 400
 
     # Image height (pixels) lets us flip the Y axis: image coordinates grow downward,
     # CAD coordinates grow upward. Without this the exported part comes out mirrored.
     try:
         image_height = float(data.get("image_height", 0)) or None
+        if image_height is not None and not math.isfinite(image_height):
+            image_height = None
     except (TypeError, ValueError):
         image_height = None
 
@@ -638,6 +653,8 @@ def api_trace():
     if isinstance(seed, (list, tuple)) and len(seed) == 2:
         try:
             seed = [float(seed[0]), float(seed[1])]
+            if not all(math.isfinite(v) for v in seed):
+                seed = None
         except (TypeError, ValueError):
             seed = None
     else:
@@ -648,7 +665,12 @@ def api_trace():
     for box in (raw_exclude if isinstance(raw_exclude, (list, tuple)) else []):
         try:
             if len(box) == 4:
-                exclude.append(tuple(float(v) for v in box))
+                vals = tuple(float(v) for v in box)
+                # NaN/Infinity reaches an int() deep in the segmenter and raises, turning a
+                # bad box into a 500 — this endpoint's contract is to degrade to 200 {ok:false}.
+                # `roi` and `seed` are already screened this way; screen `exclude` too.
+                if all(math.isfinite(v) for v in vals):
+                    exclude.append(vals)
         except (TypeError, ValueError):
             continue
 
@@ -661,6 +683,8 @@ def api_trace():
     if isinstance(roi, (list, tuple)) and len(roi) == 4:
         try:
             roi = [float(v) for v in roi]
+            if not all(math.isfinite(v) for v in roi):
+                roi = None
         except (TypeError, ValueError):
             roi = None
     else:
@@ -732,7 +756,10 @@ def _save_submission(data):
         except Exception:
             continue
         ext = ".jpg" if "jpeg" in (mime or "") else (".png" if "png" in (mime or "") else ".img")
-        label = "".join(c for c in str(v.get("label", "view")) if c.isalnum() or c in ("-", "_")) or f"view{i + 1}"
+        # Cap the label: an over-long one makes open() raise ENAMETOOLONG, which _save_submission
+        # does not catch, so /api/submit loses the WHOLE submission over one view's name. The UI
+        # only offers short labels, but a loaded .camscan.json or a direct POST can carry any.
+        label = "".join(c for c in str(v.get("label", "view")) if c.isalnum() or c in ("-", "_"))[:60] or f"view{i + 1}"
         fn = f"{i + 1:02d}-{label}{ext}"
         with open(os.path.join(out_dir, fn), "wb") as f:
             f.write(raw)

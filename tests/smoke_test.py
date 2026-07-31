@@ -541,6 +541,61 @@ def main():
     except Exception as e:
         check("submissions cap refuses without discarding records", False, repr(e))
 
+    # 8f) Both public endpoints take untrusted JSON, and JSON carries NaN/Infinity. Those used
+    #     to sail through: a non-finite coordinate was written into the DXF verbatim (200 OK
+    #     for a file no CAD tool opens), and a non-finite exclude box reached an int() in the
+    #     segmenter and 500'd /api/trace, which promises 200 {ok:false} on failure. A view
+    #     label longer than the filesystem allows lost the whole submission to ENAMETOOLONG.
+    try:
+        import base64 as _b64
+        import app as _app4
+        cli = _app4.server.test_client()
+
+        with _quiet():
+            mixed = cli.post("/api/export/dxf", json={
+                "geometry": [{"type": "line", "x1": float("nan"), "y1": 0, "x2": 1, "y2": 5},
+                             {"type": "line", "x1": 0, "y1": 0, "x2": 9, "y2": 9}],
+                "mm_per_px": 0.1, "image_height": 100})
+            inf_scale = cli.post("/api/export/dxf", json={
+                "geometry": [{"type": "line", "x1": 0, "y1": 0, "x2": 9, "y2": 9}],
+                "mm_per_px": float("inf")})
+        dxf_body = mixed.data.decode("latin-1").lower()
+        dxf_ok = (mixed.status_code == 200 and "nan" not in dxf_body and " inf" not in dxf_body
+                  and inf_scale.status_code == 400)
+
+        _tim = np.zeros((80, 80, 3), np.uint8)
+        cv2.rectangle(_tim, (20, 20), (60, 60), (255, 255, 255), -1)
+        _o, _e = cv2.imencode(".jpg", _tim)
+        _durl = "data:image/jpeg;base64," + _b64.b64encode(_e.tobytes()).decode()
+        with _quiet():
+            nan_box = cli.post("/api/trace", json={"image": _durl, "seed": [40, 40],
+                                                   "exclude": [[float("nan"), 0, 10, 10]]})
+            nan_seed = cli.post("/api/trace", json={"image": _durl, "seed": [float("nan"), 40]})
+        # The bad box is dropped, not fatal — the part still traces.
+        trace_ok = (nan_box.status_code == 200 and nan_box.get_json().get("ok") is True
+                    and nan_seed.status_code == 200)
+
+        _o, _e = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        _d = "data:image/jpeg;base64," + _b64.b64encode(_e.tobytes()).decode()
+        _sd, _sc = _app4.SUBMISSIONS_DIR, _app4.MAX_SUBMISSIONS_BYTES
+        try:
+            with tempfile.TemporaryDirectory() as t:
+                _app4.SUBMISSIONS_DIR, _app4.MAX_SUBMISSIONS_BYTES = t, 0
+                with _quiet():
+                    longlab = cli.post("/api/submit", json={
+                        "id": "x", "brief": {}, "views": [{"label": "L" * 300, "image": _d}]})
+                written = os.listdir(os.path.join(t, os.listdir(t)[0])) if os.listdir(t) else []
+        finally:
+            _app4.SUBMISSIONS_DIR, _app4.MAX_SUBMISSIONS_BYTES = _sd, _sc
+        label_ok = (longlab.status_code == 200 and longlab.get_json().get("ok") is True
+                    and any(f.endswith(".jpg") for f in written))
+
+        check("endpoints reject non-finite / oversized untrusted input",
+              dxf_ok and trace_ok and label_ok,
+              f"dxf={dxf_ok}, trace={trace_ok}, long-label={label_ok}")
+    except Exception as e:
+        check("endpoints reject non-finite / oversized untrusted input", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

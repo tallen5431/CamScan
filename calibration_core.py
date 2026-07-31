@@ -346,7 +346,9 @@ def calibrate_image(img_bgr: np.ndarray,
                 min_fill_ratio=0.4,
                 min_hull_ratio=0.75,
                 min_compactness=0.3,
-                clahe_clip=3.0,
+                # (no clahe_clip here: detect_dark_squares has no such parameter, so the
+                # robust wrapper's kwargs filter dropped it silently — it never did anything.
+                # CLAHE is applied unconditionally in _prepare_gray.)
                 debug=True,
             )
             print(f"[Calibration] Strategy 3 found {len(dets)} detections")
