@@ -80,6 +80,10 @@
         this.img = new Image(); this.img.decoding='async'; this.img.loading='eager';
         this.img.onload = async()=>{
           if(this._destroyed) return;   // a late decode must not re-wire a torn-down overlay
+          // Clear any error card from a PREVIOUS failed load on this same wrap. It is an
+          // opaque, full-bleed z-index:20 overlay and nothing else removed it, so a retry
+          // that succeeded still showed the "could not load the image" screen on top.
+          if(wrap){ const old=wrap.querySelector('.cal-load-error'); if(old) old.remove(); }
           await this._loadJSON();
           if(this._destroyed) return;   // destroyed DURING the async JSON load
           (this.data.markers||[]).forEach((m,i)=>{ if(m.id==null) m.id=i+1; });
@@ -1032,10 +1036,19 @@
       // After the calibration changes (cube size or manual scale), refresh the frozen
       // per-annotation scale so existing measurements update to the new reference.
       _rescaleAnnotations(){
+        // When the scale is CLEARED (clearManualScale, or a marker size set to nothing) every
+        // _scaleForPoint returns 0, and only writing on s>0 left each annotation holding the
+        // scale that was just deleted. Circle and export labels read that frozen value first
+        // (`a.mm_per_px || fallback || ...`), so they kept quoting millimetres derived from a
+        // scale the app no longer has, while isCalibrated() reported false. Zero them — but
+        // only when there is genuinely no scale anywhere, so an annotation that merely sits
+        // away from any marker keeps the value it captured.
+        const anyScale = this._scaleForPoint([0,0]) > 0 || (this.data && this.data.mm_per_px > 0);
         for(const a of this.ann.items){
           if(a.type==='note') continue;
           const s=this._scaleForPoint(this._annCentroid(a));
           if(s>0) a.mm_per_px=s;
+          else if(!anyScale) a.mm_per_px=0;
         }
       }
 
