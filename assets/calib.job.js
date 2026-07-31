@@ -117,7 +117,8 @@
     var d=e.data; if(!d || typeof d!=='object') return;
     if(d.type==='camscan:host' && trustedHost(e.origin)){ hostWin=e.source; hostOrigin=e.origin; }
     else if(d.type==='camscan:ack' && (e.origin===hostOrigin || trustedHost(e.origin))){
-      handoffAck=true; if(handoffTimer){ clearTimeout(handoffTimer); handoffTimer=null; }
+      handoffAck=true; _sending=false;
+      if(handoffTimer){ clearTimeout(handoffTimer); handoffTimer=null; }
       setStatus('✅ Added to your quote — finish on the page.'); reset(); changed();
       setTimeout(function(){ closePanel(); }, 1400);
     }
@@ -486,9 +487,18 @@
     });
   }
 
+  // One send at a time. Without this a double tap on "Send to Datum" — easy on a phone, and
+  // the button gives no feedback until the fetch resolves — POSTed the whole job twice, so
+  // Datum got two submission directories and two e-mails for one part. It also closed a race
+  // on the embed path: a handoff ack arriving just after the fallback timer fired delivered
+  // the job to BOTH the parent page and /api/submit.
+  var _sending = false;
+
   function submit(){
+    if(_sending){ setStatus('Already sending — one moment…'); return; }
     syncOpenView();   // capture edits to the open side so the submission reflects them
     if(!validate()) return;
+    _sending = true;
     if(EMBED){ handoff(); return; }
     sendToServer();
   }
@@ -508,7 +518,7 @@
     // later automatically tightens this path too.
     var origin = hostOrigin;
     if(!origin){ try{ origin = document.referrer ? new URL(document.referrer).origin : null; }catch(e){ origin=null; } }
-    if(!origin || !trustedHost(origin)){ sendToServer(); return; }
+    if(!origin || !trustedHost(origin)){ sendToServer(); return; }   // keeps the in-flight flag
     handoffAck=false;
     try{ win.postMessage(msg, origin); }
     catch(e){ sendToServer(); return; }
@@ -518,21 +528,37 @@
   }
 
   function sendToServer(){
+    _sending = true;   // also covers the hand-off fallback path, which calls us directly
     setStatus('Sending…');
     var payload={ id:job.id, createdAt:job.createdAt, submittedAt:new Date().toISOString(),
       brief:job.brief, views:exportViews(true), userAgent:navigator.userAgent };
     fetch(apiUrl('api/submit'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
-      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+      // Not every failure answers with JSON — Flask's 413 handler for an oversized body
+      // replies in plain text, and r.json() rejecting there surfaced a real "too large" as a
+      // bare "Network error". Read the body as text and parse leniently.
+      .then(function(r){
+        return r.text().then(function(t){
+          var j=null; try{ j=JSON.parse(t); }catch(_){}
+          return {ok:r.ok, status:r.status, j:j, text:t};
+        });
+      })
       .then(function(res){
+        _sending = false;
         if(res.ok && res.j && res.j.ok){
           setStatus('✅ '+(res.j.message||'Sent to Datum Laboratories. We\'ll be in touch.'));
           reset(); changed();
           setTimeout(function(){ closePanel(); }, 2200);
         } else {
-          setStatus('⚠️ '+((res.j&&res.j.error)||'Could not send. Try “Download summary” and email it to us.'), true);
+          var msg = (res.j && res.j.error)
+            || (res.status===413 ? 'This submission is too large to send. Remove a view, or use “Download summary” and email it to us.' : '')
+            || 'Could not send. Try “Download summary” and email it to us.';
+          setStatus('⚠️ '+msg, true);
         }
       })
-      .catch(function(e){ setStatus('⚠️ Network error — try “Download summary” and email it to us. ('+e.message+')', true); });
+      .catch(function(e){
+        _sending = false;
+        setStatus('⚠️ Network error — try “Download summary” and email it to us. ('+e.message+')', true);
+      });
   }
 
   // A self-contained HTML summary the customer can save/print or email to us if the
