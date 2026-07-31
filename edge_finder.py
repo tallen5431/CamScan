@@ -1,7 +1,6 @@
 import os
 import cv2
 import numpy as np
-from typing import Tuple, List, Optional
 
 DEBUG = bool(os.getenv("CAMSCAN_DEBUG", "0") == "1")
 
@@ -310,7 +309,6 @@ def find_main_edges(
             pass
 
     h_img, w_img = gray.shape[:2]
-    frame_area = float(h_img * w_img)
     margin_x = cfg["border_margin_frac"] * w_img
     margin_y = cfg["border_margin_frac"] * h_img
 

@@ -437,6 +437,53 @@ def main():
     except Exception as e:
         check("job round-trip persistence", False, repr(e))
 
+    # 8b) A rejected upload must be VISIBLE. #status lives inside the landing card, which is
+    #     tucked off-screen once a photo loads, so every failure path also has to fill the
+    #     always-visible #upload-error banner — otherwise picking a bad second photo looks
+    #     like the tap did nothing. Guard the arity and the banner on every failure path.
+    try:
+        import base64
+        import app as _app
+        from dash import no_update
+        _okenc, _enc = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        good = "data:image/jpeg;base64," + base64.b64encode(_enc.tobytes()).decode()
+        bad_paths = [
+            ("bad extension", good, "photo.heic"),
+            ("not an image", "data:image/jpeg;base64," + base64.b64encode(b"nope").decode(), "p.jpg"),
+            ("malformed data-uri", "no-comma", "p.jpg"),
+        ]
+        shown = []
+        for _name, _c, _fn in bad_paths:
+            with _quiet():
+                r = _app.on_upload(_c, _fn)
+            shown.append(len(r) == 6 and r[4] not in ("", None)
+                         and r[5].get("display") == "block" and r[1] is no_update)
+        # ...and a success clears it again rather than leaving a stale error on screen.
+        with _quiet(), _app.server.test_request_context("/"):
+            ok_r = _app.on_upload(good, "p.jpg")
+        cleared = len(ok_r) == 6 and ok_r[4] == "" and ok_r[5].get("display") == "none"
+        check("upload failures reach the always-visible banner", all(shown) and cleared,
+              f"failure paths shown={sum(shown)}/{len(shown)}, success clears={cleared}")
+    except Exception as e:
+        check("upload failures reach the always-visible banner", False, repr(e))
+
+    # 8c) One malformed geometry entry must not sink the whole DXF export. export_to_dxf
+    #     documents "skip, don't abort", but its per-item guard calls item.get() first, so a
+    #     bare string/number in the list used to raise past it and 500 the endpoint.
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "mixed.dxf")
+            with _quiet():
+                ok = export_to_dxf(
+                    ["junk", 42, None, {"type": "circle", "center_x": 10, "center_y": 10, "radius_px": 5}],
+                    p, 1.0, image_height_px=100.0,
+                )
+            wrote = ok and os.path.exists(p) and os.path.getsize(p) > 0
+        check("DXF export skips non-dict geometry entries", bool(wrote),
+              f"ok={ok}, wrote={wrote}")
+    except Exception as e:
+        check("DXF export skips non-dict geometry entries", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

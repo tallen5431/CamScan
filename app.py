@@ -17,7 +17,6 @@ from flask import Flask, send_from_directory, url_for
 from dash import Dash, html, dcc, Input, Output, State, no_update
 import cv2, numpy as np
 from werkzeug.middleware.proxy_fix import ProxyFix  # NEW: respect X-Forwarded-* behind Caddy
-from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from calibration_core import calibrate_image, save_outputs
@@ -313,6 +312,21 @@ def _decode_b64_image(contents: str):
     return img
 
 
+# The landing card (which hosts #status) is tucked off-screen once a photo loads, so anything
+# written to #status from then on is invisible. Upload FAILURES must still be seen — otherwise
+# tapping "Add another photo" and picking an unsupported file looks like the tap did nothing at
+# all. This banner lives outside #top-panel, so it shows whether the card is on-screen or tucked.
+_BANNER_HIDDEN = {"display": "none"}
+_BANNER_SHOWN = {
+    "display": "block", "position": "fixed", "left": "50%", "transform": "translateX(-50%)",
+    "top": "10px", "zIndex": "80", "maxWidth": "min(560px, calc(100vw - 24px))",
+    "boxSizing": "border-box", "padding": "11px 14px", "borderRadius": "10px",
+    "background": "#2a1416", "border": "1px solid #6b2b30", "color": "#ffd9dc",
+    "font": "14px/1.45 Segoe UI, system-ui, sans-serif",
+    "boxShadow": "0 10px 30px rgba(0,0,0,.55)", "textAlign": "center",
+}
+
+
 app.layout = html.Div([
     html.Div([
         html.Div([
@@ -352,6 +366,9 @@ app.layout = html.Div([
     # role/aria-live so the load-bearing calibration state + measurement readout the JS
     # writes here are announced to screen readers (it's polite so it won't interrupt).
     html.Div(id="cal-kpi", className="cal-kpi", role="status", **{"aria-live": "polite"}),
+    # Always-visible upload-failure banner (see _BANNER_SHOWN). role=alert so a rejected
+    # upload is announced immediately rather than sitting silently off-screen.
+    html.Div(id="upload-error", role="alert", style=_BANNER_HIDDEN),
 ], id="landing-root", style={"fontFamily": "Segoe UI, sans-serif"})
 
 
@@ -362,11 +379,20 @@ _UPLOADER_TUCKED = {"position": "fixed", "left": "-9999px", "top": "0",
                     "width": "1px", "height": "1px", "overflow": "hidden", "opacity": "0"}
 
 
+def _upload_failed(msg):
+    """Return value for a failed upload: keep the current viewer, reset the uploader so the
+    same file can be picked again, and put `msg` in the always-visible banner as well as
+    #status (which is off-screen once a photo has loaded)."""
+    return msg, no_update, no_update, None, msg, _BANNER_SHOWN
+
+
 @app.callback(
     Output("status", "children"),
     Output("viewer", "children"),
     Output("top-panel", "style"),
     Output("uploader", "contents"),  # Reset upload to allow new uploads
+    Output("upload-error", "children"),
+    Output("upload-error", "style"),
     Input("uploader", "contents"),
     State("uploader", "filename"),
     prevent_initial_call=True
@@ -381,7 +407,7 @@ def on_upload(contents, filename):
 
     # Basic validation of filename extension
     if not _is_allowed_filename(filename):
-        return "⚠️ Unsupported file type.", no_update, no_update, None
+        return _upload_failed("⚠️ Unsupported file type.")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stem = os.path.splitext(filename or "image")[0]
@@ -393,12 +419,12 @@ def on_upload(contents, filename):
     try:
         img = _decode_b64_image(contents)
     except ImageTooLarge:
-        return (f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
-                "Resize it and try again."), no_update, no_update, None
+        return _upload_failed(f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
+                              "Resize it and try again.")
     except Exception:
-        return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
+        return _upload_failed("⚠️ Uploaded file is not a valid image.")
     if img is None:
-        return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
+        return _upload_failed("⚠️ Uploaded file is not a valid image.")
 
     # write atomically to avoid partial files
     tmp_fd, tmp_path = tempfile.mkstemp(dir=UPLOAD_DIR, prefix=f".{out_name}.", suffix=".tmp")
@@ -417,7 +443,7 @@ def on_upload(contents, filename):
                 os.unlink(tmp_path)
         except Exception:
             pass
-        return f"⚠️ Failed to save upload: {e}", no_update, no_update, None
+        return _upload_failed(f"⚠️ Failed to save upload: {e}")
 
     edge_mm_env = _resolve_edge_mm_from_env()
     if edge_mm_env is not None:
@@ -428,12 +454,12 @@ def on_upload(contents, filename):
     try:
         cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
     except Exception as e:
-        return f"⚠️ Processing error: {e}", no_update, no_update, None
+        return _upload_failed(f"⚠️ Processing error: {e}")
 
     try:
         json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
     except Exception as e:
-        return f"⚠️ Failed to save results: {e}", no_update, no_update, None
+        return _upload_failed(f"⚠️ Failed to save results: {e}")
 
     # Keep the uploads dir bounded, preserving the pair we just wrote.
     _reap_uploads(keep_paths=(os.path.join(UPLOAD_DIR, out_name), json_path))
@@ -472,7 +498,7 @@ def on_upload(contents, filename):
             "line across something of known size (a coin, a card, a sheet of paper, or a "
             "ruler) and type its real length."
         )
-        return status, viewer, _UPLOADER_TUCKED, None
+        return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN
 
     status = (
         f"✅ Processed '{filename}' — {n_markers} marker(s). "
@@ -482,7 +508,7 @@ def on_upload(contents, filename):
     # user knows to double-check the scale rather than trusting a wrong value.
     if confidence == "low":
         status += " ⚠️ Auto-calibration is approximate — verify with the Set Scale tool (📐)."
-    return status, viewer, _UPLOADER_TUCKED, None  # Reset upload for next file
+    return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN  # Reset upload for next file
 
 
 @server.route("/uploads/<path:fname>")
@@ -498,7 +524,7 @@ def export_dxf():
     deleted before responding — so there is no cleanup race and nothing leaks on
     disk regardless of how slowly the client downloads.
     """
-    from flask import request, Response
+    from flask import Response
 
     try:
         from circle_detection import export_to_dxf
@@ -508,6 +534,12 @@ def export_dxf():
     data = _json_body()
     geometry = data.get("geometry", [])
     if not isinstance(geometry, list) or not geometry:
+        return "No geometry provided", 400
+    # Keep only dict items. export_to_dxf skips a malformed item so one bad shape can't drop
+    # the rest of the drawing, but its per-item guard calls item.get() first — a bare string or
+    # number in the list raises AttributeError past that guard and 500s the whole export.
+    geometry = [g for g in geometry if isinstance(g, dict)]
+    if not geometry:
         return "No geometry provided", 400
 
     # Require a positive scale. `... or 1.0` would silently turn a client-sent 0 into 1.0
@@ -540,10 +572,12 @@ def export_dxf():
         with open(dxf_path, "rb") as f:
             payload = f.read()
     except Exception as e:
+        # Log the detail server-side; don't echo the raw exception back to the client (it can
+        # carry filesystem paths and internals). Matches how /api/submit reports its failures.
         print(f"[DXF Export] Error: {e}")
         import traceback
         traceback.print_exc()
-        return f"Error: {str(e)}", 500
+        return "DXF export failed", 500
     finally:
         try:
             os.unlink(dxf_path)
@@ -567,7 +601,7 @@ def api_trace():
     turns into an editable, closed outline. Kept lenient — a failure to segment is a normal
     200 {ok:false} so the UI can say 'tap the part' rather than showing an error page.
     """
-    from flask import request, jsonify
+    from flask import jsonify
     try:
         from auto_outline import auto_outline_full
     except Exception:
@@ -645,7 +679,6 @@ def _decode_data_url(durl):
 
 def _submission_lines(data):
     """Human-readable summary lines shared by the email body and the saved record."""
-    import datetime
     brief = data.get("brief") or {}
     lines = ["Part submission — Datum Laboratories", ""]
     for k, label in (("part", "Part"), ("material", "Material"), ("quantity", "Quantity"),
@@ -782,7 +815,6 @@ def _send_submission_email(data, record):
 def submit_part():
     """Receive a multi-view part submission, save it, and email it to Datum (if SMTP is
     configured). Always saves so nothing is lost; returns an honest message either way."""
-    from flask import request
     data = _json_body()
     views = data.get("views")
     if not isinstance(views, list) or not views:

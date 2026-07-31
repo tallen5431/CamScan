@@ -265,6 +265,11 @@ def export_to_dxf(
     pos_s = mm_per_px if mm_per_px else 1.0
 
     for item in geometry:
+        # A non-dict entry has no .get(), and the AttributeError it raises would escape the
+        # per-item guard below and abort the whole export — skip it here instead.
+        if not isinstance(item, dict):
+            print(f"[DXF Export] Skipping non-dict geometry entry: {type(item).__name__}")
+            continue
         try:
             size_s = float(item.get("mm_per_px") or mm_per_px)
         except (TypeError, ValueError):

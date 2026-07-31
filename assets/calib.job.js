@@ -499,10 +499,19 @@
     setStatus('Adding to your quote…');
     var msg={ type:'camscan:submit', version:1, brief:job.brief, views:exportViews(false) };
     var win = hostWin || window.parent || window;
+    // The message carries the customer's brief (name, contact e-mail, notes) AND every view's
+    // raw photo, so it is only ever posted to a NAMED origin — never targetOrigin '*'. A '*'
+    // post is delivered to whatever document currently occupies the target window, which need
+    // not be the page that framed us. Prefer the handshake origin; otherwise the referrer's
+    // origin (the framing page). With neither, skip the hand-off and use our own /api/submit
+    // rather than broadcasting. trustedHost() re-checks the origin so tightening its allow-list
+    // later automatically tightens this path too.
     var origin = hostOrigin;
-    if(!origin){ try{ origin = document.referrer ? new URL(document.referrer).origin : '*'; }catch(e){ origin='*'; } }
+    if(!origin){ try{ origin = document.referrer ? new URL(document.referrer).origin : null; }catch(e){ origin=null; } }
+    if(!origin || !trustedHost(origin)){ sendToServer(); return; }
     handoffAck=false;
-    try{ win.postMessage(msg, origin); }catch(e){ try{ win.postMessage(msg, '*'); }catch(_){} }
+    try{ win.postMessage(msg, origin); }
+    catch(e){ sendToServer(); return; }
     if(handoffTimer) clearTimeout(handoffTimer);
     var wait = (typeof window.__CAMSCAN_HANDOFF_TIMEOUT==='number') ? window.__CAMSCAN_HANDOFF_TIMEOUT : 2200;
     handoffTimer=setTimeout(function(){ if(!handoffAck) sendToServer(); }, wait);
