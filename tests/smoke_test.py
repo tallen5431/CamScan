@@ -508,6 +508,39 @@ def main():
     except Exception as e:
         check("DXF endpoint works with no uploads/ dir", False, repr(e))
 
+    # 8e) /api/submit is unauthenticated and submissions/ has no reaper, so an unbounded
+    #     submit loop used to fill the volume. The cap refuses new submissions instead of
+    #     deleting business records — assert it refuses with 507, writes NOTHING when it
+    #     refuses, and stays out of the way when disabled.
+    try:
+        import base64 as _b64
+        import app as _app3
+        _okenc, _enc = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        durl = "data:image/jpeg;base64," + _b64.b64encode(_enc.tobytes()).decode()
+        body = {"id": "cap", "brief": {"part": "p"}, "views": [{"label": "Top", "image": durl}]}
+        _saved_dir, _saved_cap = _app3.SUBMISSIONS_DIR, _app3.MAX_SUBMISSIONS_BYTES
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                _app3.SUBMISSIONS_DIR = d
+                cli = _app3.server.test_client()
+                with _quiet():
+                    _app3.MAX_SUBMISSIONS_BYTES = 2 * 1024 * 1024 * 1024
+                    under = cli.post("/api/submit", json=body)
+                    _app3.MAX_SUBMISSIONS_BYTES = 1      # now over, after that first write
+                    over = cli.post("/api/submit", json=body)
+                    n_after_refusal = len(os.listdir(d))
+                    _app3.MAX_SUBMISSIONS_BYTES = 0      # cap disabled
+                    off = cli.post("/api/submit", json=body)
+        finally:
+            _app3.SUBMISSIONS_DIR, _app3.MAX_SUBMISSIONS_BYTES = _saved_dir, _saved_cap
+        ok = (under.status_code == 200 and over.status_code == 507
+              and n_after_refusal == 1 and off.status_code == 200)
+        check("submissions cap refuses without discarding records", ok,
+              f"under={under.status_code}, over={over.status_code}, "
+              f"dirs after refusal={n_after_refusal}, cap-off={off.status_code}")
+    except Exception as e:
+        check("submissions cap refuses without discarding records", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

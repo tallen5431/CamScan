@@ -65,6 +65,13 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 SMTP_TLS = os.getenv("SMTP_TLS", "1").strip().lower() in ("1", "true", "yes", "on")
 SUBMISSIONS_DIR = os.path.join(os.path.dirname(__file__), "submissions")
+# Bound what the unauthenticated /api/submit can write to disk. uploads/ has a reaper, but
+# submissions are business records — a customer's part, photos and contact details — so they
+# are NEVER auto-deleted. Instead, once the directory reaches this cap we refuse new
+# submissions and say so, pointing the customer at "Download summary". That bounds disk
+# without discarding anything someone already sent us, and without it a loop of submits fills
+# the volume and takes the whole app down with it. Set MAX_SUBMISSIONS_BYTES=0 to disable.
+MAX_SUBMISSIONS_BYTES = int(os.getenv("MAX_SUBMISSIONS_BYTES", 2 * 1024 * 1024 * 1024))
 
 # --- Embedding: who may iframe CamScan ------------------------------------------------
 # CamScan is embedded on the Datum Labs replacement-parts page via an <iframe>. A CSP
@@ -761,6 +768,19 @@ def _save_submission(data):
     return {"dir": out_dir, "images": images, "bundle": bundle_path}
 
 
+def _submissions_bytes():
+    """Total bytes stored under SUBMISSIONS_DIR (0 when it doesn't exist yet).
+    Best-effort: an entry we can't stat is skipped rather than failing a submission."""
+    total = 0
+    for root, _dirs, files in os.walk(SUBMISSIONS_DIR):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    return total
+
+
 def _header_safe(value, limit=200):
     """A single-line, length-capped string safe to place in an e-mail header (strips CR/LF
     and other control characters that could inject headers or break serialization)."""
@@ -825,6 +845,16 @@ def submit_part():
         return {"ok": False, "error": "No views to submit — add at least one."}, 400
     if not all(isinstance(v, dict) for v in views):
         return {"ok": False, "error": "Malformed submission — each view must be an object."}, 400
+
+    # Refuse rather than fill the volume (see MAX_SUBMISSIONS_BYTES). Checked before we write
+    # anything, so a refused submission leaves no partial record behind, and the customer gets
+    # the same "Download summary" fallback the e-mail failure path offers.
+    if MAX_SUBMISSIONS_BYTES > 0 and _submissions_bytes() >= MAX_SUBMISSIONS_BYTES:
+        print(f"[Submit] submissions dir is at the {MAX_SUBMISSIONS_BYTES:,}-byte cap — refusing. "
+              "Archive SUBMISSIONS_DIR or raise MAX_SUBMISSIONS_BYTES.")
+        return {"ok": False,
+                "error": "The server is out of room for new submissions. "
+                         "Please use “Download summary” and email it to us."}, 507
 
     try:
         record = _save_submission(data)
