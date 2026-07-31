@@ -484,6 +484,30 @@ def main():
     except Exception as e:
         check("DXF export skips non-dict geometry entries", False, repr(e))
 
+    # 8d) /api/export/dxf must work before uploads/ exists. It used to stage its temp file
+    #     there (created lazily by the upload callback), so exporting straight after
+    #     "Load a saved job" on a fresh container raised FileNotFoundError outside the try
+    #     and returned a bare 500. Point UPLOAD_DIR at a path that does not exist to prove
+    #     the endpoint no longer depends on it, and that junk entries still 400 cleanly.
+    try:
+        import app as _app2
+        _saved_dir = _app2.UPLOAD_DIR
+        try:
+            _app2.UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "camscan-does-not-exist")
+            cli = _app2.server.test_client()
+            with _quiet():
+                good = cli.post("/api/export/dxf", json={
+                    "geometry": [{"type": "circle", "center_x": 10, "center_y": 10, "radius_px": 5}],
+                    "mm_per_px": 0.1, "image_height": 200})
+                junk = cli.post("/api/export/dxf", json={"geometry": ["junk", 7]})
+        finally:
+            _app2.UPLOAD_DIR = _saved_dir
+        ok = good.status_code == 200 and len(good.data) > 0 and junk.status_code == 400
+        check("DXF endpoint works with no uploads/ dir", ok,
+              f"export={good.status_code}, junk-only={junk.status_code}")
+    except Exception as e:
+        check("DXF endpoint works with no uploads/ dir", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

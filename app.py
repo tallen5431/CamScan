@@ -563,7 +563,11 @@ def export_dxf():
     except (TypeError, ValueError):
         image_height = None
 
-    dxf_fd, dxf_path = tempfile.mkstemp(suffix=".dxf", dir=UPLOAD_DIR)
+    # System temp, NOT UPLOAD_DIR. uploads/ is created lazily by the upload callback, so
+    # exporting before any photo was uploaded in this container (e.g. straight after "Load a
+    # saved job") raised FileNotFoundError here — outside the try — and returned a bare 500.
+    # It is also served publicly at /uploads/<name>, and a scratch file has no business there.
+    dxf_fd, dxf_path = tempfile.mkstemp(suffix=".dxf")
     os.close(dxf_fd)
     try:
         ok = export_to_dxf(geometry, dxf_path, mm_per_px, image_height_px=image_height)
