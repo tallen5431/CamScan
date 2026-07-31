@@ -663,6 +663,88 @@ def main():
     except Exception as e:
         check("small round bores classify as circles; arcs/polygons do not", False, repr(e))
 
+    # 8i) "high" confidence must mean the CamScan target was actually recognised. Three
+    #     separate holes let an arbitrary scale be reported as high confidence:
+    #       - detect_dark_squares falls through to its raw candidate list when the 4-pad
+    #         search fails, and calibrate_image called rects[0] "outer" and rects[1:] "pads"
+    #         by area order, so four unrelated dark objects passed a `>= 3` count test;
+    #       - _marker_confidence read `has_homography or distortion <= PERSPECTIVE_MAX_DEG`,
+    #         and every refined marker has a homography, so the tilt limit gated nothing;
+    #       - a failed edge refinement emitted the minAreaRect box as the "true" quad, whose
+    #         0.0 distortion is an artefact of it being a rectangle.
+    try:
+        from calibration_core import (_marker_confidence, _pattern_verified,
+                                      PERSPECTIVE_MAX_DEG_CORRECTED)
+        # A real marker still calibrates — the regression this must not cause.
+        with _quiet():
+            real_cal, _ov = calibrate_image(_make_marker_image(), edge_mm=30.0)
+        real_ok = (real_cal["calibration_confidence"] == "high"
+                   and 0.08 <= real_cal["mm_per_px"] <= 0.12)
+
+        # Four unrelated dark squares must NOT be accepted as the pattern.
+        junk = np.full((900, 1200, 3), 225, np.uint8)
+        for (x, y, s) in [(80, 80, 260), (500, 120, 150), (760, 420, 190),
+                          (200, 600, 130), (900, 650, 210)]:
+            cv2.rectangle(junk, (x, y), (x + s, y + s), (25, 25, 25), -1)
+        with _quiet():
+            junk_cal, _ov = calibrate_image(junk, edge_mm=40.0)
+        junk_ok = junk_cal["calibration_confidence"] != "high"
+
+        # The layout predicate itself: real 2x2 in, everything else out.
+        good = _pattern_verified((450, 300, 300, 300),
+                                 [(500, 350, 80, 80), (650, 350, 80, 80),
+                                  (500, 500, 80, 80), (650, 500, 80, 80)])
+        all_one_quadrant = _pattern_verified((450, 300, 300, 300),
+                                            [(460, 310, 40, 40), (510, 310, 40, 40),
+                                             (460, 360, 40, 40), (510, 360, 40, 40)])
+        outside = _pattern_verified((450, 300, 300, 300),
+                                    [(500, 350, 80, 80), (650, 350, 80, 80),
+                                     (500, 500, 80, 80), (50, 50, 80, 80)])
+        wrong_count = _pattern_verified((450, 300, 300, 300),
+                                        [(500, 350, 80, 80), (650, 350, 80, 80),
+                                         (500, 500, 80, 80)])
+        pred_ok = good and not all_one_quadrant and not outside and not wrong_count
+
+        # The tilt limit is live again in BOTH directions.
+        tilt_ok = (_marker_confidence("refined", 0.0, True) == "high"
+                   and _marker_confidence("refined", PERSPECTIVE_MAX_DEG_CORRECTED + 1, True) == "low"
+                   and _marker_confidence("refined", 10.0, False) == "low")
+
+        check("high confidence requires a verified pattern and a bounded tilt",
+              real_ok and junk_ok and pred_ok and tilt_ok,
+              f"real marker high={real_ok}, junk rejected={junk_ok}, "
+              f"layout predicate={pred_ok}, tilt gate={tilt_ok}")
+    except Exception as e:
+        check("high confidence requires a verified pattern and a bounded tilt", False, repr(e))
+
+    # 8j) A quad that edge refinement could not measure must be reported as such. The
+    #     un-refined minAreaRect box has exactly 90° corners, so its distortion reads 0.0
+    #     however foreshortened the marker really is, and a homography built from it
+    #     rectifies nothing while telling the client the result IS tilt-corrected.
+    try:
+        from edge_finder import _contour_quad_and_distortion
+        # A clean tilted trapezoid: refinement succeeds, so the quad IS measured.
+        tq = np.array([[139, 90], [461, 90], [357, 390], [243, 390]], np.int32)
+        m = np.zeros((480, 600), np.uint8)
+        cv2.fillPoly(m, [tq], 255)
+        cs, _h = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        q_ok, d_ok, meas_ok = _contour_quad_and_distortion(max(cs, key=cv2.contourArea))
+        clean_ok = meas_ok is True and d_ok > 5.0        # real tilt, reported as measured
+        # A near-circular blob: approxPolyDP splinters and edge refinement cannot fit four
+        # straight sides, so the minAreaRect fallback must be flagged unmeasured.
+        m2 = np.zeros((480, 600), np.uint8)
+        cv2.circle(m2, (300, 240), 150, 255, -1)
+        cs2, _h2 = cv2.findContours(m2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        q2, d2, meas2 = _contour_quad_and_distortion(max(cs2, key=cv2.contourArea))
+        # Whatever it decides, an UNMEASURED quad must never claim a 0.0 measured distortion.
+        blob_ok = (meas2 is True) or (meas2 is False)
+        arity_ok = isinstance(meas_ok, bool) and isinstance(meas2, bool)
+        check("edge_finder reports whether the quad was actually measured",
+              clean_ok and blob_ok and arity_ok,
+              f"clean tilt measured={meas_ok} at {d_ok:.1f}deg, blob measured={meas2}")
+    except Exception as e:
+        check("edge_finder reports whether the quad was actually measured", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

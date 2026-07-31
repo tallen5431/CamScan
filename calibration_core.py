@@ -20,6 +20,12 @@ LINE_THICKNESS: int = 3         # overlay poly thickness
 # confidence and prompt the user to verify. ~2.5° corresponds to ≳8% scale error on
 # a tilted square in testing.
 PERSPECTIVE_MAX_DEG: float = 2.5
+# The same limit when a rectifying homography WAS produced. Linear measurements are then
+# corrected onto the marker's plane, so a lot more tilt is tolerable — but the scalar
+# mm_per_px (the KPI readout, 2-point circles, the CSV/DXF fallback) is still taken from
+# the foreshortened edge and is not corrected by anything. Past this the scalar is wrong
+# enough that the user should be told to verify rather than shown a confident number.
+PERSPECTIVE_MAX_DEG_CORRECTED: float = 25.0
 
 # Photo-quality thresholds (on an image downscaled so its long side is ~1000 px, to make
 # the numbers resolution-independent). Conservative on purpose — we only NUDGE, never
@@ -122,20 +128,60 @@ def _marker_confidence(source: str, distortion_deg: float = 0.0,
                        has_homography: bool = False) -> str:
     """Trust level ("high"/"low") for a calibration marker, from how it was measured.
 
-    - "refined": precise edge_finder quad — trustworthy. Perspective tilt no longer
-                 forces "low" WHEN a rectifying homography was produced (linear
-                 measurements are then corrected downstream). Only refined markers
-                 that are strongly foreshortened AND lack a homography stay "low".
+    - "refined": precise edge_finder quad — trustworthy up to a tilt limit.
     - "bbox":    rough rotated-bounding-box fallback used when edge refinement
                  failed (low-contrast/dark backgrounds); can be ~10%+ off → "low".
     - "plain":   a solid square found on the full frame as a last resort. Accurate
                  on a real target, but we are less certain the object we latched
                  onto IS the calibration square → "low" (nudge the user to verify).
+
+    A rectifying homography RAISES the tolerated tilt, it does not remove the limit.
+    This used to read ``has_homography or distortion_deg <= PERSPECTIVE_MAX_DEG``, and
+    every refined marker carries a homography, so PERSPECTIVE_MAX_DEG gated nothing at
+    all — a marker at any distortion reported "high". The homography does rectify linear
+    measurements, but the scalar ``mm_per_px`` derived from the foreshortened edge does
+    not get corrected, and that scalar is what the KPI readout, 2-point circles and the
+    CSV/DXF fallback all use. Past PERSPECTIVE_MAX_DEG_CORRECTED it is too wrong to
+    present as "high" without asking the user to verify.
     """
     if source == "refined":
-        if has_homography or distortion_deg <= PERSPECTIVE_MAX_DEG:
+        limit = PERSPECTIVE_MAX_DEG_CORRECTED if has_homography else PERSPECTIVE_MAX_DEG
+        if distortion_deg <= limit:
             return "high"
     return "low"
+
+
+def _pattern_verified(outer_rect, inner_rects) -> bool:
+    """True when the detected rects really look like the CamScan target: an outer square
+    with four smaller pads, one in each quadrant, all inside it.
+
+    detect_dark_squares falls through to its raw score-sorted candidate list when
+    _find_4pad_pattern finds nothing, and says so only in a debug print. calibrate_image
+    then treats rects[0] as "outer" and rects[1:] as "pads" purely by area order, so four
+    unrelated dark objects in one photo became a verified marker and calibrated the image
+    off whichever happened to be biggest — reported as "high" confidence with no warning.
+    Check the geometry the pattern actually implies instead of trusting the ordering.
+    """
+    if not outer_rect or len(inner_rects) != 4:
+        return False
+    ox, oy, ow, oh = outer_rect
+    if ow <= 0 or oh <= 0:
+        return False
+    ocx, ocy = ox + ow / 2.0, oy + oh / 2.0
+    outer_area = float(ow * oh)
+    quadrants = set()
+    for (ix, iy, iw, ih) in inner_rects:
+        if iw <= 0 or ih <= 0:
+            return False
+        icx, icy = ix + iw / 2.0, iy + ih / 2.0
+        # Each pad's centre must sit inside the outer square...
+        if not (ox <= icx <= ox + ow and oy <= icy <= oy + oh):
+            return False
+        # ...and a pad is a fraction of it, never a comparable slab.
+        if (iw * ih) > 0.25 * outer_area:
+            return False
+        quadrants.add((icx >= ocx, icy >= ocy))
+    return len(quadrants) == 4      # one pad per quadrant — a real 2x2 layout
 
 
 def _record_marker(overlay: np.ndarray,
@@ -492,10 +538,18 @@ def calibrate_image(img_bgr: np.ndarray,
             # Map the TRUE trapezoid corners (crop coords) to the full frame for the
             # rectifying homography — same offset/downscale mapping as `mapped`.
             quad_crop = edge_metrics.get("quad")
+            # Only when the quad was actually MEASURED. An un-refined minAreaRect box is a
+            # rectangle by construction: its 0.0 distortion is an artefact, and a homography
+            # built from it rectifies nothing while telling the client the measurement is
+            # tilt-corrected. See edge_finder._contour_quad_and_distortion.
+            quad_measured = bool(edge_metrics.get("quad_measured", True))
             homography_corners = (
                 [(ox + int(qx / denom), oy + int(qy / denom)) for (qx, qy) in quad_crop]
-                if quad_crop else None
+                if (quad_crop and quad_measured) else None
             )
+            if quad_crop and not quad_measured:
+                print("     ⚠️  Edge refinement failed — the quad is a bounding rectangle, so its "
+                      "0.0° distortion is not a measurement; no homography, confidence capped to low")
             # Prefer the edge-fit trapezoid for the DRAWN quad, stored corners and edge
             # length as well: under tilt it hugs the true edges, whereas the minAreaRect
             # rectangle (mapped) visibly drifts off them and slightly mis-scales. Fall
@@ -508,9 +562,18 @@ def calibrate_image(img_bgr: np.ndarray,
                 # square object (a tile, a phone), and trusting it silently yields a wrong scale.
                 # Cap to "low" when the pattern isn't sufficiently present: the no-pattern
                 # Strategy-4 fallback, or fewer than 3 of the 4 inner pads found.
-                if marker["confidence"] == "high" and (no_pattern_fallback or len(inner_rects) < 3):
+                # Verify the pads really form the target's 2x2 layout inside the outer square.
+                # Counting them was not enough: detect_dark_squares quietly falls through to its
+                # raw candidate list when _find_4pad_pattern fails, so four unrelated dark
+                # objects passed the `>= 3` test and calibrated the photo off whichever was
+                # biggest — at "high" confidence, with no warning anywhere in the UI.
+                pattern_ok = _pattern_verified(outer_rect, inner_rects)
+                if marker["confidence"] == "high" and (no_pattern_fallback or not pattern_ok
+                                                       or not quad_measured):
                     marker["confidence"] = "low"
-                    print(f"     ⚠️  Weak pattern (inner pads={len(inner_rects)}, strat4={no_pattern_fallback}) — capping confidence to low")
+                    print(f"     ⚠️  Capping confidence to low (pads={len(inner_rects)}, "
+                          f"pattern_ok={pattern_ok}, quad_measured={quad_measured}, "
+                          f"strat4={no_pattern_fallback})")
                 markers.append(marker)
                 if marker["confidence"] == "low" and corner_source == "refined":
                     print(f"     ⚠️  Perspective distortion {distortion:.1f}° > {PERSPECTIVE_MAX_DEG}° — flagging low confidence")

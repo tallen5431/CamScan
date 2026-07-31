@@ -245,13 +245,15 @@ def _contour_quad_and_distortion(contour):
     """
     peri = cv2.arcLength(contour, True)
     if peri <= 0:
-        return None, 0.0
+        return None, 0.0, False
 
     coarse = None
+    coarse_from_approx = False
     approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
     if len(approx) == 4:
         try:
             coarse = _order_quad(approx.reshape(-1, 2).astype(np.float32))
+            coarse_from_approx = True      # follows the real boundary, not a bounding box
         except ValueError:
             coarse = None
     if coarse is None:
@@ -260,12 +262,20 @@ def _contour_quad_and_distortion(contour):
         try:
             coarse = _order_quad(cv2.boxPoints(cv2.minAreaRect(contour)))
         except ValueError:
-            return None, 0.0
+            return None, 0.0, False
 
     refined = _refine_quad_by_edges(contour, coarse)
     ordered = refined if refined is not None else coarse
     quad = [(float(x), float(y)) for (x, y) in ordered]
-    return quad, _quad_distortion(ordered)
+    # Third value: did we actually MEASURE this quad, or is it the un-refined minAreaRect
+    # box? A minAreaRect is a rectangle by construction, so its corner angles are exactly
+    # 90 deg and _quad_distortion returns 0.0 no matter how foreshortened the real marker
+    # is. On blurred or partly occluded contours that combination fired often (~14% of
+    # steeply tilted markers in testing, worst case a true 20.5 deg reported as 0.0), and
+    # the caller then built a rectifying homography out of a rectangle — which corrects no
+    # perspective at all while telling the client the measurement IS tilt-corrected.
+    measured = refined is not None or coarse_from_approx
+    return quad, _quad_distortion(ordered), measured
 
 
 # ─────────────────────────────────────────
@@ -384,11 +394,15 @@ def find_main_edges(
     # low-confidence calibration. Both are None/0.0 when there's no clean quad.
     if metrics is not None:
         if best_contour is not None:
-            quad, dist = _contour_quad_and_distortion(best_contour)
+            quad, dist, measured = _contour_quad_and_distortion(best_contour)
         else:
-            quad, dist = None, 0.0
+            quad, dist, measured = None, 0.0, False
         metrics["quad"] = quad
         metrics["distortion_deg"] = dist
+        # False => `quad` is an un-refined minAreaRect box: its 0.0 distortion is an
+        # artefact of it being a rectangle, not a measurement, and it must not be used to
+        # build a rectifying homography or to justify "high" confidence.
+        metrics["quad_measured"] = measured
 
     if debug and DEBUG:
         print(f"[edge_finder] contours={len(contours)}, best_score={best_score:.1f}")
