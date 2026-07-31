@@ -1767,7 +1767,10 @@
 
       _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
       _imgH(){ return this.img ? (this.img.naturalHeight || this.img.height) : 0; }
-      savePNG(){ Xport.exportPNG(this.img, this._dataForMeasure(), this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, this._allowHomography()); }
+      // Gated like saveCSV/saveDXF/saveSVG: an uncalibrated PNG now labels honestly in pixels,
+      // and the confirm says exactly that, so the customer isn't handed a scale-less drawing
+      // believing it carries millimetres.
+      savePNG(){ if(!this._confirmUncalibrated()) return; Xport.exportPNG(this.img, this._dataForMeasure(), this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, this._allowHomography()); }
       saveJSON(){
         // The exported homography maps to different spaces depending on its source: the
         // auto marker homography maps px -> UNIT square (scale by marker_size_mm), while a

@@ -551,7 +551,10 @@
       html+='<h2 style="font-size:16px;margin-top:22px;">'+esc(v.label||('View '+(i+1)))+'</h2>';
       var sc=v.scale&&v.scale.calibrated ? esc((v.scale.source||'scaled'))+(v.scale.perspective?' (tilt-corrected)':'') : 'no scale set';
       html+='<div style="color:#555;">Scale: '+sc+'</div>';
-      if(v.image) html+='<img src="'+v.image+'" style="max-width:100%;border:1px solid #ccc;margin:8px 0;">';
+      // esc() the src too: a loaded .camscan.json is arbitrary user input, and a label-style
+      // string with a double quote in views[].image would break out of the attribute and
+      // inject markup into the summary the customer then opens locally.
+      if(v.image) html+='<img src="'+esc(v.image)+'" style="max-width:100%;border:1px solid #ccc;margin:8px 0;">';
       if((v.measurements||[]).length){ html+='<ul>'; v.measurements.forEach(function(m){ html+='<li>'+esc(m.label)+': '+esc(m.text)+'</li>'; }); html+='</ul>'; }
     });
     html+='</body>';
