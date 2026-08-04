@@ -1485,7 +1485,10 @@
           const j = await r.json();
           if(!r.ok || !j.ok || !j.homography){ this._featureHeightMM = 0; this._planeH = null; return false; }
           this._planeH = j.homography;
-          this._rescaleAnnotations();
+          // Deliberately NOT calling _rescaleAnnotations(): the per-annotation frozen
+          // mm_per_px comes from the marker and is unchanged by which plane we measure in.
+          // It is only the fallback for paths with no homography (a 2-point circle), and
+          // those stay in the card's plane — as they already do under tilt.
           this.updateKPI(); this.requestDraw();
           return true;
         }catch(e){
