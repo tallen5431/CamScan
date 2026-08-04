@@ -41,6 +41,8 @@ def auto_outline(
     simplify: float = _DEFAULT_SIMPLIFY,
     max_points: int = _DEFAULT_MAX_POINTS,
     downscale_to: int = _DEFAULT_DOWNSCALE,
+    roi: Optional[Sequence[float]] = None,
+    edge_snap: bool = True,
 ) -> Optional[List[List[float]]]:
     """Return the part's OUTER boundary as [[x, y], ...] in IMAGE pixel coords, or None.
     (For interior holes too — what a printable replica needs — use auto_outline_full.)
@@ -53,12 +55,23 @@ def auto_outline(
                     are preserved regardless, so lowering this densifies curves, not corners.
     max_points    : cap on returned vertices (low-curvature points are dropped first, corners
                     last) — keeps the outline editable by hand.
+    roi           : (x, y, w, h) region-of-interest in image coords (the user's Area box).
+                    Segmentation is restricted to this region PLUS a background collar, which
+                    (a) gives a clean, LOCAL background estimate, (b) drops distant clutter and
+                    large cast shadows outside the box, and (c) stops a nearby object from being
+                    welded on. Coordinates are still returned in full-image space.
+    edge_snap     : pull the boundary onto the nearest strong image edge (a bounded, safe polish
+                    of a soft-fringe boundary; a no-op on a boundary already on a crisp edge).
     """
-    seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
+    crop, seed2, excl2, ox, oy = _crop_to_roi(img_bgr, seed, exclude_boxes, roi)
+    seg = _segment(crop, seed2, excl2, downscale_to)
     if seg is None:
         return None
-    mask, scale, sh, sw = seg
-    return _outer_polygon(mask, scale, sh, sw, simplify, max_points)
+    mask, scale, sh, sw, grad = seg
+    poly = _outer_polygon(mask, scale, sh, sw, simplify, max_points, grad, edge_snap)
+    if poly is None:
+        return None
+    return [[x + ox, y + oy] for (x, y) in poly] if (ox or oy) else poly
 
 
 def auto_outline_full(
@@ -70,6 +83,8 @@ def auto_outline_full(
     downscale_to: int = _DEFAULT_DOWNSCALE,
     want_holes: bool = True,
     min_hole_frac: float = 0.004,
+    roi: Optional[Sequence[float]] = None,
+    edge_snap: bool = True,
 ) -> Optional[dict]:
     """Segment the tapped part and return both its outer boundary AND its interior holes:
 
@@ -81,22 +96,80 @@ def auto_outline_full(
     turns a flat outline into a printable replica; a round bore comes back as a true circle.
     A wrench's OPEN jaw is not a hole (it opens to the exterior) so it stays part of `outer`.
     Returns None if nothing could be segmented.
+
+    roi : (x, y, w, h) region-of-interest (the user's Area box) — see auto_outline. Restricts
+          segmentation to that region plus a background collar; results stay in image coords.
     """
-    seg = _segment(img_bgr, seed, exclude_boxes, downscale_to)
+    crop, seed2, excl2, ox, oy = _crop_to_roi(img_bgr, seed, exclude_boxes, roi)
+    seg = _segment(crop, seed2, excl2, downscale_to)
     if seg is None:
         return None
-    mask, scale, sh, sw = seg
-    outer = _outer_polygon(mask, scale, sh, sw, simplify, max_points)
+    mask, scale, sh, sw, grad = seg
+    outer = _outer_polygon(mask, scale, sh, sw, simplify, max_points, grad, edge_snap)
     if outer is None:
         return None
     holes = _holes(mask, scale, sh, sw, simplify, max_points, min_hole_frac) if want_holes else []
+    if ox or oy:
+        outer = [[x + ox, y + oy] for (x, y) in outer]
+        holes = [_offset_hole(h, ox, oy) for h in holes]
     return {"outer": outer, "holes": holes}
 
 
+def _crop_to_roi(img_bgr, seed, exclude_boxes, roi, margin_frac=0.08, min_margin=10):
+    """Crop the image to an ROI (x, y, w, h) plus a background COLLAR, translating the seed and
+    exclude boxes into crop coordinates. Returns (crop, seed', exclude', ox, oy) where (ox, oy)
+    is the crop origin to add back to results. With no/invalid ROI the inputs pass through
+    unchanged (ox = oy = 0).
+
+    The collar is essential: the segmenter builds its background model from the crop's border
+    ring, so the crop must include real background AROUND the part — even when the user drew the
+    box tight to the object. The margin scales with the box so it works at any zoom."""
+    passthrough = (img_bgr, seed, tuple(exclude_boxes or ()), 0, 0)
+    if roi is None:
+        return passthrough
+    try:
+        rx, ry, rw, rh = (float(v) for v in roi)
+    except (TypeError, ValueError):
+        return passthrough
+    if not (rw > 1 and rh > 1) or not all(np.isfinite(v) for v in (rx, ry, rw, rh)):
+        return passthrough
+    H, W = img_bgr.shape[:2]
+    m = max(min_margin, margin_frac * max(rw, rh))
+    x0 = int(max(0, np.floor(rx - m))); y0 = int(max(0, np.floor(ry - m)))
+    x1 = int(min(W, np.ceil(rx + rw + m))); y1 = int(min(H, np.ceil(ry + rh + m)))
+    if x1 - x0 < 8 or y1 - y0 < 8:                     # ROI off-frame / degenerate -> ignore it
+        return passthrough
+    crop = img_bgr[y0:y1, x0:x1]
+    seed2 = None
+    if seed is not None:
+        try:
+            seed2 = [float(seed[0]) - x0, float(seed[1]) - y0]
+        except (TypeError, ValueError, IndexError):
+            seed2 = None
+    excl2 = []
+    for box in (exclude_boxes or ()):
+        try:
+            bx, by, bw, bh = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        excl2.append((bx - x0, by - y0, bw, bh))
+    return crop, seed2, tuple(excl2), x0, y0
+
+
+def _offset_hole(h, ox, oy):
+    """Translate a typed hole (circle or polygon) from crop coords back to image coords."""
+    if isinstance(h, dict) and h.get("shape") == "circle":
+        return {**h, "cx": h["cx"] + ox, "cy": h["cy"] + oy}
+    if isinstance(h, dict) and h.get("shape") == "polygon":
+        return {"shape": "polygon", "points": [[x + ox, y + oy] for (x, y) in h["points"]]}
+    return h
+
+
 def _segment(img_bgr, seed, exclude_boxes, downscale_to):
-    """Segment the tapped part. Returns (mask, scale, sh, sw) at the downscaled resolution, or
-    None. `mask` is the filled part (255) with interior holes preserved as 0, so callers can
-    read both its outer boundary and its holes."""
+    """Segment the tapped part. Returns (mask, scale, sh, sw, grad) at the downscaled
+    resolution, or None. `mask` is the filled part (255) with interior holes preserved as 0, so
+    callers can read both its outer boundary and its holes; `grad` is the image gradient
+    magnitude (reused for shadow arbitration and the outer-boundary edge-snap)."""
     if img_bgr is None or getattr(img_bgr, "size", 0) == 0:
         return None
     H, W = img_bgr.shape[:2]
@@ -117,8 +190,35 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     bg = np.median(ring_px, axis=0)
     dist = np.linalg.norm(lab - bg, axis=2)
     dist_u8 = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # Plain split: background (near bg) vs everything else. Otsu draws ONE line, so a cast
+    # shadow — a mid-tone between the bright surface and the darker/more-saturated part — lands
+    # on the part side and the outline bulges into it.
     _, fg = cv2.threshold(dist_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
+    mask = _component(fg, exclude_boxes, scale, sw, sh, seed)
+    if mask is None:
+        return None
+
+    grad = _gradient_mag(small)          # edge-strength field, reused below and for edge-snap
+
+    # Shadow refinement (purely additive). A SECOND Otsu on the foreground shoulder separates
+    # the shadow (mid distance from bg) from the part (far distance). We adopt that tighter mask
+    # only when its boundary demonstrably sits on stronger image edges than the plain one — a
+    # true part edge is a sharp gradient, a shadow's penumbra is soft — AND it still keeps the
+    # bulk of the tapped object. So a dark, low-contrast part whose own body reads shadow-like
+    # (chrome reflections, a matte-dark part) is never eaten: its refined mask either collapses
+    # or fails the edge test, and the plain mask stands.
+    refined = _shadow_refine(dist_u8, fg, grad, exclude_boxes, scale, sw, sh, seed, mask)
+    if refined is not None:
+        mask = refined
+
+    return mask, scale, sh, sw, grad
+
+
+def _component(fg, exclude_boxes, scale, sw, sh, seed):
+    """Clean a foreground binary and return the tapped/largest component as a filled mask
+    (255), interior holes preserved as 0, or None. Shared by the plain and shadow-refined
+    segmentations so both go through identical morphology, exclusion and component picking."""
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k, iterations=1)
@@ -136,23 +236,155 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
     if n <= 1:
         return None
-
     target = _pick_component(labels, stats, n, seed, scale, sw, sh)
     if target is None:
         return None
-
-    mask = (labels == target).astype(np.uint8) * 255
-    return mask, scale, sh, sw
+    return (labels == target).astype(np.uint8) * 255
 
 
-def _outer_polygon(mask, scale, sh, sw, simplify, max_points):
-    """The part's outer boundary as a simplified polygon in IMAGE pixel coords, or None."""
+def _shadow_refine(dist_u8, fg_plain, grad, exclude_boxes, scale, sw, sh, seed, mask_plain,
+                   min_keep_frac=0.45, edge_ratio=1.15, edge_floor=20.0):
+    """Try to shed a cast shadow welded onto the part; return the tighter mask or None.
+
+    The plain mask splits bg from foreground once, so a shadow (mid distance from the
+    background) sits with the part (far distance). A second Otsu ON THE FOREGROUND SHOULDER
+    finds the bg->shadow->part step and keeps only the far side (the part). That tighter mask
+    is adopted ONLY when both hold: (1) it retains >= min_keep_frac of the plain area — so it
+    hasn't eaten a genuine dark part whose body reads shadow-like — and (2) its boundary sits on
+    clearly stronger image gradients than the plain boundary — the real part edge is sharp,
+    a shadow's penumbra is soft. Otherwise the plain mask stands. This is why it fixes a real
+    cast shadow without repeating the reverted per-pixel rule that erased dark-chrome parts."""
+    fgvals = dist_u8[fg_plain > 0]
+    if fgvals.size < 50 or int(fgvals.max()) <= int(fgvals.min()):
+        return None                                  # foreground is one mode -> no shadow shoulder
+    t2, _ = cv2.threshold(fgvals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    fg2 = ((dist_u8 > t2).astype(np.uint8)) * 255
+    mask_alt = _component(fg2, exclude_boxes, scale, sw, sh, seed)
+    if mask_alt is None:
+        return None
+
+    a_plain = int((mask_plain > 0).sum())
+    a_alt = int((mask_alt > 0).sum())
+    if a_plain == 0 or a_alt < min_keep_frac * a_plain:
+        return None                                  # collapsed / ate the part
+
+    s_plain = _boundary_edge_score(mask_plain, grad)
+    s_alt = _boundary_edge_score(mask_alt, grad)
+    if s_alt > s_plain * edge_ratio + edge_floor:
+        return mask_alt
+    return None
+
+
+def _gradient_mag(small):
+    """Scharr gradient magnitude of the grayscale image — the edge-strength field."""
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = cv2.Scharr(gray, cv2.CV_32F, 1, 0)
+    gy = cv2.Scharr(gray, cv2.CV_32F, 0, 1)
+    return cv2.magnitude(gx, gy)
+
+
+def _boundary_edge_score(mask, grad):
+    """Median gradient magnitude sampled along the mask's outer boundary — how well the mask
+    edge coincides with a real image edge. A boundary hugging the true part edge scores high;
+    one bulged onto a shadow's soft penumbra scores low."""
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return 0.0
+    c = max(cnts, key=cv2.contourArea).reshape(-1, 2)
+    xs = np.clip(c[:, 0], 0, grad.shape[1] - 1)
+    ys = np.clip(c[:, 1], 0, grad.shape[0] - 1)
+    return float(np.median(grad[ys, xs]))
+
+
+def _sample_grad(grad, pts, sw, sh):
+    """Nearest-pixel gradient magnitude at each (x, y), clipped to the image."""
+    xs = np.clip(np.round(pts[:, 0]).astype(int), 0, sw - 1)
+    ys = np.clip(np.round(pts[:, 1]).astype(int), 0, sh - 1)
+    return grad[ys, xs]
+
+
+def _smooth_1d_cyclic(v, r):
+    """Box-smooth a per-vertex scalar around a closed contour (wrap-around)."""
+    if r < 1:
+        return v
+    n = len(v)
+    if n <= 2:
+        return v
+    r = min(r, n - 1)
+    ker = np.ones(2 * r + 1) / (2 * r + 1)
+    vp = np.concatenate([v[-r:], v, v[:r]])
+    return np.convolve(vp, ker, mode="same")[r:r + n]
+
+
+def _edge_snap(contour, grad, sh, sw, max_shift_frac=0.006, min_shift=3):
+    """Pull the dense outer boundary onto the true image edge — a bounded, self-calibrating
+    active-contour step.
+
+    For each boundary point we look a few px inward/outward along the local normal and find the
+    strongest gradient in that window (a mild distance penalty prefers the NEAREST strong edge).
+    A point is moved ONLY when it is genuinely off an edge — its own gradient is well below the
+    boundary's typical strength — AND a clearly stronger, above-typical edge sits within reach.
+    So a boundary already on a crisp edge (a clean trace) does not move at all, while a boundary
+    drifted onto a soft shadow/penumbra fringe is tightened onto the real edge. The per-vertex
+    shift is smoothed along the contour (neighbours move coherently, no jaggies/self-crossing)
+    and the whole step is vetoed if it would change the enclosed area by more than 25% — so this
+    can only REFINE a boundary, never relocate it. Bounded reach (a few px) by design: a large
+    weld/shadow is the region-split's / ROI's job, not this polish."""
+    P = contour.reshape(-1, 2).astype(np.float64)
+    n = len(P)
+    max_shift = max(min_shift, int(round(max_shift_frac * max(sh, sw))))
+    if n < 12 or max_shift < 1:
+        return contour
+
+    i = np.arange(n)
+    k = max(1, n // 200)                                   # tangent window (resolution-independent)
+    tang = P[(i + k) % n] - P[(i - k) % n]
+    nrm = np.stack([-tang[:, 1], tang[:, 0]], axis=1)
+    ln = np.hypot(nrm[:, 0], nrm[:, 1]); ln[ln == 0] = 1.0
+    nrm /= ln[:, None]
+    centroid = P.mean(axis=0)
+    nrm[((centroid - P) * nrm).sum(1) < 0] *= -1          # orient normals inward
+
+    cur = _sample_grad(grad, P, sw, sh)
+    edge_ref = float(np.median(cur))                       # this boundary's typical edge strength
+    if not (edge_ref > 0):
+        return contour
+    penalty = 0.02 * edge_ref                              # prefer the nearest strong edge
+    best_g = np.full(n, -np.inf)
+    best_t = np.zeros(n)
+    for t in range(-max_shift, max_shift + 1):
+        g = _sample_grad(grad, P + t * nrm, sw, sh) - penalty * abs(t)
+        upd = g > best_g
+        best_g[upd] = g[upd]; best_t[upd] = t
+
+    # Move only weak, off-edge points toward a clearly-stronger-than-typical edge.
+    move = (cur < 0.8 * edge_ref) & (best_g > 1.3 * cur) & (best_g > edge_ref)
+    shift = np.where(move, best_t, 0.0)
+    shift = _smooth_1d_cyclic(shift, max(1, max_shift // 2))
+    Q = P + shift[:, None] * nrm
+
+    a0 = abs(cv2.contourArea(P.astype(np.float32)))
+    a1 = abs(cv2.contourArea(Q.astype(np.float32)))
+    if a0 > 0 and abs(a1 - a0) / a0 > 0.25:                # too large a change -> refuse the snap
+        return contour
+    return Q.reshape(-1, 1, 2).astype(np.float32)
+
+
+def _outer_polygon(mask, scale, sh, sw, simplify, max_points, grad=None, snap=True):
+    """The part's outer boundary as a simplified polygon in IMAGE pixel coords, or None.
+
+    When `snap` and a gradient field are given, the dense boundary is first edge-snapped: weak
+    (off-edge) points are pulled a few px onto the nearest strong gradient ridge, tightening a
+    soft-fringe boundary onto the true part edge. It is a strict no-op on a boundary already
+    sitting on a strong edge, so a clean trace is unchanged."""
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not cnts:
         return None
     c = max(cnts, key=cv2.contourArea)
     if cv2.contourArea(c) < 0.003 * sh * sw:
         return None
+    if snap and grad is not None:
+        c = _edge_snap(c, grad, sh, sw)
     poly = _simplify(c, simplify, max_points)
     if poly is None or len(poly) < 3:
         return None

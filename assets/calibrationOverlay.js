@@ -1160,8 +1160,34 @@
         if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
         if(!this.img){ return; }
         this._lastAutoSeed = Array.isArray(seed) ? seed.slice() : null;
+        // An Area box around the part becomes the trace's region-of-interest: the server builds
+        // a clean LOCAL background model inside it and ignores everything outside, so distant
+        // clutter, a large cast shadow, or a nearby object can't derail the trace.
+        this._lastAutoRoi = this._roiForSeed(this._lastAutoSeed);
         if(!(this._autoSimplify > 0)) this._autoSimplify = 0.0006;   // default detail level
         this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, false);
+      }
+
+      // Pick the Area (rectangle) annotation to use as the trace ROI: the smallest box that
+      // contains the seed, or — if the seed is off any box / absent — the smallest box overall.
+      // Returns [x, y, w, h] in image coords, or null when no usable box is drawn.
+      _roiForSeed(seed){
+        try{
+          const norm=r=>{ const x1=Math.min(r[0],r[2]), y1=Math.min(r[1],r[3]),
+                                x2=Math.max(r[0],r[2]), y2=Math.max(r[1],r[3]);
+                          return [x1, y1, x2-x1, y2-y1]; };
+          let cands=((this.ann && this.ann.items) || [])
+            .filter(a=>a && a.type==='rectangle' && Array.isArray(a.rect) && a.rect.length===4)
+            .map(a=>norm(a.rect)).filter(b=>b[2]>4 && b[3]>4);
+          if(!cands.length) return null;
+          if(Array.isArray(seed)){
+            const inside=cands.filter(b=>seed[0]>=b[0] && seed[0]<=b[0]+b[2] &&
+                                         seed[1]>=b[1] && seed[1]<=b[1]+b[3]);
+            if(inside.length) cands=inside;
+          }
+          cands.sort((a,b)=>a[2]*a[3]-b[2]*b[3]);   // most specific (smallest) box wins
+          return cands[0];
+        }catch(e){ return null; }
       }
 
       // Re-run the last auto-trace at a new detail level (from the Detail slider), REPLACING
@@ -1192,10 +1218,16 @@
           });
         }catch(e){}
         const seedSent = seed ? [seed[0]*sentScale, seed[1]*sentScale] : null;
+        // Carry the Area box (if any) as the ROI, in the SAME sent-image coords as the seed.
+        let roiSent=null;
+        if(Array.isArray(this._lastAutoRoi) && this._lastAutoRoi.length===4){
+          const r=this._lastAutoRoi;
+          roiSent=[r[0]*sentScale, r[1]*sentScale, r[2]*sentScale, r[3]*sentScale];
+        }
 
         const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify }) })
+            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent }) })
           .then(r=>r.json())
           .then(function(j){
             if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){
