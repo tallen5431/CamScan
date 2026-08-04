@@ -1,5 +1,5 @@
 # CamScan — Calibration Exporter (single-page viewer)
-import os, base64, uuid, time, tempfile
+import os, base64, uuid, time, tempfile, math
 
 # Cap the pixels OpenCV will decode BEFORE importing cv2 (the env var is read at import
 # time). A tiny, highly-compressible upload can otherwise decode to hundreds of megapixels
@@ -17,7 +17,6 @@ from flask import Flask, send_from_directory, url_for
 from dash import Dash, html, dcc, Input, Output, State, no_update
 import cv2, numpy as np
 from werkzeug.middleware.proxy_fix import ProxyFix  # NEW: respect X-Forwarded-* behind Caddy
-from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from calibration_core import calibrate_image, save_outputs
@@ -66,6 +65,13 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 SMTP_TLS = os.getenv("SMTP_TLS", "1").strip().lower() in ("1", "true", "yes", "on")
 SUBMISSIONS_DIR = os.path.join(os.path.dirname(__file__), "submissions")
+# Bound what the unauthenticated /api/submit can write to disk. uploads/ has a reaper, but
+# submissions are business records — a customer's part, photos and contact details — so they
+# are NEVER auto-deleted. Instead, once the directory reaches this cap we refuse new
+# submissions and say so, pointing the customer at "Download summary". That bounds disk
+# without discarding anything someone already sent us, and without it a loop of submits fills
+# the volume and takes the whole app down with it. Set MAX_SUBMISSIONS_BYTES=0 to disable.
+MAX_SUBMISSIONS_BYTES = int(os.getenv("MAX_SUBMISSIONS_BYTES", 2 * 1024 * 1024 * 1024))
 
 # --- Embedding: who may iframe CamScan ------------------------------------------------
 # CamScan is embedded on the Datum Labs replacement-parts page via an <iframe>. A CSP
@@ -313,6 +319,21 @@ def _decode_b64_image(contents: str):
     return img
 
 
+# The landing card (which hosts #status) is tucked off-screen once a photo loads, so anything
+# written to #status from then on is invisible. Upload FAILURES must still be seen — otherwise
+# tapping "Add another photo" and picking an unsupported file looks like the tap did nothing at
+# all. This banner lives outside #top-panel, so it shows whether the card is on-screen or tucked.
+_BANNER_HIDDEN = {"display": "none"}
+_BANNER_SHOWN = {
+    "display": "block", "position": "fixed", "left": "50%", "transform": "translateX(-50%)",
+    "top": "10px", "zIndex": "80", "maxWidth": "min(560px, calc(100vw - 24px))",
+    "boxSizing": "border-box", "padding": "11px 14px", "borderRadius": "10px",
+    "background": "#2a1416", "border": "1px solid #6b2b30", "color": "#ffd9dc",
+    "font": "14px/1.45 Segoe UI, system-ui, sans-serif",
+    "boxShadow": "0 10px 30px rgba(0,0,0,.55)", "textAlign": "center",
+}
+
+
 app.layout = html.Div([
     html.Div([
         html.Div([
@@ -352,6 +373,9 @@ app.layout = html.Div([
     # role/aria-live so the load-bearing calibration state + measurement readout the JS
     # writes here are announced to screen readers (it's polite so it won't interrupt).
     html.Div(id="cal-kpi", className="cal-kpi", role="status", **{"aria-live": "polite"}),
+    # Always-visible upload-failure banner (see _BANNER_SHOWN). role=alert so a rejected
+    # upload is announced immediately rather than sitting silently off-screen.
+    html.Div(id="upload-error", role="alert", style=_BANNER_HIDDEN),
 ], id="landing-root", style={"fontFamily": "Segoe UI, sans-serif"})
 
 
@@ -362,11 +386,20 @@ _UPLOADER_TUCKED = {"position": "fixed", "left": "-9999px", "top": "0",
                     "width": "1px", "height": "1px", "overflow": "hidden", "opacity": "0"}
 
 
+def _upload_failed(msg):
+    """Return value for a failed upload: keep the current viewer, reset the uploader so the
+    same file can be picked again, and put `msg` in the always-visible banner as well as
+    #status (which is off-screen once a photo has loaded)."""
+    return msg, no_update, no_update, None, msg, _BANNER_SHOWN
+
+
 @app.callback(
     Output("status", "children"),
     Output("viewer", "children"),
     Output("top-panel", "style"),
     Output("uploader", "contents"),  # Reset upload to allow new uploads
+    Output("upload-error", "children"),
+    Output("upload-error", "style"),
     Input("uploader", "contents"),
     State("uploader", "filename"),
     prevent_initial_call=True
@@ -381,7 +414,7 @@ def on_upload(contents, filename):
 
     # Basic validation of filename extension
     if not _is_allowed_filename(filename):
-        return "⚠️ Unsupported file type.", no_update, no_update, None
+        return _upload_failed("⚠️ Unsupported file type.")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stem = os.path.splitext(filename or "image")[0]
@@ -393,12 +426,12 @@ def on_upload(contents, filename):
     try:
         img = _decode_b64_image(contents)
     except ImageTooLarge:
-        return (f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
-                "Resize it and try again."), no_update, no_update, None
+        return _upload_failed(f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
+                              "Resize it and try again.")
     except Exception:
-        return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
+        return _upload_failed("⚠️ Uploaded file is not a valid image.")
     if img is None:
-        return "⚠️ Uploaded file is not a valid image.", no_update, no_update, None
+        return _upload_failed("⚠️ Uploaded file is not a valid image.")
 
     # write atomically to avoid partial files
     tmp_fd, tmp_path = tempfile.mkstemp(dir=UPLOAD_DIR, prefix=f".{out_name}.", suffix=".tmp")
@@ -417,7 +450,7 @@ def on_upload(contents, filename):
                 os.unlink(tmp_path)
         except Exception:
             pass
-        return f"⚠️ Failed to save upload: {e}", no_update, no_update, None
+        return _upload_failed(f"⚠️ Failed to save upload: {e}")
 
     edge_mm_env = _resolve_edge_mm_from_env()
     if edge_mm_env is not None:
@@ -425,15 +458,26 @@ def on_upload(contents, filename):
     else:
         print("[App] No CALIB_EDGE_MM set; using calibration_core module default")
 
+    # The .jpg is already on disk. If anything below fails we return without a viewer, so that
+    # file is an orphan no session references — and the early return also skips _reap_uploads,
+    # so nothing trims it until the next SUCCESSFUL upload. Drop it on the way out instead.
+    def _discard_partial():
+        try:
+            os.unlink(final_path)
+        except OSError:
+            pass
+
     try:
         cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
     except Exception as e:
-        return f"⚠️ Processing error: {e}", no_update, no_update, None
+        _discard_partial()
+        return _upload_failed(f"⚠️ Processing error: {e}")
 
     try:
         json_path, _ = save_outputs(out_name, cal, overlay, UPLOAD_DIR)
     except Exception as e:
-        return f"⚠️ Failed to save results: {e}", no_update, no_update, None
+        _discard_partial()
+        return _upload_failed(f"⚠️ Failed to save results: {e}")
 
     # Keep the uploads dir bounded, preserving the pair we just wrote.
     _reap_uploads(keep_paths=(os.path.join(UPLOAD_DIR, out_name), json_path))
@@ -472,7 +516,7 @@ def on_upload(contents, filename):
             "line across something of known size (a coin, a card, a sheet of paper, or a "
             "ruler) and type its real length."
         )
-        return status, viewer, _UPLOADER_TUCKED, None
+        return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN
 
     status = (
         f"✅ Processed '{filename}' — {n_markers} marker(s). "
@@ -482,7 +526,7 @@ def on_upload(contents, filename):
     # user knows to double-check the scale rather than trusting a wrong value.
     if confidence == "low":
         status += " ⚠️ Auto-calibration is approximate — verify with the Set Scale tool (📐)."
-    return status, viewer, _UPLOADER_TUCKED, None  # Reset upload for next file
+    return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN  # Reset upload for next file
 
 
 @server.route("/uploads/<path:fname>")
@@ -498,7 +542,7 @@ def export_dxf():
     deleted before responding — so there is no cleanup race and nothing leaks on
     disk regardless of how slowly the client downloads.
     """
-    from flask import request, Response
+    from flask import Response
 
     try:
         from circle_detection import export_to_dxf
@@ -508,6 +552,12 @@ def export_dxf():
     data = _json_body()
     geometry = data.get("geometry", [])
     if not isinstance(geometry, list) or not geometry:
+        return "No geometry provided", 400
+    # Keep only dict items. export_to_dxf skips a malformed item so one bad shape can't drop
+    # the rest of the drawing, but its per-item guard calls item.get() first — a bare string or
+    # number in the list raises AttributeError past that guard and 500s the whole export.
+    geometry = [g for g in geometry if isinstance(g, dict)]
+    if not geometry:
         return "No geometry provided", 400
 
     # Require a positive scale. `... or 1.0` would silently turn a client-sent 0 into 1.0
@@ -521,17 +571,25 @@ def export_dxf():
             mm_per_px = float(raw_scale)
         except (TypeError, ValueError):
             return "Invalid mm_per_px", 400
-        if not (mm_per_px > 0):
-            return "mm_per_px must be > 0", 400
+        # `inf > 0` is True, so the positivity test alone lets Infinity through and every
+        # exported coordinate becomes inf — a 200 OK carrying a DXF no CAD tool will open.
+        if not (mm_per_px > 0) or not math.isfinite(mm_per_px):
+            return "mm_per_px must be a finite number > 0", 400
 
     # Image height (pixels) lets us flip the Y axis: image coordinates grow downward,
     # CAD coordinates grow upward. Without this the exported part comes out mirrored.
     try:
         image_height = float(data.get("image_height", 0)) or None
+        if image_height is not None and not math.isfinite(image_height):
+            image_height = None
     except (TypeError, ValueError):
         image_height = None
 
-    dxf_fd, dxf_path = tempfile.mkstemp(suffix=".dxf", dir=UPLOAD_DIR)
+    # System temp, NOT UPLOAD_DIR. uploads/ is created lazily by the upload callback, so
+    # exporting before any photo was uploaded in this container (e.g. straight after "Load a
+    # saved job") raised FileNotFoundError here — outside the try — and returned a bare 500.
+    # It is also served publicly at /uploads/<name>, and a scratch file has no business there.
+    dxf_fd, dxf_path = tempfile.mkstemp(suffix=".dxf")
     os.close(dxf_fd)
     try:
         ok = export_to_dxf(geometry, dxf_path, mm_per_px, image_height_px=image_height)
@@ -540,10 +598,12 @@ def export_dxf():
         with open(dxf_path, "rb") as f:
             payload = f.read()
     except Exception as e:
+        # Log the detail server-side; don't echo the raw exception back to the client (it can
+        # carry filesystem paths and internals). Matches how /api/submit reports its failures.
         print(f"[DXF Export] Error: {e}")
         import traceback
         traceback.print_exc()
-        return f"Error: {str(e)}", 500
+        return "DXF export failed", 500
     finally:
         try:
             os.unlink(dxf_path)
@@ -567,7 +627,7 @@ def api_trace():
     turns into an editable, closed outline. Kept lenient — a failure to segment is a normal
     200 {ok:false} so the UI can say 'tap the part' rather than showing an error page.
     """
-    from flask import request, jsonify
+    from flask import jsonify
     try:
         from auto_outline import auto_outline_full
     except Exception:
@@ -593,6 +653,8 @@ def api_trace():
     if isinstance(seed, (list, tuple)) and len(seed) == 2:
         try:
             seed = [float(seed[0]), float(seed[1])]
+            if not all(math.isfinite(v) for v in seed):
+                seed = None
         except (TypeError, ValueError):
             seed = None
     else:
@@ -603,7 +665,12 @@ def api_trace():
     for box in (raw_exclude if isinstance(raw_exclude, (list, tuple)) else []):
         try:
             if len(box) == 4:
-                exclude.append(tuple(float(v) for v in box))
+                vals = tuple(float(v) for v in box)
+                # NaN/Infinity reaches an int() deep in the segmenter and raises, turning a
+                # bad box into a 500 — this endpoint's contract is to degrade to 200 {ok:false}.
+                # `roi` and `seed` are already screened this way; screen `exclude` too.
+                if all(math.isfinite(v) for v in vals):
+                    exclude.append(vals)
         except (TypeError, ValueError):
             continue
 
@@ -616,6 +683,8 @@ def api_trace():
     if isinstance(roi, (list, tuple)) and len(roi) == 4:
         try:
             roi = [float(v) for v in roi]
+            if not all(math.isfinite(v) for v in roi):
+                roi = None
         except (TypeError, ValueError):
             roi = None
     else:
@@ -645,7 +714,6 @@ def _decode_data_url(durl):
 
 def _submission_lines(data):
     """Human-readable summary lines shared by the email body and the saved record."""
-    import datetime
     brief = data.get("brief") or {}
     lines = ["Part submission — Datum Laboratories", ""]
     for k, label in (("part", "Part"), ("material", "Material"), ("quantity", "Quantity"),
@@ -688,7 +756,10 @@ def _save_submission(data):
         except Exception:
             continue
         ext = ".jpg" if "jpeg" in (mime or "") else (".png" if "png" in (mime or "") else ".img")
-        label = "".join(c for c in str(v.get("label", "view")) if c.isalnum() or c in ("-", "_")) or f"view{i + 1}"
+        # Cap the label: an over-long one makes open() raise ENAMETOOLONG, which _save_submission
+        # does not catch, so /api/submit loses the WHOLE submission over one view's name. The UI
+        # only offers short labels, but a loaded .camscan.json or a direct POST can carry any.
+        label = "".join(c for c in str(v.get("label", "view")) if c.isalnum() or c in ("-", "_"))[:60] or f"view{i + 1}"
         fn = f"{i + 1:02d}-{label}{ext}"
         with open(os.path.join(out_dir, fn), "wb") as f:
             f.write(raw)
@@ -722,6 +793,19 @@ def _save_submission(data):
         bundle_path = None
 
     return {"dir": out_dir, "images": images, "bundle": bundle_path}
+
+
+def _submissions_bytes():
+    """Total bytes stored under SUBMISSIONS_DIR (0 when it doesn't exist yet).
+    Best-effort: an entry we can't stat is skipped rather than failing a submission."""
+    total = 0
+    for root, _dirs, files in os.walk(SUBMISSIONS_DIR):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    return total
 
 
 def _header_safe(value, limit=200):
@@ -782,13 +866,22 @@ def _send_submission_email(data, record):
 def submit_part():
     """Receive a multi-view part submission, save it, and email it to Datum (if SMTP is
     configured). Always saves so nothing is lost; returns an honest message either way."""
-    from flask import request
     data = _json_body()
     views = data.get("views")
     if not isinstance(views, list) or not views:
         return {"ok": False, "error": "No views to submit — add at least one."}, 400
     if not all(isinstance(v, dict) for v in views):
         return {"ok": False, "error": "Malformed submission — each view must be an object."}, 400
+
+    # Refuse rather than fill the volume (see MAX_SUBMISSIONS_BYTES). Checked before we write
+    # anything, so a refused submission leaves no partial record behind, and the customer gets
+    # the same "Download summary" fallback the e-mail failure path offers.
+    if MAX_SUBMISSIONS_BYTES > 0 and _submissions_bytes() >= MAX_SUBMISSIONS_BYTES:
+        print(f"[Submit] submissions dir is at the {MAX_SUBMISSIONS_BYTES:,}-byte cap — refusing. "
+              "Archive SUBMISSIONS_DIR or raise MAX_SUBMISSIONS_BYTES.")
+        return {"ok": False,
+                "error": "The server is out of room for new submissions. "
+                         "Please use “Download summary” and email it to us."}, 507
 
     try:
         record = _save_submission(data)

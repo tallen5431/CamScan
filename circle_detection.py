@@ -249,6 +249,10 @@ def export_to_dxf(
         if _name not in doc.layers:
             doc.layers.add(_name, color=_color)
 
+    if image_height_px is not None and not math.isfinite(image_height_px):
+        print(f"[DXF Export] Ignoring non-finite image_height_px {image_height_px!r} (no Y flip)")
+        image_height_px = None
+
     def _flip_y(y_px: float) -> float:
         # `is not None`, not truthiness: a genuine image_height_px of 0 would otherwise skip
         # the flip silently. (0 is degenerate but should flip about 0, not be ignored.)
@@ -263,13 +267,30 @@ def export_to_dxf(
     # outside the part it belongs to. Per-item mm_per_px is used only for a shape's intrinsic
     # SIZE (radius, text height), where the item's local scale is the right one.
     pos_s = mm_per_px if mm_per_px else 1.0
+    if not math.isfinite(pos_s):
+        print(f"[DXF Export] Error: non-finite mm_per_px {mm_per_px!r}")
+        return False
+
+    def _num(v):
+        """A geometry field as a FINITE float. NaN/Infinity were written into the DXF
+        verbatim — ezdxf accepts them — so the export reported success while producing a
+        file CAD refuses to open. Raising here drops just that item via the guard below."""
+        f = float(v)
+        if not math.isfinite(f):
+            raise ValueError(f"non-finite coordinate {v!r}")
+        return f
 
     for item in geometry:
+        # A non-dict entry has no .get(), and the AttributeError it raises would escape the
+        # per-item guard below and abort the whole export — skip it here instead.
+        if not isinstance(item, dict):
+            print(f"[DXF Export] Skipping non-dict geometry entry: {type(item).__name__}")
+            continue
         try:
             size_s = float(item.get("mm_per_px") or mm_per_px)
         except (TypeError, ValueError):
             size_s = mm_per_px
-        if not size_s:
+        if not size_s or not math.isfinite(size_s):
             size_s = pos_s
 
         # Skip (don't abort) on a single malformed item — one bad entry must not
@@ -277,40 +298,40 @@ def export_to_dxf(
         try:
             itype = item.get("type")
             if itype == "circle":
-                cx = item["center_x"] * pos_s
-                cy = _flip_y(item["center_y"]) * pos_s
-                r = item["radius_px"] * size_s
+                cx = _num(item["center_x"]) * pos_s
+                cy = _flip_y(_num(item["center_y"])) * pos_s
+                r = _num(item["radius_px"]) * size_s
                 msp.add_circle((cx, cy), r, dxfattribs={'layer': _layer(item, 'CIRCLES')})
 
             elif itype == "line":
-                x1 = item["x1"] * pos_s
-                y1 = _flip_y(item["y1"]) * pos_s
-                x2 = item["x2"] * pos_s
-                y2 = _flip_y(item["y2"]) * pos_s
+                x1 = _num(item["x1"]) * pos_s
+                y1 = _flip_y(_num(item["y1"])) * pos_s
+                x2 = _num(item["x2"]) * pos_s
+                y2 = _flip_y(_num(item["y2"])) * pos_s
                 msp.add_line((x1, y1), (x2, y2), dxfattribs={'layer': _layer(item, 'LINES')})
 
             elif itype == "rectangle":
-                x1 = item["x1"] * pos_s
-                x2 = item["x2"] * pos_s
-                y1 = _flip_y(item["y1"]) * pos_s
-                y2 = _flip_y(item["y2"]) * pos_s
+                x1 = _num(item["x1"]) * pos_s
+                x2 = _num(item["x2"]) * pos_s
+                y1 = _flip_y(_num(item["y1"])) * pos_s
+                y2 = _flip_y(_num(item["y2"])) * pos_s
                 # Closed LWPOLYLINE so the profile is directly extrudable in CAD
                 # (a duplicate coincident vertex is NOT a closed profile).
                 points = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
                 msp.add_lwpolyline(points, close=True, dxfattribs={'layer': _layer(item, 'RECTANGLES')})
 
             elif itype == "polyline":
-                points = [(p[0] * pos_s, _flip_y(p[1]) * pos_s) for p in item.get("points", [])]
+                points = [(_num(p[0]) * pos_s, _flip_y(_num(p[1])) * pos_s) for p in item.get("points", [])]
                 if points:
                     msp.add_lwpolyline(points, close=bool(item.get("closed")),
                                        dxfattribs={'layer': _layer(item, 'POLYLINES')})
 
             elif itype == "text":
-                tx = item["x"] * pos_s
-                ty = _flip_y(item["y"]) * pos_s
+                tx = _num(item["x"]) * pos_s
+                ty = _flip_y(_num(item["y"])) * pos_s
                 # `or 3.0` so an explicit height:None (key present, value None) still gets the
                 # default instead of raising and dropping the whole text entity.
-                h = float(item.get("height") or 3.0) * size_s
+                h = _num(item.get("height") or 3.0) * size_s
                 if h <= 0:
                     h = 2.5 * size_s
                 t = msp.add_text(str(item.get("text", "")),

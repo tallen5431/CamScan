@@ -440,13 +440,24 @@ def _fit_circle_ls(pts):
     return float(cx), float(cy), float(np.sqrt(v))
 
 
-def _largest_inlier_arc_frac(pts, cx, cy, inliers, bins=48):
+def _largest_inlier_arc_frac(pts, cx, cy, inliers, bins=None):
     """Fraction of the full circle spanned by the LARGEST CONTIGUOUS run of on-circle sectors.
     This separates a round bore with ONE localized defect (a shadow notch — its outliers sit
     in a single arc, so the rest is one long contiguous inlier run) from a polygon (whose
-    off-circle corners are spread all the way round, so the longest contiguous run is short)."""
+    off-circle corners are spread all the way round, so the longest contiguous run is short).
+
+    ``bins`` scales with the number of boundary points instead of being a fixed 48. A sector
+    with NO points in it is counted as off-circle (it has to be — an arc that simply stops,
+    like a semicircular notch, must not read as a full bore), so at a fixed 48 a small bore
+    broke its own run on empty sectors: a perfectly round hole of radius <= ~10 px in the
+    working image has too few boundary points to land in all 48, and came back a polygon
+    rather than a circle with a diameter. Roughly three points per sector keeps genuine
+    circles unbroken while still resolving a real gap.
+    """
     if len(pts) == 0:
         return 0.0
+    if bins is None:
+        bins = int(min(48, max(8, len(pts) // 3)))
     ang = np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx)
     idx = (((ang + np.pi) / (2.0 * np.pi)) * bins).astype(int) % bins
     good = np.zeros(bins, dtype=bool)

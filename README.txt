@@ -29,11 +29,20 @@ IMPORTANT — set your real square size:
   used at upload time, e.g.  CALIB_EDGE_MM=47.5 python app.py
 
 Deployment / safety environment variables (all optional):
-  MAX_CONTENT_LENGTH_BYTES  max upload size in bytes (default 8 MiB)
+  MAX_CONTENT_LENGTH_BYTES  max REQUEST BODY size in bytes (default 32 MiB). Larger than
+                            the 8 MB photo limit shown in the UI because uploads arrive
+                            base64-encoded (~1.37x) and a multi-view submission carries a
+                            reloadable snapshot per view.
   MAX_IMAGE_PIXELS          reject images that DECODE larger than this (default
                             50,000,000 px) — guards against decompression bombs
-  MAX_UPLOAD_FILES          cap on retained files in uploads/ (default 400; 0 = off)
+  MAX_UPLOAD_FILES          cap on retained UPLOADS in uploads/ — a photo and its
+                            .calibration.json count as one (default 400; 0 = off)
   MAX_UPLOAD_AGE_HOURS      drop uploads older than this (default 72)
+  MAX_SUBMISSIONS_BYTES     refuse NEW part submissions once submissions/ reaches this size
+                            (default 2 GiB; 0 = no cap). Submissions are business records
+                            and are never auto-deleted — the cap only stops an unbounded
+                            /api/submit from filling the volume. Archive submissions/ (or
+                            raise this) if customers start seeing "out of room".
   CAMSCAN_DEBUG_IMAGES=1    write annotated detection debug images to ./debug_out
                             (OFF by default; never writes into the served uploads dir)
 

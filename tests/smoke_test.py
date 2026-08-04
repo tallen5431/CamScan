@@ -437,6 +437,314 @@ def main():
     except Exception as e:
         check("job round-trip persistence", False, repr(e))
 
+    # 8b) A rejected upload must be VISIBLE. #status lives inside the landing card, which is
+    #     tucked off-screen once a photo loads, so every failure path also has to fill the
+    #     always-visible #upload-error banner — otherwise picking a bad second photo looks
+    #     like the tap did nothing. Guard the arity and the banner on every failure path.
+    try:
+        import base64
+        import app as _app
+        from dash import no_update
+        _okenc, _enc = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        good = "data:image/jpeg;base64," + base64.b64encode(_enc.tobytes()).decode()
+        bad_paths = [
+            ("bad extension", good, "photo.heic"),
+            ("not an image", "data:image/jpeg;base64," + base64.b64encode(b"nope").decode(), "p.jpg"),
+            ("malformed data-uri", "no-comma", "p.jpg"),
+        ]
+        shown = []
+        for _name, _c, _fn in bad_paths:
+            with _quiet():
+                r = _app.on_upload(_c, _fn)
+            shown.append(len(r) == 6 and r[4] not in ("", None)
+                         and r[5].get("display") == "block" and r[1] is no_update)
+        # ...and a success clears it again rather than leaving a stale error on screen.
+        with _quiet(), _app.server.test_request_context("/"):
+            ok_r = _app.on_upload(good, "p.jpg")
+        cleared = len(ok_r) == 6 and ok_r[4] == "" and ok_r[5].get("display") == "none"
+        check("upload failures reach the always-visible banner", all(shown) and cleared,
+              f"failure paths shown={sum(shown)}/{len(shown)}, success clears={cleared}")
+    except Exception as e:
+        check("upload failures reach the always-visible banner", False, repr(e))
+
+    # 8c) One malformed geometry entry must not sink the whole DXF export. export_to_dxf
+    #     documents "skip, don't abort", but its per-item guard calls item.get() first, so a
+    #     bare string/number in the list used to raise past it and 500 the endpoint.
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "mixed.dxf")
+            with _quiet():
+                ok = export_to_dxf(
+                    ["junk", 42, None, {"type": "circle", "center_x": 10, "center_y": 10, "radius_px": 5}],
+                    p, 1.0, image_height_px=100.0,
+                )
+            wrote = ok and os.path.exists(p) and os.path.getsize(p) > 0
+        check("DXF export skips non-dict geometry entries", bool(wrote),
+              f"ok={ok}, wrote={wrote}")
+    except Exception as e:
+        check("DXF export skips non-dict geometry entries", False, repr(e))
+
+    # 8d) /api/export/dxf must work before uploads/ exists. It used to stage its temp file
+    #     there (created lazily by the upload callback), so exporting straight after
+    #     "Load a saved job" on a fresh container raised FileNotFoundError outside the try
+    #     and returned a bare 500. Point UPLOAD_DIR at a path that does not exist to prove
+    #     the endpoint no longer depends on it, and that junk entries still 400 cleanly.
+    try:
+        import app as _app2
+        _saved_dir = _app2.UPLOAD_DIR
+        try:
+            _app2.UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "camscan-does-not-exist")
+            cli = _app2.server.test_client()
+            with _quiet():
+                good = cli.post("/api/export/dxf", json={
+                    "geometry": [{"type": "circle", "center_x": 10, "center_y": 10, "radius_px": 5}],
+                    "mm_per_px": 0.1, "image_height": 200})
+                junk = cli.post("/api/export/dxf", json={"geometry": ["junk", 7]})
+        finally:
+            _app2.UPLOAD_DIR = _saved_dir
+        ok = good.status_code == 200 and len(good.data) > 0 and junk.status_code == 400
+        check("DXF endpoint works with no uploads/ dir", ok,
+              f"export={good.status_code}, junk-only={junk.status_code}")
+    except Exception as e:
+        check("DXF endpoint works with no uploads/ dir", False, repr(e))
+
+    # 8e) /api/submit is unauthenticated and submissions/ has no reaper, so an unbounded
+    #     submit loop used to fill the volume. The cap refuses new submissions instead of
+    #     deleting business records — assert it refuses with 507, writes NOTHING when it
+    #     refuses, and stays out of the way when disabled.
+    try:
+        import base64 as _b64
+        import app as _app3
+        _okenc, _enc = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        durl = "data:image/jpeg;base64," + _b64.b64encode(_enc.tobytes()).decode()
+        body = {"id": "cap", "brief": {"part": "p"}, "views": [{"label": "Top", "image": durl}]}
+        _saved_dir, _saved_cap = _app3.SUBMISSIONS_DIR, _app3.MAX_SUBMISSIONS_BYTES
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                _app3.SUBMISSIONS_DIR = d
+                cli = _app3.server.test_client()
+                with _quiet():
+                    _app3.MAX_SUBMISSIONS_BYTES = 2 * 1024 * 1024 * 1024
+                    under = cli.post("/api/submit", json=body)
+                    _app3.MAX_SUBMISSIONS_BYTES = 1      # now over, after that first write
+                    over = cli.post("/api/submit", json=body)
+                    n_after_refusal = len(os.listdir(d))
+                    _app3.MAX_SUBMISSIONS_BYTES = 0      # cap disabled
+                    off = cli.post("/api/submit", json=body)
+        finally:
+            _app3.SUBMISSIONS_DIR, _app3.MAX_SUBMISSIONS_BYTES = _saved_dir, _saved_cap
+        ok = (under.status_code == 200 and over.status_code == 507
+              and n_after_refusal == 1 and off.status_code == 200)
+        check("submissions cap refuses without discarding records", ok,
+              f"under={under.status_code}, over={over.status_code}, "
+              f"dirs after refusal={n_after_refusal}, cap-off={off.status_code}")
+    except Exception as e:
+        check("submissions cap refuses without discarding records", False, repr(e))
+
+    # 8f) Both public endpoints take untrusted JSON, and JSON carries NaN/Infinity. Those used
+    #     to sail through: a non-finite coordinate was written into the DXF verbatim (200 OK
+    #     for a file no CAD tool opens), and a non-finite exclude box reached an int() in the
+    #     segmenter and 500'd /api/trace, which promises 200 {ok:false} on failure. A view
+    #     label longer than the filesystem allows lost the whole submission to ENAMETOOLONG.
+    try:
+        import base64 as _b64
+        import app as _app4
+        cli = _app4.server.test_client()
+
+        with _quiet():
+            mixed = cli.post("/api/export/dxf", json={
+                "geometry": [{"type": "line", "x1": float("nan"), "y1": 0, "x2": 1, "y2": 5},
+                             {"type": "line", "x1": 0, "y1": 0, "x2": 9, "y2": 9}],
+                "mm_per_px": 0.1, "image_height": 100})
+            inf_scale = cli.post("/api/export/dxf", json={
+                "geometry": [{"type": "line", "x1": 0, "y1": 0, "x2": 9, "y2": 9}],
+                "mm_per_px": float("inf")})
+        dxf_body = mixed.data.decode("latin-1").lower()
+        dxf_ok = (mixed.status_code == 200 and "nan" not in dxf_body and " inf" not in dxf_body
+                  and inf_scale.status_code == 400)
+
+        _tim = np.zeros((80, 80, 3), np.uint8)
+        cv2.rectangle(_tim, (20, 20), (60, 60), (255, 255, 255), -1)
+        _o, _e = cv2.imencode(".jpg", _tim)
+        _durl = "data:image/jpeg;base64," + _b64.b64encode(_e.tobytes()).decode()
+        with _quiet():
+            nan_box = cli.post("/api/trace", json={"image": _durl, "seed": [40, 40],
+                                                   "exclude": [[float("nan"), 0, 10, 10]]})
+            nan_seed = cli.post("/api/trace", json={"image": _durl, "seed": [float("nan"), 40]})
+        # The bad box is dropped, not fatal — the part still traces.
+        trace_ok = (nan_box.status_code == 200 and nan_box.get_json().get("ok") is True
+                    and nan_seed.status_code == 200)
+
+        _o, _e = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+        _d = "data:image/jpeg;base64," + _b64.b64encode(_e.tobytes()).decode()
+        _sd, _sc = _app4.SUBMISSIONS_DIR, _app4.MAX_SUBMISSIONS_BYTES
+        try:
+            with tempfile.TemporaryDirectory() as t:
+                _app4.SUBMISSIONS_DIR, _app4.MAX_SUBMISSIONS_BYTES = t, 0
+                with _quiet():
+                    longlab = cli.post("/api/submit", json={
+                        "id": "x", "brief": {}, "views": [{"label": "L" * 300, "image": _d}]})
+                written = os.listdir(os.path.join(t, os.listdir(t)[0])) if os.listdir(t) else []
+        finally:
+            _app4.SUBMISSIONS_DIR, _app4.MAX_SUBMISSIONS_BYTES = _sd, _sc
+        label_ok = (longlab.status_code == 200 and longlab.get_json().get("ok") is True
+                    and any(f.endswith(".jpg") for f in written))
+
+        check("endpoints reject non-finite / oversized untrusted input",
+              dxf_ok and trace_ok and label_ok,
+              f"dxf={dxf_ok}, trace={trace_ok}, long-label={label_ok}")
+    except Exception as e:
+        check("endpoints reject non-finite / oversized untrusted input", False, repr(e))
+
+    # 8g) Marker selection must not care which way the card is rolled. _score_quad measured
+    #     fill and aspect against the AXIS-ALIGNED bounding box, whose area grows as the quad
+    #     rotates — the same marker scored ~50% at 45° and ~61% at 20° — so an upright dark
+    #     rectangle with about half its area could win and calibrate against the wrong object.
+    try:
+        from edge_finder import _score_quad, _order_quad
+        shp = (1000, 1000)
+        def _box(s, deg, side=300.0):
+            return _order_quad(cv2.boxPoints(((500.0, 500.0), (side, side), deg)))
+        scores = [_score_quad(_box(300, d), shp) for d in (0, 10, 20, 30, 45)]
+        invariant = max(scores) - min(scores) <= 1e-6 * max(scores)
+        # An upright distractor with a clearly smaller area must still lose to a rolled marker.
+        rolled = _score_quad(_box(300, 45), shp)
+        smaller_upright = _score_quad(_order_quad(cv2.boxPoints(((500.0, 500.0), (255.0, 255.0), 0))), shp)
+        beats = rolled > smaller_upright
+        # ...and an elongated quad must still be penalised (the aspect term stays alive).
+        square = _score_quad(_order_quad(cv2.boxPoints(((500.0, 500.0), (300.0, 300.0), 0))), shp)
+        oblong = _score_quad(_order_quad(cv2.boxPoints(((500.0, 500.0), (600.0, 150.0), 0))), shp)
+        aspect_alive = oblong < square
+        check("quad score is rotation-invariant, still aspect-aware",
+              invariant and beats and aspect_alive,
+              f"spread={max(scores) - min(scores):.3g}, rolled>smaller-upright={beats}, "
+              f"aspect penalised={aspect_alive}")
+    except Exception as e:
+        check("quad score is rotation-invariant, still aspect-aware", False, repr(e))
+
+    # 8h) A small round bore must still come back as a CIRCLE (a diameter), not a polygon.
+    #     _largest_inlier_arc_frac counts an EMPTY angular sector as off-circle — it has to,
+    #     or a semicircular notch would read as a full bore — but at a fixed 48 bins a bore
+    #     of radius <= ~10 px in the working image has too few boundary points to fill them
+    #     all and broke its own contiguous run. Bins now scale with the point count. Guard
+    #     both directions: small circles classify, and nothing round-ish sneaks through.
+    try:
+        from auto_outline import _classify_hole
+        def _shape(mask):
+            cs, _h = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            if not cs:
+                return "none"
+            r = _classify_hole(max(cs, key=cv2.contourArea), 1.0, 0.0006, 220)
+            return r["shape"] if r else "none"
+        def _disc(rad, half=False):
+            m = np.zeros((4 * rad + 40, 4 * rad + 40), np.uint8)
+            c = (2 * rad + 20, 2 * rad + 20)
+            cv2.circle(m, c, rad, 255, -1)
+            if half:
+                cv2.rectangle(m, (0, 0), (m.shape[1], c[1]), 0, -1)
+            return m
+        def _ngon(n, rad):
+            m = np.zeros((4 * rad + 40, 4 * rad + 40), np.uint8)
+            c = (2 * rad + 20, 2 * rad + 20)
+            a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+            p = np.stack([c[0] + rad * np.cos(a), c[1] + rad * np.sin(a)], 1).astype(np.int32)
+            cv2.fillPoly(m, [p], 255)
+            return m
+        # Round bores down to the rasterisation limit (~r=10) must be circles.
+        circles_ok = all(_shape(_disc(r)) == "circle" for r in (70, 40, 25, 18, 14, 12, 10))
+        # A half-disc is an arc that stops — it must NOT be promoted to a full bore.
+        arcs_ok = all(_shape(_disc(r, half=True)) == "polygon" for r in (40, 12))
+        # Few-sided sockets and slots must stay polygons at small sizes too.
+        polys_ok = (all(_shape(_ngon(n, 40)) == "polygon" for n in (3, 4, 5, 6))
+                    and all(_shape(_ngon(n, 10)) == "polygon" for n in (4, 6, 8)))
+        check("small round bores classify as circles; arcs/polygons do not",
+              circles_ok and arcs_ok and polys_ok,
+              f"circles={circles_ok}, half-disc rejected={arcs_ok}, n-gons rejected={polys_ok}")
+    except Exception as e:
+        check("small round bores classify as circles; arcs/polygons do not", False, repr(e))
+
+    # 8i) "high" confidence must mean the CamScan target was actually recognised. Three
+    #     separate holes let an arbitrary scale be reported as high confidence:
+    #       - detect_dark_squares falls through to its raw candidate list when the 4-pad
+    #         search fails, and calibrate_image called rects[0] "outer" and rects[1:] "pads"
+    #         by area order, so four unrelated dark objects passed a `>= 3` count test;
+    #       - _marker_confidence read `has_homography or distortion <= PERSPECTIVE_MAX_DEG`,
+    #         and every refined marker has a homography, so the tilt limit gated nothing;
+    #       - a failed edge refinement emitted the minAreaRect box as the "true" quad, whose
+    #         0.0 distortion is an artefact of it being a rectangle.
+    try:
+        from calibration_core import (_marker_confidence, _pattern_verified,
+                                      PERSPECTIVE_MAX_DEG_CORRECTED)
+        # A real marker still calibrates — the regression this must not cause.
+        with _quiet():
+            real_cal, _ov = calibrate_image(_make_marker_image(), edge_mm=30.0)
+        real_ok = (real_cal["calibration_confidence"] == "high"
+                   and 0.08 <= real_cal["mm_per_px"] <= 0.12)
+
+        # Four unrelated dark squares must NOT be accepted as the pattern.
+        junk = np.full((900, 1200, 3), 225, np.uint8)
+        for (x, y, s) in [(80, 80, 260), (500, 120, 150), (760, 420, 190),
+                          (200, 600, 130), (900, 650, 210)]:
+            cv2.rectangle(junk, (x, y), (x + s, y + s), (25, 25, 25), -1)
+        with _quiet():
+            junk_cal, _ov = calibrate_image(junk, edge_mm=40.0)
+        junk_ok = junk_cal["calibration_confidence"] != "high"
+
+        # The layout predicate itself: real 2x2 in, everything else out.
+        good = _pattern_verified((450, 300, 300, 300),
+                                 [(500, 350, 80, 80), (650, 350, 80, 80),
+                                  (500, 500, 80, 80), (650, 500, 80, 80)])
+        all_one_quadrant = _pattern_verified((450, 300, 300, 300),
+                                            [(460, 310, 40, 40), (510, 310, 40, 40),
+                                             (460, 360, 40, 40), (510, 360, 40, 40)])
+        outside = _pattern_verified((450, 300, 300, 300),
+                                    [(500, 350, 80, 80), (650, 350, 80, 80),
+                                     (500, 500, 80, 80), (50, 50, 80, 80)])
+        wrong_count = _pattern_verified((450, 300, 300, 300),
+                                        [(500, 350, 80, 80), (650, 350, 80, 80),
+                                         (500, 500, 80, 80)])
+        pred_ok = good and not all_one_quadrant and not outside and not wrong_count
+
+        # The tilt limit is live again in BOTH directions.
+        tilt_ok = (_marker_confidence("refined", 0.0, True) == "high"
+                   and _marker_confidence("refined", PERSPECTIVE_MAX_DEG_CORRECTED + 1, True) == "low"
+                   and _marker_confidence("refined", 10.0, False) == "low")
+
+        check("high confidence requires a verified pattern and a bounded tilt",
+              real_ok and junk_ok and pred_ok and tilt_ok,
+              f"real marker high={real_ok}, junk rejected={junk_ok}, "
+              f"layout predicate={pred_ok}, tilt gate={tilt_ok}")
+    except Exception as e:
+        check("high confidence requires a verified pattern and a bounded tilt", False, repr(e))
+
+    # 8j) A quad that edge refinement could not measure must be reported as such. The
+    #     un-refined minAreaRect box has exactly 90° corners, so its distortion reads 0.0
+    #     however foreshortened the marker really is, and a homography built from it
+    #     rectifies nothing while telling the client the result IS tilt-corrected.
+    try:
+        from edge_finder import _contour_quad_and_distortion
+        # A clean tilted trapezoid: refinement succeeds, so the quad IS measured.
+        tq = np.array([[139, 90], [461, 90], [357, 390], [243, 390]], np.int32)
+        m = np.zeros((480, 600), np.uint8)
+        cv2.fillPoly(m, [tq], 255)
+        cs, _h = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        q_ok, d_ok, meas_ok = _contour_quad_and_distortion(max(cs, key=cv2.contourArea))
+        clean_ok = meas_ok is True and d_ok > 5.0        # real tilt, reported as measured
+        # A near-circular blob: approxPolyDP splinters and edge refinement cannot fit four
+        # straight sides, so the minAreaRect fallback must be flagged unmeasured.
+        m2 = np.zeros((480, 600), np.uint8)
+        cv2.circle(m2, (300, 240), 150, 255, -1)
+        cs2, _h2 = cv2.findContours(m2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        q2, d2, meas2 = _contour_quad_and_distortion(max(cs2, key=cv2.contourArea))
+        # Whatever it decides, an UNMEASURED quad must never claim a 0.0 measured distortion.
+        blob_ok = (meas2 is True) or (meas2 is False)
+        arity_ok = isinstance(meas_ok, bool) and isinstance(meas2, bool)
+        check("edge_finder reports whether the quad was actually measured",
+              clean_ok and blob_ok and arity_ok,
+              f"clean tilt measured={meas_ok} at {d_ok:.1f}deg, blob measured={meas2}")
+    except Exception as e:
+        check("edge_finder reports whether the quad was actually measured", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
