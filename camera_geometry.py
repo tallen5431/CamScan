@@ -15,9 +15,11 @@ the real pipeline on synthetic renders with a known camera pose, at d = 400 mm:
 
 Two things about that table matter:
 
-  * It is INDEPENDENT OF CAMERA TILT. The same +11.1% appears in a perfectly square-on
-    shot. "Shoot it flat" does not help; the homography already handles tilt well (an
-    in-plane length measures within ~2% out to 40 deg of tilt).
+  * It does not go away in a square-on shot. The same +11.1% appears at 0 deg of tilt, so
+    "hold the phone flat" is not the fix; the homography already handles tilt well (an
+    in-plane length measures within ~2% out to 40 deg of tilt). Tilt does still matter
+    here, but only through d: the PERPENDICULAR distance to the plane shrinks as the
+    camera swings over, so the same feature height costs more the more tilted the shot.
   * It dwarfs every other error source in the pipeline. Corner-localisation noise costs
     ~1-2%; a part merely 20 mm thick costs +5.3% — a 5 mm error on a 100 mm dimension.
 
@@ -44,7 +46,7 @@ f = 1500 px, the estimate was undefined below ~10 deg of tilt and off by 15-26% 
 10 and 30 deg — worse than the default assumption, and worse than not correcting at all.
 `focal_px_from_marker()` implements it anyway, clearly labelled, for diagnostics only.
 """
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Dict, Any
 import struct
 import math
 
@@ -245,22 +247,34 @@ def pose_from_homography(H_unit, edge_mm: float, focal_px: float,
             return None
         lam = 2.0 / (n1 + n2)                 # one scale for both columns
         r1, r2, tv = r1 * lam, r2 * lam, tv * lam
+        # The homography's overall sign is ambiguous; resolve it by requiring the marker to
+        # sit IN FRONT of the camera. This has to happen BEFORE r3 is formed: negating the
+        # assembled 3x3 instead flips r3 as well, and det(-R) = -det(R) for a 3x3, so R
+        # silently stops being a rotation and becomes a reflection.
+        if tv[2] < 0:
+            r1, r2, tv = -r1, -r2, -tv
         r3 = np.cross(r1, r2)
         # Nearest true rotation (the two recovered columns are not exactly orthonormal).
         U, _s, Vt = np.linalg.svd(np.stack([r1, r2, r3], axis=1))
         R = U @ Vt
         if np.linalg.det(R) < 0:
             R = U @ np.diag([1.0, 1.0, -1.0]) @ Vt
-        # The marker must sit in FRONT of the camera; flip the whole pose if it does not.
-        if tv[2] < 0:
-            R, tv = -R, -tv
         normal_cam = R[:, 2]                  # plane normal expressed in camera axes
         cosang = abs(float(normal_cam[2]))
         tilt = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+        # PERPENDICULAR distance from the camera to the marker's plane — the quantity
+        # parallax actually depends on, since a feature rises along the plane NORMAL.
+        # The line-of-sight distance (f * edge_mm / edge_px) is a different number and moves
+        # the wrong way under tilt: measured on synthetic renders at a true perpendicular
+        # distance falling 400 -> 257 mm between 0 and 50 deg of tilt, line-of-sight ROSE
+        # 400 -> 512 mm, so a parallax warning built on it under-reported the real error by
+        # about half at 50 deg. That is exactly the "off AND has depth" case.
+        perp = abs(float(np.dot(R[:, 2], tv)))
         dist = float(abs(tv[2]))
         if not (math.isfinite(tilt) and math.isfinite(dist)) or dist <= 0:
             return None
-        return {"R": R, "t": tv, "tilt_deg": tilt, "distance_mm": dist}
+        return {"R": R, "t": tv, "tilt_deg": tilt, "distance_mm": dist,
+                "plane_distance_mm": perp if (math.isfinite(perp) and perp > 0) else dist}
     except (np.linalg.LinAlgError, ValueError, TypeError):
         return None
 

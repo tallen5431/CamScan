@@ -717,17 +717,23 @@ def calibrate_image(img_bgr: np.ndarray,
         camera["focal_px"] = round(f_px, 1)
         camera["focal_source"] = f_src
         edge_px = next((m.get("edge_px") for m in markers if m.get("edge_px")), None)
+        # Line-of-sight distance is only the fallback. Parallax depends on the PERPENDICULAR
+        # distance to the marker's plane, because a raised feature rises along the plane
+        # normal — and under tilt the two diverge sharply in opposite directions (see
+        # camera_geometry.pose_from_homography). Prefer the pose's perpendicular distance.
         dist = working_distance_mm(edge_px, edge_len_mm, f_px) if edge_px else None
+        if homography:
+            pose = pose_from_homography(homography, edge_len_mm, f_px, W / 2.0, H / 2.0)
+            if pose:
+                camera["tilt_deg"] = round(pose["tilt_deg"], 1)
+                if pose.get("plane_distance_mm"):
+                    dist = pose["plane_distance_mm"]
         if dist:
             camera["distance_mm"] = round(dist, 1)
             # The headline number: percent of error per millimetre of feature height. A
             # client can multiply it by a part thickness and state the consequence plainly.
             per_mm = parallax_error_pct(1.0, dist)
             camera["parallax_pct_per_mm"] = round(per_mm, 4) if per_mm is not None else None
-        if homography and dist:
-            pose = pose_from_homography(homography, edge_len_mm, f_px, W / 2.0, H / 2.0)
-            if pose:
-                camera["tilt_deg"] = round(pose["tilt_deg"], 1)
     except Exception as e:
         print(f"[Calibration] camera geometry unavailable: {e}")
 

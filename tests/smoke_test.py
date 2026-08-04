@@ -885,6 +885,53 @@ def main():
     except Exception as e:
         check("/api/plane corrects for height and rejects malformed input", False, repr(e))
 
+    # 8n) Two things the pose recovery has to get right, both of which were wrong first time:
+    #     (a) the sign fix that puts the marker in front of the camera must not destroy the
+    #         rotation. Negating the assembled 3x3 flips r3 too, and det(-R) = -det(R), so R
+    #         silently becomes a reflection. Both homography signs must give the same pose.
+    #     (b) parallax depends on the PERPENDICULAR distance to the marker's plane, not the
+    #         line of sight. Under tilt they move in opposite directions — perpendicular
+    #         falls 400 -> 257 mm from 0 to 50 deg while line-of-sight rises to 512 — so a
+    #         warning built on line-of-sight under-reports the real error by about half.
+    try:
+        from camera_geometry import pose_from_homography, working_distance_mm
+        Kt = np.array([[1500.0, 0, 800.0], [0, 1500.0, 600.0], [0, 0, 1.0]])
+        th = np.deg2rad(25.0)
+        Rt = np.array([[1.0, 0, 0], [0, np.cos(th), -np.sin(th)], [0, np.sin(th), np.cos(th)]])
+        tt = np.array([0.0, 0.0, 400.0])
+        Gt = Kt @ np.stack([Rt[:, 0], Rt[:, 1], tt], axis=1)
+        EDGE = 40.0
+        poses = []
+        for sign in (1.0, -1.0):
+            Hu = (np.diag([1 / EDGE, 1 / EDGE, 1.0]) @ np.linalg.inv(sign * Gt)).tolist()
+            poses.append(pose_from_homography(Hu, EDGE, 1500.0, 800.0, 600.0))
+        rot_ok = (all(p is not None for p in poses)
+                  and all(abs(np.linalg.det(p["R"]) - 1.0) < 1e-6 for p in poses)
+                  and abs(poses[0]["tilt_deg"] - poses[1]["tilt_deg"]) < 1e-6
+                  and abs(poses[0]["plane_distance_mm"] - poses[1]["plane_distance_mm"]) < 1e-6
+                  and abs(poses[0]["tilt_deg"] - 25.0) < 1.0)
+
+        # (b) as tilt grows the two distances must diverge, and the camera block must follow
+        #     the perpendicular one (which falls), not the line of sight (which rises).
+        from synthetic_camera import render
+        perp, los = [], []
+        for tilt in (0, 50):
+            im, _k, _r, _t = render(EDGE, 1500.0, 1600, 1200, tilt, 400.0)
+            with _quiet():
+                cc, _o = calibrate_image(im, edge_mm=EDGE, focal_px=1500.0)
+            if not cc.get("homography"):
+                continue
+            perp.append(cc["camera"]["distance_mm"])
+            los.append(working_distance_mm(cc["markers"][0]["edge_px"], EDGE, 1500.0))
+        diverge_ok = (len(perp) == 2 and perp[1] < perp[0] * 0.85 and los[1] > los[0] * 1.15)
+
+        check("pose keeps a proper rotation and uses the perpendicular plane distance",
+              rot_ok and diverge_ok,
+              f"det(R)={[round(float(np.linalg.det(p['R'])), 3) for p in poses]}, "
+              f"perp {perp[0]:.0f}->{perp[1]:.0f}mm while line-of-sight {los[0]:.0f}->{los[1]:.0f}mm")
+    except Exception as e:
+        check("pose keeps a proper rotation and uses the perpendicular plane distance", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
