@@ -50,6 +50,40 @@ No square detected? Use the "Set Scale" tool (📐): draw a line across anything
 known length and type in that length — CamScan calibrates from it.
 
 --------------------------------------------------------------------------------
+ACCURACY — WHERE THE ERROR ACTUALLY COMES FROM
+--------------------------------------------------------------------------------
+The single biggest error in CamScan is not camera angle. It is measuring a face that
+is not in the SAME PLANE as the card.
+
+The calibration square gives a perspective correction for the card's own plane. Any
+feature above that plane — the top face of a part with thickness — is magnified by
+the camera, and reads too LARGE. Measured against a virtual camera with a known pose
+(tests/synthetic_camera.py), at a typical 400 mm working distance:
+
+    face height above the card :    0 mm    5 mm   10 mm   20 mm   40 mm
+    measurement reads          :   0.0%   +1.3%   +2.6%   +5.3%  +11.1%
+
+Two things worth knowing about that:
+
+  * It does NOT go away in a perfectly square-on photo. The same +11.1% is there
+    whether you shoot straight down or at 30 degrees.
+  * Camera tilt, by contrast, is already handled well: a length lying IN the card's
+    plane measures within about 1% out to 40 degrees of tilt.
+
+THE FIX (free, and exact): rest the card ON the face you are measuring, so the card
+and the feature are in the same plane. For a part 20 mm thick, that is the difference
+between a 5 mm error on a 100 mm dimension and no error at all.
+
+If the photo is already taken, open "Set Scale" (📐) → "Measuring a raised face?" and
+enter how far above the card the face sits. CamScan re-derives the calibration for
+that plane. This is a correction, not a measurement — it is most accurate when the
+photo carries lens data (EXIF), and is an estimate otherwise; the panel says which.
+
+Also worth doing: shoot from further back. The error scales as height/distance, so a
+20 mm-thick part reads +8.7% at 250 mm and +3.4% at 600 mm. Just keep the card large
+enough in frame to be detected.
+
+--------------------------------------------------------------------------------
 MEASURING
 --------------------------------------------------------------------------------
 Tools (toolbar):

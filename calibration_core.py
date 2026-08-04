@@ -26,6 +26,17 @@ PERSPECTIVE_MAX_DEG: float = 2.5
 # the foreshortened edge and is not corrected by anything. Past this the scalar is wrong
 # enough that the user should be told to verify rather than shown a confident number.
 PERSPECTIVE_MAX_DEG_CORRECTED: float = 25.0
+# Limit on the REAL camera tilt (angle between the optical axis and the marker's normal),
+# recovered from the pose rather than inferred from corner angles. Generous on purpose: an
+# in-plane length still measures within ~1% at 40 deg, so this is not about scale accuracy —
+# it flags a shot steep enough that the whole reference deserves a second look.
+TRUE_TILT_MAX_DEG: float = 45.0
+# Extra slack when the focal length was GUESSED rather than read from EXIF. The recovered
+# angle scales as tan(tilt_recovered) = (f_true/f_assumed) * tan(tilt_true), so a lens guess
+# good to only ~+/-25% turns a genuinely flat 30 deg shot into a 37.5 deg reading and a 40 deg
+# shot into 48.1 deg. Downgrading a good photo on the strength of a guess is the wrong error
+# to make, so the gate is widened until the angle is actually measured.
+TILT_GUESS_SLACK_DEG: float = 10.0
 
 # Photo-quality thresholds (on an image downscaled so its long side is ~1000 px, to make
 # the numbers resolution-independent). Conservative on purpose — we only NUDGE, never
@@ -297,11 +308,18 @@ def calibrate_image(img_bgr: np.ndarray,
                     edge_mm: Optional[float] = None,
                     thresholds: Tuple[int,int,int] = (60, 80, 100),
                     use_robust_detection: bool = True,
-                    line_thickness: int = LINE_THICKNESS
+                    line_thickness: int = LINE_THICKNESS,
+                    focal_px: Optional[float] = None
                     ) -> Tuple[Dict[str, Any], np.ndarray]:
     """
     Detect near-square dark regions -> refine with edge_finder -> compute mm/px.
     Returns (calibration_dict, overlay_image_bgr).
+
+    ``focal_px`` is the camera's focal length in pixels, read from the photo's EXIF by the
+    caller when it is there. It buys the working DISTANCE, which is what turns the marker's
+    plane into a usable 3D reference: see the "camera" block of the returned dict and
+    camera_geometry for why out-of-plane error, not tilt, dominates this app's accuracy.
+    When it is None a typical phone field of view is assumed and labelled as such.
     """
     start_time = time.time()
 
@@ -694,6 +712,58 @@ def calibrate_image(img_bgr: np.ndarray,
         except Exception as e:
             print(f"[Calibration] Paper-sheet detection skipped: {e}")
 
+    # --- Camera geometry: what it takes to reason about features OFF the marker's plane ---
+    # The homography rectifies the marker's plane and nothing else. A feature h mm above it
+    # reads d/(d-h) too large — +5.3% for a part merely 20 mm thick at a 400 mm working
+    # distance, and that error is INDEPENDENT of camera tilt: it is just as large in a
+    # perfectly square-on shot. It dwarfs everything else here (corner noise costs ~1-2%),
+    # so the numbers below exist to let the client warn about it and offer to correct it.
+    camera: Dict[str, Any] = {"focal_px": None, "focal_source": "none", "distance_mm": None,
+                              "tilt_deg": None, "parallax_pct_per_mm": None}
+    try:
+        from camera_geometry import (default_focal_px, working_distance_mm,
+                                     pose_from_homography, parallax_error_pct)
+        f_px, f_src = (float(focal_px), "exif") if (focal_px and focal_px > 0) else \
+                      (default_focal_px(W), "assumed")
+        camera["focal_px"] = round(f_px, 1)
+        camera["focal_source"] = f_src
+        edge_px = next((m.get("edge_px") for m in markers if m.get("edge_px")), None)
+        # Line-of-sight distance is only the fallback. Parallax depends on the PERPENDICULAR
+        # distance to the marker's plane, because a raised feature rises along the plane
+        # normal — and under tilt the two diverge sharply in opposite directions (see
+        # camera_geometry.pose_from_homography). Prefer the pose's perpendicular distance.
+        dist = working_distance_mm(edge_px, edge_len_mm, f_px) if edge_px else None
+        if homography:
+            pose = pose_from_homography(homography, edge_len_mm, f_px, W / 2.0, H / 2.0)
+            if pose:
+                camera["tilt_deg"] = round(pose["tilt_deg"], 1)
+                if pose.get("plane_distance_mm"):
+                    dist = pose["plane_distance_mm"]
+        # distortion_deg (edge_finder's max corner deviation from 90 deg) is a WEAK proxy for
+        # tilt: at one fixed true tilt it swings with nothing but how the card happens to be
+        # rotated on the table — measured over a full azimuth sweep, 2.4 to 17.5 deg at a true
+        # 40 deg, a 7x spread. Now that a real angle exists, gate on it. The limit is generous
+        # because an in-plane length still measures within ~1% at 40 deg (tilt is genuinely
+        # handled); this only catches shots steep enough that the whole reference is suspect.
+        tilt_limit = TRUE_TILT_MAX_DEG + (0.0 if f_src == "exif" else TILT_GUESS_SLACK_DEG)
+        if camera["tilt_deg"] is not None and camera["tilt_deg"] > tilt_limit:
+            if calibration_confidence == "high":
+                calibration_confidence = "low"
+                print(f"     ⚠️  Camera {camera['tilt_deg']:.0f}° off perpendicular "
+                      f"(> {tilt_limit:.0f}°, lens {f_src}) — capping confidence to low")
+            for _m in markers:
+                if _m.get("confidence") == "high":
+                    _m["confidence"] = "low"
+
+        if dist:
+            camera["distance_mm"] = round(dist, 1)
+            # The headline number: percent of error per millimetre of feature height. A
+            # client can multiply it by a part thickness and state the consequence plainly.
+            per_mm = parallax_error_pct(1.0, dist)
+            camera["parallax_pct_per_mm"] = round(per_mm, 4) if per_mm is not None else None
+    except Exception as e:
+        print(f"[Calibration] camera geometry unavailable: {e}")
+
     cal_data: Dict[str, Any] = {
         "image": None,  # filled in save_outputs() if original file exists
         "image_size": {"width": int(W), "height": int(H)},
@@ -704,6 +774,7 @@ def calibrate_image(img_bgr: np.ndarray,
         "homography": homography,
         "detected_rectangle": detected_rectangle,  # fallback paper corners (client confirms size)
         "quality": _image_quality(img_bgr),        # blur/brightness nudges for the client
+        "camera": camera,                          # focal/distance/tilt + out-of-plane error
         "markers": markers
     }
 

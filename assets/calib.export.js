@@ -460,5 +460,8 @@ window.CalibExport = (function(){
   }
 
   return { exportPNG, renderAnnotatedDataURL, exportJSON, exportCSV, buildCSV, exportDXF, exportSVG,
-           dxfFromGeometry, _buildDXFRequest, _buildSVG };
+           dxfFromGeometry, _buildDXFRequest, _buildSVG,
+           // Exported so other modules calling the API resolve the reverse-proxy path prefix
+           // the same way this one does, instead of each keeping its own copy.
+           _apiUrl };
 })();

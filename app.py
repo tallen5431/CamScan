@@ -304,6 +304,14 @@ class ImageTooLarge(Exception):
 
 
 def _decode_b64_image(contents: str):
+    """Returns (decoded_bgr_image, original_file_bytes).
+
+    The RAW bytes come back too because they still carry EXIF, and cv2.imdecode drops it.
+    The camera's focal length is the one thing that turns the marker's plane into a usable
+    3D reference — it buys the working distance, and with it the size of the out-of-plane
+    error that dominates this app's accuracy (see camera_geometry). We re-encode to JPEG
+    before saving, so this is the only point at which EXIF still exists.
+    """
     header, b64data = contents.split(",", 1)
     img_bytes = base64.b64decode(b64data)
     np_arr = np.frombuffer(img_bytes, np.uint8)
@@ -316,7 +324,7 @@ def _decode_b64_image(contents: str):
         h, w = img.shape[:2]
         if w * h > MAX_IMAGE_PIXELS:
             raise ImageTooLarge(f"{w}x{h} = {w * h:,}px exceeds cap {MAX_IMAGE_PIXELS:,}")
-    return img
+    return img, img_bytes
 
 
 # The landing card (which hosts #status) is tucked off-screen once a photo loads, so anything
@@ -424,7 +432,7 @@ def on_upload(contents, filename):
     # Decode defensively: a malformed data-URI (missing comma, bad base64 padding)
     # would otherwise raise inside the callback and surface as an opaque HTTP 500.
     try:
-        img = _decode_b64_image(contents)
+        img, raw_bytes = _decode_b64_image(contents)
     except ImageTooLarge:
         return _upload_failed(f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
                               "Resize it and try again.")
@@ -467,8 +475,19 @@ def on_upload(contents, filename):
         except OSError:
             pass
 
+    # Focal length from the photo's own EXIF when it has any. Best-effort: a photo without
+    # it still calibrates, the app just has to assume a typical phone lens for the working
+    # distance and says so (cal["camera"]["focal_source"]).
+    focal_px = None
     try:
-        cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
+        from camera_geometry import focal_px_from_jpeg_bytes
+        focal_px = focal_px_from_jpeg_bytes(raw_bytes, img.shape[1])
+    except Exception as e:
+        print(f"[App] EXIF focal unavailable: {e}")
+    print(f"[App] Focal: {focal_px if focal_px else 'not in EXIF — assuming a typical phone lens'}")
+
+    try:
+        cal, overlay = calibrate_image(img, edge_mm=edge_mm_env, focal_px=focal_px)
     except Exception as e:
         _discard_partial()
         return _upload_failed(f"⚠️ Processing error: {e}")
@@ -615,6 +634,101 @@ def export_dxf():
         mimetype="application/dxf",
         headers={"Content-Disposition": "attachment; filename=geometry.dxf"},
     )
+
+
+@server.route("/api/plane", methods=["POST"])
+def api_plane():
+    """Homography for a plane parallel to the marker's, `height_mm` above it.
+
+    The marker's homography rectifies the marker's plane and nothing else, so a feature on a
+    raised face — the top of a part with thickness — reads d/(d-h) too large. That is the
+    largest error in this app (+5.3% for a part only 20 mm thick at a 400 mm working
+    distance) and, unlike tilt, it does NOT go away in a square-on shot.
+
+    Body: { homography: 3x3, marker_size_mm, focal_px, image_size:{width,height},
+            height_mm }
+    Returns { ok, homography, applied_height_mm, error_removed_pct } — feed the returned
+    matrix to the same measurement code and the raised face measures true.
+
+    The exact fix is still to rest the card ON that face and re-shoot; this is for photos
+    already taken. Correcting is worthwhile even when the focal length was assumed rather
+    than read from EXIF: on synthetic renders a 21% focal error still turned +11.1% into
+    -2.9%, because the focal error scales only the (small) correction term.
+    """
+    from flask import jsonify
+    data = _json_body()
+
+    try:
+        from camera_geometry import (homography_at_height, parallax_error_pct,
+                                     working_distance_mm, default_focal_px)
+    except Exception:
+        return jsonify(ok=False, error="unavailable"), 500
+
+    H = data.get("homography")
+    if not (isinstance(H, list) and len(H) == 3
+            and all(isinstance(r, list) and len(r) == 3 for r in H)):
+        return jsonify(ok=False, error="bad_homography"), 400
+    try:
+        H = [[float(v) for v in row] for row in H]
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="bad_homography"), 400
+    if not all(math.isfinite(v) for row in H for v in row):
+        return jsonify(ok=False, error="bad_homography"), 400
+
+    def _pos(key):
+        try:
+            v = float(data.get(key))
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) and v > 0 else None
+
+    edge_mm = _pos("marker_size_mm")
+    if edge_mm is None:
+        return jsonify(ok=False, error="bad_marker_size"), 400
+
+    size = data.get("image_size") or {}
+    w = _pos_from(size, "width")
+    h = _pos_from(size, "height")
+    if w is None or h is None:
+        return jsonify(ok=False, error="bad_image_size"), 400
+
+    focal = _pos("focal_px") or default_focal_px(w)
+
+    try:
+        height_mm = float(data.get("height_mm", 0.0))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="bad_height"), 400
+    if not math.isfinite(height_mm):
+        return jsonify(ok=False, error="bad_height"), 400
+    # A raised face is toward the camera; a recess is away. Bound it so a typo can't ask for
+    # a plane at or behind the camera, where the transform degenerates.
+    if not (-500.0 <= height_mm <= 500.0):
+        return jsonify(ok=False, error="height_out_of_range"), 400
+
+    Hc = homography_at_height(H, edge_mm, focal, w / 2.0, h / 2.0, height_mm)
+    if Hc is None:
+        return jsonify(ok=False, error="pose_unavailable"), 200
+
+    removed = None
+    try:
+        edge_px = _pos("edge_px")
+        dist = working_distance_mm(edge_px, edge_mm, focal) if edge_px else None
+        if dist:
+            removed = parallax_error_pct(height_mm, dist)
+    except Exception:
+        removed = None
+
+    return jsonify(ok=True, homography=Hc, applied_height_mm=height_mm,
+                   error_removed_pct=(round(removed, 2) if removed is not None else None))
+
+
+def _pos_from(d, key):
+    """A strictly-positive finite float from dict `d`, or None."""
+    try:
+        v = float(d.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
 
 
 @server.route("/api/trace", methods=["POST"])

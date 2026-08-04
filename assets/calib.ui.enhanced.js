@@ -407,6 +407,66 @@ window.CalibUI = (function(){
         'Tap the 4 corners of an A4 / Letter sheet — corrects for camera angle.',
         () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscalerect'); }));
 
+      // 4 — the plane the feature actually sits in. This is the biggest single source of
+      // error in the app and the only one the user can neither see nor guess: the card's
+      // homography rectifies the CARD's plane, so a part's top face reads d/(d-h) too
+      // large — about +5% for a part 20 mm thick at arm's length — and, unlike camera
+      // tilt, that error is exactly as large in a perfectly square-on photo.
+      const planeWrap = document.createElement('div');
+      planeWrap.style.cssText = 'margin-top:0.7rem;padding:0.6rem 0.7rem;border:1px solid #2a3a44;border-radius:9px;background:#0e1519;';
+      const planeHead = document.createElement('div');
+      planeHead.style.cssText = 'font-weight:600;font-size:13.5px;margin-bottom:0.15rem;';
+      planeHead.textContent = '⬆ Measuring a raised face?';
+      const planeHint = document.createElement('div');
+      planeHint.style.cssText = 'color:#9fb2bb;font-size:12px;line-height:1.45;margin-bottom:0.45rem;';
+      planeHint.textContent = 'If the face you are measuring sits above the card (a part with '
+        + 'thickness), say how far above. Best of all: rest the card ON that face and re-shoot '
+        + '— that is exact, this is a correction.';
+      const planeRow = document.createElement('div');
+      planeRow.style.cssText = 'display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;';
+      const planeIn = document.createElement('input');
+      planeIn.type = 'number'; planeIn.min = '0'; planeIn.step = '0.5';
+      planeIn.placeholder = 'mm above card';
+      planeIn.value = (overlay.featureHeightMM && overlay.featureHeightMM()) || '';
+      planeIn.style.cssText = 'width:8.5rem;min-height:40px;padding:0.4rem 0.5rem;background:#0b0f12;'
+        + 'border:1px solid #29414c;border-radius:8px;color:#eef;font-size:15px;';
+      planeIn.addEventListener('keydown', (e) => e.stopPropagation());
+      const planeMsg = document.createElement('div');
+      planeMsg.style.cssText = 'font-size:12px;line-height:1.45;margin-top:0.45rem;color:#9fb2bb;';
+      const showAdvice = (h) => {
+        const adv = overlay.parallaxAdvice ? overlay.parallaxAdvice(h) : null;
+        planeMsg.textContent = adv || (h ? '' : 'Measuring in the card\u2019s own plane.');
+        planeMsg.style.color = adv ? '#e6b970' : '#9fb2bb';
+      };
+      const applyBtn = document.createElement('button');
+      applyBtn.type = 'button'; applyBtn.className = 'cal-coach-secondary'; applyBtn.textContent = 'Apply';
+      applyBtn.onclick = async () => {
+        const h = parseFloat(planeIn.value);
+        applyBtn.disabled = true;
+        const ok = await overlay.setFeatureHeight(Number.isFinite(h) ? h : 0);
+        applyBtn.disabled = false;
+        if (!ok && Number.isFinite(h) && h) {
+          planeIn.value = '';
+          planeMsg.style.color = '#e6b970';
+          planeMsg.textContent = 'Cannot correct this photo: it needs the auto-detected square. '
+            + 'A manual scale carries no camera geometry.';
+        } else {
+          showAdvice(Number.isFinite(h) ? h : 0);
+        }
+      };
+      const planeClear = document.createElement('button');
+      planeClear.type = 'button'; planeClear.className = 'cal-coach-secondary';
+      planeClear.textContent = 'In the card\u2019s plane';
+      planeClear.onclick = async () => { planeIn.value = ''; await overlay.setFeatureHeight(0); showAdvice(0); };
+      planeIn.addEventListener('input', () => {
+        const h = parseFloat(planeIn.value);
+        showAdvice(Number.isFinite(h) ? h : 0);
+      });
+      planeRow.append(planeIn, applyBtn, planeClear);
+      planeWrap.append(planeHead, planeHint, planeRow, planeMsg);
+      card.appendChild(planeWrap);
+      showAdvice((overlay.featureHeightMM && overlay.featureHeightMM()) || 0);
+
       const foot = document.createElement('div');
       foot.style.cssText = 'display:flex;gap:0.5rem;align-items:center;margin-top:0.7rem;';
       const verifyBtn = document.createElement('button'); verifyBtn.type = 'button'; verifyBtn.className = 'cal-coach-secondary';
