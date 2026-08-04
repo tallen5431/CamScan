@@ -745,6 +745,146 @@ def main():
     except Exception as e:
         check("edge_finder reports whether the quad was actually measured", False, repr(e))
 
+    # 8k) OUT-OF-PLANE (parallax) error — the largest error in this app, and the one a
+    #     "shoot it flat" instinct does not fix. The homography rectifies the marker's
+    #     plane only, so a feature h mm above it reads d/(d-h) too large REGARDLESS of
+    #     tilt. Measured against a virtual camera whose answer is known:
+    #       h=10mm -> +2.6%, h=20mm -> +5.3%, h=40mm -> +11.1% at d=400mm, at 0 deg tilt.
+    #     Assert both halves: that the error is real and that the correction removes it.
+    try:
+        sys.path.insert(0, str(ROOT / "tests"))
+        from synthetic_camera import render, project, measure_mm
+        from camera_geometry import homography_at_height, default_focal_px, parallax_error_pct
+
+        EDGE, W_, H_, F_, D_ = 40.0, 1600, 1200, 1500.0, 400.0
+        img_, K_, R_, t_ = render(EDGE, F_, W_, H_, 0, D_)
+        with _quiet():
+            cal_, _ov = calibrate_image(img_, edge_mm=EDGE, focal_px=F_)
+        Hu = cal_.get("homography")
+
+        def _at(h_mm, Hh):
+            a = project(K_, R_, t_, np.array([[0.0, -60.0, h_mm]]))[0]
+            b = project(K_, R_, t_, np.array([[100.0, -60.0, h_mm]]))[0]
+            return measure_mm(Hh, cal_["marker_size_mm"], a, b) - 100.0
+
+        # The error exists and grows with height (this is the bug being characterised).
+        raw = [_at(h, Hu) for h in (10.0, 20.0, 40.0)]
+        grows = raw[0] < raw[1] < raw[2] and raw[2] > 8.0
+        # The correction removes most of it, at every height.
+        corr = []
+        for h in (10.0, 20.0, 40.0):
+            Hc = homography_at_height(Hu, cal_["marker_size_mm"], F_, W_ / 2, H_ / 2, h)
+            corr.append(abs(_at(h, Hc)) if Hc else 99.0)
+        fixed = all(c < 0.5 for c in corr)
+        # ...and it still helps when the focal length was ASSUMED, not read from EXIF.
+        fdef = default_focal_px(W_)
+        Hd = homography_at_height(Hu, cal_["marker_size_mm"], fdef, W_ / 2, H_ / 2, 40.0)
+        assumed_ok = Hd is not None and abs(_at(40.0, Hd)) < abs(raw[2]) / 2.0
+        # h=0 must be an exact passthrough — never perturb an in-plane measurement.
+        H0 = homography_at_height(Hu, cal_["marker_size_mm"], F_, W_ / 2, H_ / 2, 0.0)
+        passthrough = H0 is not None and abs(_at(0.0, H0) - _at(0.0, Hu)) < 1e-9
+        # The closed form the UI quotes must agree with the measurement.
+        model_ok = abs(parallax_error_pct(40.0, D_) - 11.11) < 0.2
+
+        check("out-of-plane error is real, and the height correction removes it",
+              grows and fixed and assumed_ok and passthrough and model_ok,
+              f"uncorrected {raw[0]:+.1f}/{raw[1]:+.1f}/{raw[2]:+.1f}% at h=10/20/40mm -> "
+              f"corrected {corr[0]:.2f}/{corr[1]:.2f}/{corr[2]:.2f}%; "
+              f"assumed-focal helps={assumed_ok}, h=0 passthrough={passthrough}")
+    except Exception as e:
+        check("out-of-plane error is real, and the height correction removes it", False, repr(e))
+
+    # 8l) Tilt must NOT be confused for the depth problem: an in-plane length already
+    #     measures well out to a steep angle, which is why the fix for the user's
+    #     complaint is height, not tilt. Also locks the EXIF focal reader and the
+    #     camera block that the UI quotes.
+    try:
+        from synthetic_camera import render, project, measure_mm, jpeg_with_focal35
+        from camera_geometry import focal_px_from_jpeg_bytes
+
+        EDGE, W_, H_, F_, D_ = 40.0, 1600, 1200, 1500.0, 400.0
+        inplane = []
+        for tilt in (0, 20, 40):
+            im, K2, R2, t2 = render(EDGE, F_, W_, H_, tilt, D_)
+            with _quiet():
+                c2, _o = calibrate_image(im, edge_mm=EDGE, focal_px=F_)
+            Hh = c2.get("homography")
+            if not Hh:
+                inplane.append(99.0)
+                continue
+            a = project(K2, R2, t2, np.array([[0.0, -60.0, 0.0]]))[0]
+            b = project(K2, R2, t2, np.array([[100.0, -60.0, 0.0]]))[0]
+            inplane.append(abs(measure_mm(Hh, c2["marker_size_mm"], a, b) - 100.0))
+        tilt_ok = all(e < 3.0 for e in inplane)
+
+        # EXIF: read when present, absent without complaint, never raises on junk.
+        im0, _k, _r, _t = render(EDGE, F_, W_, H_, 0, D_)
+        with_exif = jpeg_with_focal35(im0, 27)
+        no_exif = cv2.imencode(".jpg", im0)[1].tobytes()
+        exif_ok = (abs(focal_px_from_jpeg_bytes(with_exif, 1600) - 27 / 36 * 1600) < 1e-6
+                   and focal_px_from_jpeg_bytes(no_exif, 1600) is None
+                   and focal_px_from_jpeg_bytes(b"not a jpeg", 1600) is None
+                   and focal_px_from_jpeg_bytes(b"", 1600) is None)
+
+        # The camera block the client reads must be present and roughly right.
+        with _quiet():
+            c3, _o = calibrate_image(im0, edge_mm=EDGE, focal_px=F_)
+        cam = c3.get("camera") or {}
+        cam_ok = (cam.get("focal_source") == "exif"
+                  and cam.get("distance_mm") is not None
+                  and abs(cam["distance_mm"] - D_) < 0.15 * D_
+                  and cam.get("parallax_pct_per_mm") is not None
+                  and abs(cam["parallax_pct_per_mm"] * 20 - 5.26) < 1.5)
+        check("tilt is already handled; EXIF focal + camera block are sound",
+              tilt_ok and exif_ok and cam_ok,
+              f"in-plane err at 0/20/40deg = {inplane[0]:.2f}/{inplane[1]:.2f}/{inplane[2]:.2f}%, "
+              f"exif={exif_ok}, camera={cam_ok}")
+    except Exception as e:
+        check("tilt is already handled; EXIF focal + camera block are sound", False, repr(e))
+
+    # 8m) /api/plane is a public endpoint taking untrusted JSON — it must answer cleanly
+    #     for every malformed shape rather than 500, and must actually reduce the error.
+    try:
+        import app as _app5
+        from synthetic_camera import render, project, measure_mm
+        EDGE, W_, H_, F_, D_ = 40.0, 1600, 1200, 1500.0, 400.0
+        im, K3, R3, t3 = render(EDGE, F_, W_, H_, 15, D_)
+        with _quiet():
+            c4, _o = calibrate_image(im, edge_mm=EDGE, focal_px=F_)
+        cli = _app5.server.test_client()
+        base = {"homography": c4["homography"], "marker_size_mm": c4["marker_size_mm"],
+                "focal_px": F_, "image_size": {"width": W_, "height": H_},
+                "edge_px": c4["markers"][0]["edge_px"]}
+        with _quiet():
+            good = cli.post("/api/plane", json=dict(base, height_mm=20.0))
+        gj = good.get_json()
+        a = project(K3, R3, t3, np.array([[0.0, -60.0, 20.0]]))[0]
+        b = project(K3, R3, t3, np.array([[100.0, -60.0, 20.0]]))[0]
+        before = abs(measure_mm(c4["homography"], EDGE, a, b) - 100.0)
+        after = abs(measure_mm(gj["homography"], EDGE, a, b) - 100.0)
+        happy = good.status_code == 200 and gj.get("ok") is True and after < before / 2.0
+
+        bad = {
+            "empty": {},
+            "ragged": dict(base, homography=[[1, 2], [3, 4], [5, 6]]),
+            "nan": dict(base, homography=[[float("nan"), 0, 0], [0, 1, 0], [0, 0, 1]]),
+            "zero_marker": dict(base, marker_size_mm=0),
+            "no_size": {k: v for k, v in base.items() if k != "image_size"},
+            "huge_height": dict(base, height_mm=99999),
+            "nan_height": dict(base, height_mm=float("nan")),
+        }
+        codes = {}
+        with _quiet():
+            for k, body in bad.items():
+                codes[k] = cli.post("/api/plane", json=body).status_code
+        validated = all(v == 400 for v in codes.values())
+        check("/api/plane corrects for height and rejects malformed input",
+              happy and validated,
+              f"{before:.2f}% -> {after:.2f}%, removed={gj.get('error_removed_pct')}, "
+              f"bad-input codes={sorted(set(codes.values()))}")
+    except Exception as e:
+        check("/api/plane corrects for height and rejects malformed input", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

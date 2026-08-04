@@ -297,11 +297,18 @@ def calibrate_image(img_bgr: np.ndarray,
                     edge_mm: Optional[float] = None,
                     thresholds: Tuple[int,int,int] = (60, 80, 100),
                     use_robust_detection: bool = True,
-                    line_thickness: int = LINE_THICKNESS
+                    line_thickness: int = LINE_THICKNESS,
+                    focal_px: Optional[float] = None
                     ) -> Tuple[Dict[str, Any], np.ndarray]:
     """
     Detect near-square dark regions -> refine with edge_finder -> compute mm/px.
     Returns (calibration_dict, overlay_image_bgr).
+
+    ``focal_px`` is the camera's focal length in pixels, read from the photo's EXIF by the
+    caller when it is there. It buys the working DISTANCE, which is what turns the marker's
+    plane into a usable 3D reference: see the "camera" block of the returned dict and
+    camera_geometry for why out-of-plane error, not tilt, dominates this app's accuracy.
+    When it is None a typical phone field of view is assumed and labelled as such.
     """
     start_time = time.time()
 
@@ -694,6 +701,36 @@ def calibrate_image(img_bgr: np.ndarray,
         except Exception as e:
             print(f"[Calibration] Paper-sheet detection skipped: {e}")
 
+    # --- Camera geometry: what it takes to reason about features OFF the marker's plane ---
+    # The homography rectifies the marker's plane and nothing else. A feature h mm above it
+    # reads d/(d-h) too large — +5.3% for a part merely 20 mm thick at a 400 mm working
+    # distance, and that error is INDEPENDENT of camera tilt: it is just as large in a
+    # perfectly square-on shot. It dwarfs everything else here (corner noise costs ~1-2%),
+    # so the numbers below exist to let the client warn about it and offer to correct it.
+    camera: Dict[str, Any] = {"focal_px": None, "focal_source": "none", "distance_mm": None,
+                              "tilt_deg": None, "parallax_pct_per_mm": None}
+    try:
+        from camera_geometry import (default_focal_px, working_distance_mm,
+                                     pose_from_homography, parallax_error_pct)
+        f_px, f_src = (float(focal_px), "exif") if (focal_px and focal_px > 0) else \
+                      (default_focal_px(W), "assumed")
+        camera["focal_px"] = round(f_px, 1)
+        camera["focal_source"] = f_src
+        edge_px = next((m.get("edge_px") for m in markers if m.get("edge_px")), None)
+        dist = working_distance_mm(edge_px, edge_len_mm, f_px) if edge_px else None
+        if dist:
+            camera["distance_mm"] = round(dist, 1)
+            # The headline number: percent of error per millimetre of feature height. A
+            # client can multiply it by a part thickness and state the consequence plainly.
+            per_mm = parallax_error_pct(1.0, dist)
+            camera["parallax_pct_per_mm"] = round(per_mm, 4) if per_mm is not None else None
+        if homography and dist:
+            pose = pose_from_homography(homography, edge_len_mm, f_px, W / 2.0, H / 2.0)
+            if pose:
+                camera["tilt_deg"] = round(pose["tilt_deg"], 1)
+    except Exception as e:
+        print(f"[Calibration] camera geometry unavailable: {e}")
+
     cal_data: Dict[str, Any] = {
         "image": None,  # filled in save_outputs() if original file exists
         "image_size": {"width": int(W), "height": int(H)},
@@ -704,6 +741,7 @@ def calibrate_image(img_bgr: np.ndarray,
         "homography": homography,
         "detected_rectangle": detected_rectangle,  # fallback paper corners (client confirms size)
         "quality": _image_quality(img_bgr),        # blur/brightness nudges for the client
+        "camera": camera,                          # focal/distance/tilt + out-of-plane error
         "markers": markers
     }
 
