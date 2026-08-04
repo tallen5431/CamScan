@@ -1444,8 +1444,15 @@
       // server's camera block so this readout and the correction cannot disagree.
       parallaxPctFor(h){
         const cam = this.data && this.data.camera;
-        if(!cam || !cam.parallax_pct_per_mm || !h) return null;
-        return cam.parallax_pct_per_mm * h;
+        if(!cam || !cam.distance_mm || !h) return null;
+        // 100h/(d-h), NOT parallax_pct_per_mm * h. The error is a hyperbola, not a line, so
+        // scaling the per-millimetre figure understates it — by 1.1 points at h=40 mm and
+        // 400 mm, and 2.8 points at h=40 mm and 257 mm (a tilted, close-in shot), always in
+        // the direction of looking better than it is. camera.distance_mm is already the
+        // perpendicular distance to the card's plane, which is the d this needs.
+        const d = cam.distance_mm;
+        if(!(d > 0) || h >= d / 3) return null;   // past a third of the way to the lens, meaningless
+        return 100 * h / (d - h);
       }
 
       // A plain sentence for the customer, or null when there is nothing worth saying.

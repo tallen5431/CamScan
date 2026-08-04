@@ -31,6 +31,12 @@ PERSPECTIVE_MAX_DEG_CORRECTED: float = 25.0
 # in-plane length still measures within ~1% at 40 deg, so this is not about scale accuracy —
 # it flags a shot steep enough that the whole reference deserves a second look.
 TRUE_TILT_MAX_DEG: float = 45.0
+# Extra slack when the focal length was GUESSED rather than read from EXIF. The recovered
+# angle scales as tan(tilt_recovered) = (f_true/f_assumed) * tan(tilt_true), so a lens guess
+# good to only ~+/-25% turns a genuinely flat 30 deg shot into a 37.5 deg reading and a 40 deg
+# shot into 48.1 deg. Downgrading a good photo on the strength of a guess is the wrong error
+# to make, so the gate is widened until the angle is actually measured.
+TILT_GUESS_SLACK_DEG: float = 10.0
 
 # Photo-quality thresholds (on an image downscaled so its long side is ~1000 px, to make
 # the numbers resolution-independent). Conservative on purpose — we only NUDGE, never
@@ -739,11 +745,12 @@ def calibrate_image(img_bgr: np.ndarray,
         # 40 deg, a 7x spread. Now that a real angle exists, gate on it. The limit is generous
         # because an in-plane length still measures within ~1% at 40 deg (tilt is genuinely
         # handled); this only catches shots steep enough that the whole reference is suspect.
-        if camera["tilt_deg"] is not None and camera["tilt_deg"] > TRUE_TILT_MAX_DEG:
+        tilt_limit = TRUE_TILT_MAX_DEG + (0.0 if f_src == "exif" else TILT_GUESS_SLACK_DEG)
+        if camera["tilt_deg"] is not None and camera["tilt_deg"] > tilt_limit:
             if calibration_confidence == "high":
                 calibration_confidence = "low"
                 print(f"     ⚠️  Camera {camera['tilt_deg']:.0f}° off perpendicular "
-                      f"(> {TRUE_TILT_MAX_DEG}°) — capping confidence to low")
+                      f"(> {tilt_limit:.0f}°, lens {f_src}) — capping confidence to low")
             for _m in markers:
                 if _m.get("confidence") == "high":
                     _m["confidence"] = "low"

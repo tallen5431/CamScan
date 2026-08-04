@@ -780,17 +780,65 @@ def main():
         fdef = default_focal_px(W_)
         Hd = homography_at_height(Hu, cal_["marker_size_mm"], fdef, W_ / 2, H_ / 2, 40.0)
         assumed_ok = Hd is not None and abs(_at(40.0, Hd)) < abs(raw[2]) / 2.0
-        # h=0 must be an exact passthrough — never perturb an in-plane measurement.
-        H0 = homography_at_height(Hu, cal_["marker_size_mm"], F_, W_ / 2, H_ / 2, 0.0)
-        passthrough = H0 is not None and abs(_at(0.0, H0) - _at(0.0, Hu)) < 1e-9
+        # A near-zero height must be a near-exact passthrough. Testing at literally h=0 is
+        # VACUOUS: homography_at_height short-circuits below MIN_CORRECTABLE_HEIGHT_MM and
+        # returns the input untouched, so it would pass even if the maths below were wrong.
+        # Test just past the short-circuit, where the real code path runs.
+        Heps = homography_at_height(Hu, cal_["marker_size_mm"], F_, W_ / 2, H_ / 2, 1.001)
+        passthrough = Heps is not None and abs(_at(1.001, Heps) - _at(1.001, Hu)) < 0.4
+
+        # The correction must preserve SHAPE, not just scale. Rebuilding the homography from
+        # the recovered pose instead of composing it leaves the scale roughly right while
+        # skewing the plane — a true square comes back up to 25% out of square at 40 deg of
+        # tilt. Scale-only assertions miss that entirely, so measure both sides of a square.
+        # Build the base homography from the EXACT projected corners so this measures the
+        # correction and nothing else. Feeding it a DETECTED homography would fail on the
+        # detector's own corner error, which is already ~2.6% out of square at 20 deg of tilt
+        # before any correction is applied and is not what this test is about.
+        from synthetic_camera import marker_world
+        def _aniso(tilt, h_mm, focal):
+            _im2, K2, R2, t2 = render(EDGE, F_, W_, H_, tilt, D_)
+            exact = project(K2, R2, t2, marker_world(EDGE)[:4]).astype(np.float32)
+            unit = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32)
+            Hi = cv2.getPerspectiveTransform(exact, unit).tolist()
+            Hc2 = homography_at_height(Hi, EDGE, focal, W_ / 2, H_ / 2, h_mm)
+            if Hc2 is None:
+                return 99.0
+            sq = [[0.0, -60.0], [20.0, -60.0], [20.0, -80.0], [0.0, -80.0]]
+            P = [project(K2, R2, t2, np.array([[x, y, h_mm]]))[0] for (x, y) in sq]
+            w1 = measure_mm(Hc2, EDGE, P[0], P[1])
+            h1 = measure_mm(Hc2, EDGE, P[1], P[2])
+            return abs(w1 - h1) / max(w1, h1) * 100.0
+        # A true square must come back square across tilt AND a badly wrong focal. This is the
+        # property that catches rebuilding the homography from the pose instead of composing
+        # it: rebuilding leaves the SCALE roughly right while skewing the plane, up to ~25%
+        # out of square at 40 deg, which a scale-only assertion sails straight past.
+        aniso = [_aniso(20, 10.0, F_), _aniso(40, 10.0, F_ * 1.6), _aniso(40, 10.0, F_ * 0.6)]
+        shape_ok = all(a < 0.05 for a in aniso)
+
+        # ...and the correction must work on a TILTED shot, not just the square-on one. At
+        # tilt 0 the renderer draws an axis-aligned square with pixel-exact edges, so a 0.00%
+        # result there is partly an oracle; a tilted render exercises the real geometry.
+        imT, KT, RT, tT = render(EDGE, F_, W_, H_, 25, D_)
+        with _quiet():
+            calT, _oT = calibrate_image(imT, edge_mm=EDGE, focal_px=F_)
+        HuT = calT.get("homography")
+        aT = project(KT, RT, tT, np.array([[0.0, -60.0, 30.0]]))[0]
+        bT = project(KT, RT, tT, np.array([[100.0, -60.0, 30.0]]))[0]
+        rawT = abs(measure_mm(HuT, calT["marker_size_mm"], aT, bT) - 100.0)
+        HcT = homography_at_height(HuT, calT["marker_size_mm"], F_, W_ / 2, H_ / 2, 30.0)
+        corT = abs(measure_mm(HcT, calT["marker_size_mm"], aT, bT) - 100.0) if HcT else 99.0
+        tilted_ok = corT < rawT / 2.0
         # The closed form the UI quotes must agree with the measurement.
         model_ok = abs(parallax_error_pct(40.0, D_) - 11.11) < 0.2
 
         check("out-of-plane error is real, and the height correction removes it",
-              grows and fixed and assumed_ok and passthrough and model_ok,
+              grows and fixed and assumed_ok and passthrough and model_ok
+              and shape_ok and tilted_ok,
               f"uncorrected {raw[0]:+.1f}/{raw[1]:+.1f}/{raw[2]:+.1f}% at h=10/20/40mm -> "
               f"corrected {corr[0]:.2f}/{corr[1]:.2f}/{corr[2]:.2f}%; "
-              f"assumed-focal helps={assumed_ok}, h=0 passthrough={passthrough}")
+              f"tilted 25deg {rawT:.2f}%->{corT:.2f}%; "
+              f"anisotropy {max(aniso):.3f}%; assumed-focal helps={assumed_ok}")
     except Exception as e:
         check("out-of-plane error is real, and the height correction removes it", False, repr(e))
 
