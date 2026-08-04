@@ -1113,7 +1113,12 @@
         this._rescaleAnnotations();
         this.requestDraw();
       }
-      clearManualScale(){ this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null; this._rescaleAnnotations(); this.requestDraw(); }
+      clearManualScale(){
+        this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null;
+        // The raised-plane homography was derived from the calibration that just went away.
+        this._planeH = null; this._featureHeightMM = 0;
+        this._rescaleAnnotations(); this.requestDraw();
+      }
       currentMarkerSizeMM(){ return (this.data && this.data.marker_size_mm) || null; }
 
       // Commit the in-progress path/outline. An open path needs >=2 points; a closed
@@ -1419,7 +1424,74 @@
       _dataForMeasure(){
         if(this.opts.manualHomography)
           return Object.assign({}, this.data, { homography:this.opts.manualHomography, marker_size_mm:1 });
+        // Measuring a face that is NOT in the card's plane? Swap in the homography for that
+        // raised plane. Everything downstream (lengths, areas, rectangles, angles, 3-point
+        // circles) already reads its geometry from here, so one substitution corrects them
+        // all. Without it a face h mm above the card reads d/(d-h) too large — +5.3% for a
+        // part only 20 mm thick at arm's length, and that error is there just as much in a
+        // perfectly square-on shot as in a tilted one.
+        if(this._planeH) return Object.assign({}, this.data, { homography:this._planeH });
         return this.data;
+      }
+
+      // --- Measuring off the card's plane -------------------------------------------------
+      // Height in mm of the face being measured ABOVE the card (a part's top face is
+      // positive; a recess is negative). 0 means measure in the card's own plane.
+      featureHeightMM(){ return this._featureHeightMM || 0; }
+
+      // How wrong an UNCORRECTED measurement of a face `h` mm off the card's plane would be,
+      // as a percentage, or null when the working distance is unknown. Taken from the
+      // server's camera block so this readout and the correction cannot disagree.
+      parallaxPctFor(h){
+        const cam = this.data && this.data.camera;
+        if(!cam || !cam.parallax_pct_per_mm || !h) return null;
+        return cam.parallax_pct_per_mm * h;
+      }
+
+      // A plain sentence for the customer, or null when there is nothing worth saying.
+      parallaxAdvice(h){
+        const pct = this.parallaxPctFor(h);
+        if(pct == null || Math.abs(pct) < 0.5) return null;
+        const cam = this.data.camera || {};
+        const hedge = cam.focal_source === 'exif' ? '' : ' (estimated \u2014 this photo carries no lens data)';
+        return 'A face ' + h + ' mm off the card reads about ' + pct.toFixed(0) + '% ' +
+               (pct > 0 ? 'large' : 'small') + hedge +
+               '. Resting the card on that face and re-shooting is exact; correcting here is an estimate.';
+      }
+
+      // Ask the server for the homography of the plane `h` mm above the card, and measure
+      // there instead. Resolves true when the correction is active.
+      async setFeatureHeight(h){
+        const mm = Number(h) || 0;
+        this._featureHeightMM = mm;
+        if(!mm){ this._planeH = null; this.updateKPI(); this.requestDraw(); return true; }
+        // Only the auto marker homography can be lifted: a manual paper rectangle carries no
+        // camera geometry, and a manual line scale is uniform by nature.
+        if(this.opts.manualHomography || this.opts.manualMmPerPx || !this.data || !this.data.homography){
+          this._featureHeightMM = 0; this._planeH = null; this.updateKPI(); this.requestDraw(); return false;
+        }
+        const cam = this.data.camera || {};
+        const sz = this.data.image_size || {};
+        const m0 = (this.data.markers || [])[0] || {};
+        try{
+          const r = await fetch(Xport._apiUrl('api/plane'), {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ homography:this.data.homography, marker_size_mm:this.data.marker_size_mm,
+                                   focal_px:cam.focal_px, edge_px:m0.edge_px,
+                                   image_size:{ width:sz.width||this.img.naturalWidth||this.img.width,
+                                                height:sz.height||this.img.naturalHeight||this.img.height },
+                                   height_mm:mm })
+          });
+          const j = await r.json();
+          if(!r.ok || !j.ok || !j.homography){ this._featureHeightMM = 0; this._planeH = null; return false; }
+          this._planeH = j.homography;
+          this._rescaleAnnotations();
+          this.updateKPI(); this.requestDraw();
+          return true;
+        }catch(e){
+          this._featureHeightMM = 0; this._planeH = null; this.updateKPI(); this.requestDraw();
+          return false;
+        }
       }
       // Whether the perspective homography should rectify measurements right now. A manual
       // paper rectangle carries its own homography (use it); a manual LINE scale is uniform
@@ -1431,6 +1503,9 @@
       // aren't rectified), the KPI readout, and the fallback path. ref describes the sheet.
       setManualRectScale(H, mmPerPx, ref){
         if(!H) return;
+        // A manual paper rectangle carries no camera geometry, so a raised plane derived
+        // from the marker's homography no longer applies.
+        this._planeH = null; this._featureHeightMM = 0;
         this._markerSizeFromMemory=false;
         this.opts.manualHomography=H;
         if(mmPerPx>0) this.opts.manualMmPerPx=mmPerPx;   // wins over any detected marker
@@ -1729,6 +1804,11 @@
           const unitPerPx=unit.fromMM(s);
           specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
                                     : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`});
+          // WHICH PLANE we are measuring in changes every number on screen, so it is never
+          // hidden — not even on a narrow phone. Silence here would mean a raised face and
+          // the card's own plane looked identical while reading several percent apart.
+          const fh = this.featureHeightMM();
+          if(fh) specs.push({text:`⬆ measuring ${fh} mm above the card`, cls:'cal-chip--lead'});
           // Remembered-size flag shows on EVERY width (including phones) — a stale value
           // silently rescaling an unrelated photo is a correctness footgun, so never hide it.
           if(remembered) specs.push({text:`⚠️ saved ${this.currentMarkerSizeMM()} mm sq — tap 📐 to verify`, cls:'cal-chip--warn'});
