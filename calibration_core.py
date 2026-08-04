@@ -26,6 +26,11 @@ PERSPECTIVE_MAX_DEG: float = 2.5
 # the foreshortened edge and is not corrected by anything. Past this the scalar is wrong
 # enough that the user should be told to verify rather than shown a confident number.
 PERSPECTIVE_MAX_DEG_CORRECTED: float = 25.0
+# Limit on the REAL camera tilt (angle between the optical axis and the marker's normal),
+# recovered from the pose rather than inferred from corner angles. Generous on purpose: an
+# in-plane length still measures within ~1% at 40 deg, so this is not about scale accuracy —
+# it flags a shot steep enough that the whole reference deserves a second look.
+TRUE_TILT_MAX_DEG: float = 45.0
 
 # Photo-quality thresholds (on an image downscaled so its long side is ~1000 px, to make
 # the numbers resolution-independent). Conservative on purpose — we only NUDGE, never
@@ -728,6 +733,21 @@ def calibrate_image(img_bgr: np.ndarray,
                 camera["tilt_deg"] = round(pose["tilt_deg"], 1)
                 if pose.get("plane_distance_mm"):
                     dist = pose["plane_distance_mm"]
+        # distortion_deg (edge_finder's max corner deviation from 90 deg) is a WEAK proxy for
+        # tilt: at one fixed true tilt it swings with nothing but how the card happens to be
+        # rotated on the table — measured over a full azimuth sweep, 2.4 to 17.5 deg at a true
+        # 40 deg, a 7x spread. Now that a real angle exists, gate on it. The limit is generous
+        # because an in-plane length still measures within ~1% at 40 deg (tilt is genuinely
+        # handled); this only catches shots steep enough that the whole reference is suspect.
+        if camera["tilt_deg"] is not None and camera["tilt_deg"] > TRUE_TILT_MAX_DEG:
+            if calibration_confidence == "high":
+                calibration_confidence = "low"
+                print(f"     ⚠️  Camera {camera['tilt_deg']:.0f}° off perpendicular "
+                      f"(> {TRUE_TILT_MAX_DEG}°) — capping confidence to low")
+            for _m in markers:
+                if _m.get("confidence") == "high":
+                    _m["confidence"] = "low"
+
         if dist:
             camera["distance_mm"] = round(dist, 1)
             # The headline number: percent of error per millimetre of feature height. A
