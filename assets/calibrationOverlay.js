@@ -807,6 +807,12 @@
           if(m && m.mm_per_px) return m.mm_per_px;
           // fall through to auto if the locked marker is missing/invalid
         }
+        // An UNVERIFIED detection is "a dark square-ish thing", not "the calibration target".
+        // Applying it as a scale is how a photo containing no reference at all ends up
+        // quoting millimetres: across six real customer photos of one part, with no marker
+        // in any of them, this path produced scales spanning 6.6x. Measure in pixels and ask
+        // for a scale instead — unless the user has confirmed the object themselves.
+        if(!this._markerConfirmed && this.data.calibration_usable === false) return 0;
         // 3) Nearest marker (to `ref`) with a valid scale.
         ref = ref || [0,0];
         let best=null, bestD=1e18;
@@ -951,6 +957,25 @@
       selectedProfile(){
         const a = this.ann.items.find(it => it.id === this.ann.selectedId);
         return (a && a.type === 'polyline' && a.closed) ? a : null;
+      }
+
+      // The user telling us the detected object really IS their calibration square. Keeps a
+      // genuine marker in poor light from being a dead end, while still refusing to assume it.
+      confirmDetectedMarker(sizeMM){
+        const mm = parseFloat(sizeMM);
+        if(!(mm > 0)) return false;
+        const m = (this.data && this.data.markers || [])[0];
+        if(!m) return false;
+        this._markerConfirmed = true;
+        this.setMarkerSizeMM(mm);          // rescales from the detected edge in pixels
+        this.updateKPI(); this.requestDraw();
+        return true;
+      }
+      // True when the server found something square but could not confirm it is the target.
+      hasUnconfirmedDetection(){
+        return !this._markerConfirmed
+            && !!(this.data && this.data.calibration_usable === false
+                  && (this.data.markers || []).length);
       }
 
       // A plain-language description of how THIS view is scaled, so the shop can trust it.

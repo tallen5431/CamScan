@@ -355,6 +355,42 @@ def main():
     except Exception as e:
         check("lone-square confidence guard", False, repr(e))
 
+    # 3c) ...and low confidence was NOT enough. An unverified detection must not be applied
+    #     as a scale at all. Run on six real customer photos of one part, none of which
+    #     contained a calibration marker, the detector latched onto a shadow or a tyre in
+    #     every single one and emitted scales spanning 6.6x — the same feature would have
+    #     read 60 mm in one shot and 396 mm in another, presented as millimetres and flagged
+    #     only "Approximate". The app must measure in PIXELS and ask for a scale instead.
+    try:
+        scenes = {
+            # a dark square-ish object on a light ground: a shadow, a tyre, a vent
+            "dark blob": (np.full((700, 900, 3), 200, np.uint8), (380, 300), (520, 440), 35),
+            # a bright panel on a dark ground
+            "bright blob": (np.full((700, 900, 3), 40, np.uint8), (300, 250), (470, 430), 235),
+        }
+        unusable, spread = {}, []
+        for name, (im, p0, p1, fg) in scenes.items():
+            img2 = im.copy()
+            cv2.rectangle(img2, p0, p1, (fg, fg, fg), -1)
+            with _quiet():
+                c, _o = calibrate_image(img2, edge_mm=40.0)
+            unusable[name] = (c.get("calibration_usable") is False
+                              and all(m.get("unverified") for m in (c.get("markers") or [])))
+            if c.get("markers"):
+                spread.append(c["mm_per_px"])
+        # and the real marker is untouched: still usable, still high, still correctly scaled
+        with _quiet():
+            good, _o = calibrate_image(_make_marker_image(), edge_mm=30.0)
+        real_ok = (good.get("calibration_usable") is True
+                   and good["calibration_confidence"] == "high"
+                   and 0.08 <= good["mm_per_px"] <= 0.12
+                   and not any(m.get("unverified") for m in good["markers"]))
+        check("an unverified detection is never applied as a scale",
+              all(unusable.values()) and real_ok,
+              f"unusable={unusable}, real marker still calibrates={real_ok}")
+    except Exception as e:
+        check("an unverified detection is never applied as a scale", False, repr(e))
+
     # 4) save_outputs writes calibration JSON atomically.
     if overlay is not None:
         try:

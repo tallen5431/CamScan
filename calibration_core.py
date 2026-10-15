@@ -586,8 +586,16 @@ def calibrate_image(img_bgr: np.ndarray,
                 # objects passed the `>= 3` test and calibrated the photo off whichever was
                 # biggest — at "high" confidence, with no warning anywhere in the UI.
                 pattern_ok = _pattern_verified(outer_rect, inner_rects)
-                if marker["confidence"] == "high" and (no_pattern_fallback or not pattern_ok
-                                                       or not quad_measured):
+                # UNVERIFIED means "a square-ish dark thing", not "the CamScan marker". Run on
+                # six real customer photos of one part, none of which contained a marker at
+                # all, the detector latched onto a shadow or a tyre in every single one and
+                # produced scales spanning 6.6x — the same feature would have read 60 mm in
+                # one shot and 396 mm in another, shown as millimetres and flagged merely
+                # "Approximate". Low confidence was not enough; the client must not apply
+                # this as a scale until a human confirms what it is.
+                marker["unverified"] = bool(no_pattern_fallback or not pattern_ok
+                                            or not quad_measured)
+                if marker["confidence"] == "high" and marker["unverified"]:
                     marker["confidence"] = "low"
                     print(f"     ⚠️  Capping confidence to low (pads={len(inner_rects)}, "
                           f"pattern_ok={pattern_ok}, quad_measured={quad_measured}, "
@@ -662,6 +670,9 @@ def calibrate_image(img_bgr: np.ndarray,
             plain_distortion = float(plain_metrics.get("distortion_deg", 0.0))
             marker = _record_marker(overlay, mapped, edge_len_mm, "plain", plain_distortion, line_thickness, homography_corners)
             if marker is not None:
+                # A bare square found on the full frame is a guess about what the object IS,
+                # so it is never applied as a scale without confirmation.
+                marker["unverified"] = True
                 markers.append(marker)
                 print(f"  ✅ Plain square calibrated: {marker['edge_px']:.1f}px = {edge_len_mm}mm → {marker['mm_per_px']:.4f} mm/px (verify)")
         else:
@@ -676,8 +687,11 @@ def calibrate_image(img_bgr: np.ndarray,
         print(f"  - Time per marker: {elapsed/len(markers):.3f}s")
     if len(markers) == 0 and len(rects) > 0:
         print(f"  ⚠️  All candidates failed corner refinement - check image quality and marker clarity")
-    # Global averages
-    mm_per_px_vals = [m["mm_per_px"] for m in markers] or [0.0]
+    # Global averages. Only VERIFIED markers set the usable scale: averaging in a shadow the
+    # detector mistook for a marker is how a photo with no reference at all ends up quoting
+    # millimetres.
+    verified = [m for m in markers if not m.get("unverified")]
+    mm_per_px_vals = [m["mm_per_px"] for m in (verified or markers)] or [0.0]
     mm_per_px_avg = float(np.mean(mm_per_px_vals))
     px_per_mm_avg = (1.0 / mm_per_px_avg) if mm_per_px_avg > 0 else 0.0
 
@@ -775,6 +789,10 @@ def calibrate_image(img_bgr: np.ndarray,
         "detected_rectangle": detected_rectangle,  # fallback paper corners (client confirms size)
         "quality": _image_quality(img_bgr),        # blur/brightness nudges for the client
         "camera": camera,                          # focal/distance/tilt + out-of-plane error
+        # False when nothing in the frame was confirmed to BE the calibration target. The
+        # client then measures in pixels and asks for a scale, instead of quoting millimetres
+        # derived from whatever happened to be the darkest square-ish blob.
+        "calibration_usable": bool(verified),
         "markers": markers
     }
 
