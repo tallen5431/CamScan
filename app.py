@@ -394,6 +394,22 @@ _UPLOADER_TUCKED = {"position": "fixed", "left": "-9999px", "top": "0",
                     "width": "1px", "height": "1px", "overflow": "hidden", "opacity": "0"}
 
 
+_BANNER_NOTICE = dict(_BANNER_SHOWN,
+                      background="#2a2416", border="1px solid #6b5a2b", color="#ffe9b8")
+
+
+def _upload_notice(status, viewer):
+    """A loaded photo that still needs something from the user — the photo is fine, but it
+    has no usable scale, so nothing measured on it means anything yet.
+
+    This goes in the always-visible banner rather than #status for the same reason upload
+    FAILURES do: #status lives inside the landing card, which this very return tucks to
+    left:-9999px. Writing the one message the user has to act on into an element that is
+    being hidden in the same breath left only a small KPI chip to carry it.
+    """
+    return status, viewer, _UPLOADER_TUCKED, None, status, _BANNER_NOTICE
+
+
 def _upload_failed(msg):
     """Return value for a failed upload: keep the current viewer, reset the uploader so the
     same file can be picked again, and put `msg` in the always-visible banner as well as
@@ -547,7 +563,7 @@ def on_upload(contents, filename):
             "you know the size of (a sheet of paper, or a square laid out with a ruler), "
             "which also corrects for camera angle."
         )
-        return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN
+        return _upload_notice(status, viewer)
 
     status = (
         f"✅ Processed '{filename}' — {n_markers} marker(s). "

@@ -494,12 +494,31 @@ def main():
                 r = _app.on_upload(_c, _fn)
             shown.append(len(r) == 6 and r[4] not in ("", None)
                          and r[5].get("display") == "block" and r[1] is no_update)
-        # ...and a success clears it again rather than leaving a stale error on screen.
+        # ...and a genuinely CALIBRATED upload clears it rather than leaving a stale message.
+        # It has to be a real marker: a blank frame has no usable scale, which is itself a
+        # notice now, so a featureless image would not exercise the clearing path at all.
+        _okm, _em = cv2.imencode(".jpg", _make_marker_image())
+        _marker_url = "data:image/jpeg;base64," + base64.b64encode(_em.tobytes()).decode()
         with _quiet(), _app.server.test_request_context("/"):
-            ok_r = _app.on_upload(good, "p.jpg")
+            ok_r = _app.on_upload(_marker_url, "marker.jpg")
         cleared = len(ok_r) == 6 and ok_r[4] == "" and ok_r[5].get("display") == "none"
-        check("upload failures reach the always-visible banner", all(shown) and cleared,
-              f"failure paths shown={sum(shown)}/{len(shown)}, success clears={cleared}")
+        # A photo that LOADS but has no usable scale is the same problem in a different
+        # coat: the guidance telling the user what to do lands in #status, which this very
+        # return tucks off-screen. It has to reach the banner too, styled as a notice rather
+        # than a failure, because the photo itself is fine.
+        _no_marker = np.full((700, 900, 3), 200, np.uint8)
+        cv2.rectangle(_no_marker, (380, 300), (520, 440), (35, 35, 35), -1)   # a shadow, not a target
+        _ok2, _e2 = cv2.imencode(".jpg", _no_marker)
+        _nm = "data:image/jpeg;base64," + base64.b64encode(_e2.tobytes()).decode()
+        with _quiet(), _app.server.test_request_context("/"):
+            nr = _app.on_upload(_nm, "shadow.jpg")
+        notice = (len(nr) == 6 and nr[5].get("display") == "block"
+                  and "scale" in str(nr[4]).lower()
+                  and nr[2].get("left") == "-9999px"      # panel tucked, so #status is hidden
+                  and nr[1] is not no_update)             # ...and the viewer DID load
+        check("upload failures reach the always-visible banner", all(shown) and cleared and notice,
+              f"failure paths shown={sum(shown)}/{len(shown)}, success clears={cleared}, "
+              f"no-scale notice visible={notice}")
     except Exception as e:
         check("upload failures reach the always-visible banner", False, repr(e))
 
