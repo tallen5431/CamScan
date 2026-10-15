@@ -110,7 +110,7 @@ Two things worth knowing about that:
   * It does NOT go away in a perfectly square-on photo. The same +11.1% is there
     whether you shoot straight down or at 30 degrees.
   * Camera tilt, by contrast, is already handled well: a length lying IN the card's
-    plane measures within about 1% out to 40 degrees of tilt.
+    plane measures within about 1% at 20 degrees of tilt and 2% at 40.
 
 THE FIX (free, and exact): rest the card ON the face you are measuring, so the card
 and the feature are in the same plane. For a part 20 mm thick, that is the difference
@@ -144,7 +144,7 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
 
  3. A RECTANGLE BEATS A LINE.
     Four corners of something of known size let CamScan undo the camera angle: a length
-    in that plane then measures within about 1% out to 40 degrees of tilt. A two-point
+    in that plane then measures within about 1% at 20 degrees of tilt and 2% at 40. A two-point
     line cannot — it scales uniformly, so at 40 degrees the same photo reads -22% across
     the part and -50% along it.
 

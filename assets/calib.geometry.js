@@ -126,7 +126,7 @@ window.CalibGeom = (function(){
   // have been modelled from whichever view happened to be open.
   //
   // The bands allow for the error that honest measuring carries: out-of-plane magnification
-  // reaches about 11% on a thick part (see README), tilt about 1%, plus a few percent of
+  // reaches about 11% on a thick part (see README), tilt 1-2%, plus a few percent of
   // tracing imprecision. So a 10% spread is not worth a word, and 25% is past anything those
   // explain.
   const CROSS_VIEW_WARN = 0.10;

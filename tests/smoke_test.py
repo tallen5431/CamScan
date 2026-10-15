@@ -918,7 +918,12 @@ def main():
             a = project(K2, R2, t2, np.array([[0.0, -60.0, 0.0]]))[0]
             b = project(K2, R2, t2, np.array([[100.0, -60.0, 0.0]]))[0]
             inplane.append(abs(measure_mm(Hh, c2["marker_size_mm"], a, b) - 100.0))
-        tilt_ok = all(e < 3.0 for e in inplane)
+        # The README and the in-app capture guide quote these: "within about 1% at 20 degrees
+        # of tilt and 2% at 40". Pinned to what they say, so the claim cannot drift from the
+        # measurement again — it read "about 1% out to 40" while this asserted only < 3%, and
+        # the 40-degree figure it rested on (0.67%) came from a test renderer that truncated
+        # vertices to whole pixels. Rendered faithfully it is 1.76%.
+        tilt_ok = inplane[0] < 0.5 and inplane[1] < 1.5 and inplane[2] < 2.5
 
         # EXIF: read when present, absent without complaint, never raises on junk.
         im0, _k, _r, _t = render(EDGE, F_, W_, H_, 0, D_)
