@@ -957,8 +957,29 @@ def api_trace():
     else:
         roi = None
 
+    # Taps saying "this IS the part" / "this is NOT". A background tap switches segmentation
+    # to GrabCut, which is the only thing that separates a part from something the same
+    # colour beside it — a dark part next to its own shadow differs from it by ~15 grey
+    # levels, so no threshold can draw that line.
+    def _points(key):
+        out = []
+        raw = data.get(key)
+        for p in (raw if isinstance(raw, (list, tuple)) else []):
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                out.append([x, y])
+            if len(out) >= 64:          # a tap count no human reaches; bounds the work
+                break
+        return out
+
+    fg_points, bg_points = _points("fg"), _points("bg")
+
     try:
-        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify, roi=roi)
+        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify, roi=roi,
+                                fg_points=fg_points, bg_points=bg_points)
     except Exception as e:
         print(f"[trace] error: {e}")
         return jsonify(ok=False, error="trace_failed"), 500

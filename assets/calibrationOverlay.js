@@ -318,6 +318,12 @@
               return this.requestDraw();
             }
 
+            // "Not the part": a tap marks background and re-traces. Checked BEFORE the
+            // auto-trace arm so the two cannot both fire on one tap.
+            if(this._bgTapArm){
+              return this.addBackgroundTap(p);
+            }
+
             // Outline auto-trace: when armed, a tap seeds server-side segmentation of the
             // part under it (instead of adding a vertex) → a full editable outline in one tap.
             if(this.opts.mode==='outline' && this._autoOutlineArm){
@@ -1266,6 +1272,36 @@
       }
 
       // Arm the next tap (in Outline mode) to auto-trace the part it lands on.
+      // "That bit isn't the part." One tap on something wrongly included — almost always a
+      // shadow — and the trace runs again as GrabCut with that as background. This is the
+      // only thing that fixes a dark part lying next to its own shadow: the two differ by
+      // about 15 grey levels, so no threshold can separate them, and the plain trace swallows
+      // the shadow whole (measured: 100% of the frame on a real customer photo, 37% once a
+      // background tap was supplied).
+      armBackgroundTap(){
+        if(!Array.isArray(this._lastAutoSeed)){
+          this._toast('Trace the part first, then mark what it got wrong.', {autoMs:3000});
+          return;
+        }
+        this._bgTapArm = true;
+        if(this._armToast) this._armToast.dismiss();
+        this._armToast = this._toast('Tap something that is NOT the part (its shadow, the ground).',
+                                     {autoMs:6000});
+        this.requestDraw();
+      }
+      // Record a background tap and immediately re-trace with it.
+      addBackgroundTap(pt){
+        if(!Array.isArray(pt)) return;
+        this._bgTapArm = false;
+        if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        this._bgTaps = (this._bgTaps||[]).concat([[pt[0], pt[1]]]);
+        // The seed itself is the strongest "this IS the part" evidence we have.
+        this._fgTaps = Array.isArray(this._lastAutoSeed) ? [this._lastAutoSeed.slice()] : [];
+        this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, true);
+      }
+      backgroundTapCount(){ return (this._bgTaps||[]).length; }
+      clearBackgroundTaps(){ this._bgTaps=[]; this._fgTaps=[]; }
+
       armAutoOutline(){
         if(this.opts.mode!=='outline') this.setMode('outline');
         this.selectedPoints=[]; this.hover=null;
@@ -1283,6 +1319,8 @@
       autoOutline(seed){
         if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
         if(!this.img){ return; }
+        // A new seed means a new object: the old "not the part" taps described the old one.
+        this.clearBackgroundTaps();
         this._lastAutoSeed = Array.isArray(seed) ? seed.slice() : null;
         // An Area box around the part becomes the trace's region-of-interest: the server builds
         // a clean LOCAL background model inside it and ignores everything outside, so distant
@@ -1342,6 +1380,9 @@
           });
         }catch(e){}
         const seedSent = seed ? [seed[0]*sentScale, seed[1]*sentScale] : null;
+        // Hints travel in the SAME sent-image coords as the seed and the ROI; a tap left in
+        // full-resolution coords would land somewhere else entirely on the posted image.
+        const sent = p => [p[0]*sentScale, p[1]*sentScale];
         // Carry the Area box (if any) as the ROI, in the SAME sent-image coords as the seed.
         let roiSent=null;
         if(Array.isArray(this._lastAutoRoi) && this._lastAutoRoi.length===4){
@@ -1351,7 +1392,8 @@
 
         const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent }) })
+            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent,
+                                  fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) }) })
           .then(r=>r.json())
           .then(function(j){
             if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){

@@ -917,7 +917,16 @@ window.CalibUI = (function(){
       setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
     };
 
-    ctx.append(ctxDelete, ctxAuto, ctxDepth, ctxFinish);
+    // Shown once a trace exists: the repair for the failure the plain trace cannot avoid —
+    // a dark part next to its own shadow, which no threshold can separate.
+    const ctxNotPart = document.createElement('button'); ctxNotPart.type = 'button';
+    ctxNotPart.className = 'cal-ctx-finish';
+    ctxNotPart.innerHTML = '✖ Not the part';
+    ctxNotPart.setAttribute('aria-label', 'Tap something the trace wrongly included');
+    ctxNotPart.title = 'Tap a shadow or background the outline swallowed, and it re-traces';
+    ctxNotPart.onclick = () => { if (overlay.armBackgroundTap) overlay.armBackgroundTap(); };
+
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxDepth, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -987,6 +996,12 @@ window.CalibUI = (function(){
       ctxFinish.innerHTML = mode === 'outline' ? '✓ Close outline' : '✓ Finish path';
       // Offer auto-trace whenever the Outline tool is active and no trace is in progress.
       ctxAuto.classList.toggle('show', mode === 'outline' && pathN === 0);
+      const traced = !!(overlay.backgroundTapCount && overlay._lastAutoSeed);
+      ctxNotPart.classList.toggle('show', traced);
+      if (traced) {
+        const n = overlay.backgroundTapCount();
+        ctxNotPart.innerHTML = n ? `✖ Not the part (${n})` : '✖ Not the part';
+      }
       const prof = overlay.selectedProfile && overlay.selectedProfile();
       ctxDepth.classList.toggle('show', !!prof);
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0 ? `⇥ ${prof.depth_mm} mm` : '⇥ Depth';

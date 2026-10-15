@@ -1314,6 +1314,69 @@ def main():
     except Exception as e:
         check("a dimension from a scaled view can scale a view with no reference", False, repr(e))
 
+    # 8t) A dark part lying next to its own shadow cannot be separated by ANY threshold: on
+    #     a real customer photo the part averaged 71 grey and its shadow 57, while bare
+    #     concrete was 169 — the part and the shadow differ by 15 levels, the shadow and the
+    #     ground by 113. The colour-distance trace swallowed the shadow whole (100% of the
+    #     frame). Two taps — "this is the part", "this is not" — switch to GrabCut, which
+    #     models both sides instead of drawing one line. Reproduce that scene synthetically.
+    try:
+        from auto_outline import auto_outline_full
+        H2, W2 = 520, 760
+        scene = np.full((H2, W2, 3), 170, np.uint8)                 # light ground
+        part = np.array([[150, 120], [470, 120], [470, 300], [150, 300]], np.int32)
+        shadow = np.array([[180, 300], [500, 300], [530, 430], [210, 430]], np.int32)
+        cv2.fillPoly(scene, [shadow], (58, 58, 58))                 # its shadow: 58 grey
+        cv2.fillPoly(scene, [part], (72, 72, 72))                   # the part:   72 grey
+        scene = cv2.GaussianBlur(scene, (5, 5), 0)
+        part_area = float(cv2.contourArea(part))
+
+        def _traced_area(**kw):
+            with _quiet():
+                r = auto_outline_full(scene, seed=[310, 210], **kw)
+            if not r or not r.get("outer"):
+                return None
+            return float(cv2.contourArea(np.array(r["outer"], np.int32)))
+
+        plain = _traced_area()
+        hinted = _traced_area(fg_points=[[310, 210]], bg_points=[[350, 380], [60, 60]])
+        # The plain trace should swallow the shadow; the hinted one should not.
+        plain_ratio = (plain / part_area) if plain else 0.0
+        hint_ratio = (hinted / part_area) if hinted else 0.0
+        # Hinted must be much closer to the true part than the plain trace, and must not
+        # collapse to nothing either.
+        ok = (hinted is not None and 0.75 <= hint_ratio <= 1.35
+              and (plain is None or hint_ratio < plain_ratio - 0.15))
+        check("two taps separate a part from a same-coloured shadow",
+              ok, f"plain={plain_ratio:.2f}x the part, two-tap={hint_ratio:.2f}x")
+    except Exception as e:
+        check("two taps separate a part from a same-coloured shadow", False, repr(e))
+
+    # 8u) The hints are untrusted JSON on a public endpoint, and a malformed one must simply
+    #     be ignored — this endpoint's contract is to degrade, never to error.
+    try:
+        import app as _app7
+        _sc = np.full((300, 400, 3), 190, np.uint8)
+        cv2.rectangle(_sc, (120, 90), (280, 210), (40, 40, 40), -1)
+        _o7, _e7 = cv2.imencode(".jpg", _sc)
+        _d7 = "data:image/jpeg;base64," + base64.b64encode(_e7.tobytes()).decode()
+        cli = _app7.server.test_client()
+        base_body = {"image": _d7, "seed": [200, 150]}
+        codes = {}
+        with _quiet():
+            for name, extra in (("none", {}),
+                                ("good hints", {"fg": [[200, 150]], "bg": [[20, 20]]}),
+                                ("fg not a list", {"fg": "nope"}),
+                                ("nan tap", {"bg": [[float("nan"), 5]]}),
+                                ("ragged tap", {"bg": [[1]]}),
+                                ("5000 taps", {"bg": [[1, 1]] * 5000})):
+                r7 = cli.post("/api/trace", json=dict(base_body, **extra))
+                codes[name] = (r7.status_code, bool((r7.get_json() or {}).get("ok")))
+        ok = all(c == 200 for c, _k in codes.values())
+        check("/api/trace tolerates any shape of hint", ok, str(codes))
+    except Exception as e:
+        check("/api/trace tolerates any shape of hint", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
