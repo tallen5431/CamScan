@@ -1934,6 +1934,14 @@
           // the card's own plane looked identical while reading several percent apart.
           const fh = this.featureHeightMM();
           if(fh) specs.push({text:`⬆ measuring ${fh} mm above the card`, cls:'cal-chip--lead'});
+          // A scale from a single drawn line (a ruler, a card edge) is UNIFORM: it is right
+          // along the line, at the line's distance, and degrades everywhere else. Measured on
+          // synthetic renders at 40 deg of tilt, a true 300 mm length read 232 mm measured
+          // across the line and 150 mm further down the part. The absence of the
+          // "perspective-corrected" chip was the only hint, and that chip is hidden on a
+          // phone anyway — so say it outright, at every width.
+          if(this.opts.manualMmPerPx && !this.opts.manualHomography)
+            specs.push({text:'↔ uniform scale — not tilt-corrected', cls:'cal-chip--warn'});
           // Measuring far outside the reference is a correctness problem, not a nicety, so
           // it shows at every width — a 40 mm card on a 1.5 m part reads plausibly and is
           // meaningless, and nothing else on screen would hint at that.

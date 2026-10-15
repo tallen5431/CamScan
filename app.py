@@ -528,12 +528,24 @@ def on_upload(contents, filename):
     # a green "✅ success": that led people to submit un-scaled photos believing they were
     # measured in mm. Be honest and point straight at the recovery tool. (Matches the
     # app's pixel-honesty philosophy — see the uncalibrated export confirm.)
-    if n_markers == 0 or confidence == "none":
+    # `calibration_usable` is False when nothing in the frame was CONFIRMED to be the
+    # calibration target — including the common case where the detector latched onto a
+    # shadow or some other dark square-ish object and measured it perfectly well. Reporting
+    # "1 marker, 40 mm" there is exactly the dressed-up success this branch exists to avoid,
+    # so an unconfirmed detection takes the same honest path as finding nothing at all.
+    usable = cal.get("calibration_usable", n_markers > 0)
+    if n_markers == 0 or confidence == "none" or not usable:
+        found_something = n_markers > 0 and not usable
+        lead = (f"⚠️ Loaded '{filename}'. I found a square-ish shape but can't confirm it is a "
+                "calibration target, so I haven't used it for scale"
+                if found_something else
+                f"⚠️ Loaded '{filename}', but no calibration target was found")
         status = (
-            f"⚠️ Loaded '{filename}', but no calibration square was found — "
-            "measurements would be in pixels, not mm. Use the Set Scale tool (📐): draw a "
-            "line across something of known size (a coin, a card, a sheet of paper, or a "
-            "ruler) and type its real length."
+            f"{lead} — measurements are in PIXELS until you set a scale. "
+            "Open Set scale (📐) and either draw along something of known length — a ruler, "
+            "a credit card, a coin — or, for a big part, tap the 4 corners of a rectangle "
+            "you know the size of (a sheet of paper, or a square laid out with a ruler), "
+            "which also corrects for camera angle."
         )
         return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN
 
