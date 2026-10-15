@@ -132,7 +132,93 @@ def auto_outline_full(
     if ox or oy:
         outer = [[x + ox, y + oy] for (x, y) in outer]
         holes = [_offset_hole(h, ox, oy) for h in holes]
-    return {"outer": outer, "holes": holes}
+    H, W = img_bgr.shape[:2]
+    cov, border = trace_extent(outer, W, H)
+    return {"outer": outer, "holes": holes, "coverage": cov, "border": border,
+            "runaway": is_runaway_trace(cov, border)}
+
+
+# ---------------------------------------------------------------------------------------
+# Runaway guard
+# ---------------------------------------------------------------------------------------
+# Tapping a featureless patch — sky, a plain wall, an out-of-focus area, bare concrete —
+# gives the segmenter nothing to find an edge against, and it returns the image rectangle.
+# The caller then presents that to the user as "your part's outline", and it can be measured
+# and exported like any other trace. Catching it needs a signal that is certain rather than
+# merely suspicious, because a false alarm blocks a real trace.
+#
+# Measured through auto_outline_full over the six customer photos, synthetic parts and
+# featureless frames, THROUGH A JPEG ROUND-TRIP — the client posts quality-85 JPEG, and
+# compression moves these numbers enough to matter (one dead frame read 82% border raw and
+# 64% after JPEG, which a threshold set on raw arrays would have missed):
+#
+#                                                 coverage        border
+#     flat tone / out-of-focus (nothing there)    98.9-99.2%    88.1-99.2%
+#     legitimate close-up, part fills the frame        93.2%          0.0%
+#     real customer photos, plain centre tap       1.8-53.3%     0.0-19.3%
+#
+# Border does the separating — 41 points clear of the worst legitimate reading — and coverage
+# is the sanity bar that keeps a merely edge-hugging trace from tripping it. Both are
+# required: coverage alone fires on the 93% close-up.
+#
+# Border is measured by SAMPLING along the perimeter, not by testing segment endpoints. The
+# endpoint test is brittle in exactly the case that matters: one vertex drifting a few pixels
+# inward discards that whole segment, and on the same dead frames it swung 66.8-91.6% where
+# sampling gave a steady 88.1-99.2%.
+_RUNAWAY_COVERAGE = 0.90
+_RUNAWAY_BORDER = 0.60
+_BORDER_SAMPLES = 4000          # bounds the work on a long perimeter; ~2px steps at 1080p
+
+
+def trace_extent(pts, frame_w, frame_h):
+    """(coverage, border) for a traced outline: its area as a fraction of the frame, and the
+    fraction of its PERIMETER LENGTH running along the frame's edge. Pure — no image, no
+    OpenCV, so the rule can be tested directly."""
+    n = len(pts or ())
+    if n < 3 or frame_w <= 0 or frame_h <= 0:
+        return 0.0, 0.0
+    area = perim = 0.0
+    for i in range(n):
+        (x0, y0), (x1, y1) = pts[i][:2], pts[(i + 1) % n][:2]
+        area += x0 * y1 - x1 * y0
+        perim += math.hypot(x1 - x0, y1 - y0)
+    coverage = abs(area) * 0.5 / float(frame_w * frame_h)
+    if perim <= 0:
+        return coverage, 0.0
+
+    tol = max(2.0, 0.004 * min(frame_w, frame_h))
+    step = max(1.0, perim / _BORDER_SAMPLES)
+
+    def _on_edge(x, y):
+        return (x <= tol or y <= tol
+                or x >= frame_w - 1 - tol or y >= frame_h - 1 - tol)
+
+    total = on = 0.0
+    for i in range(n):
+        (px, py), (qx, qy) = pts[i][:2], pts[(i + 1) % n][:2]
+        seg_len = math.hypot(qx - px, qy - py)
+        if seg_len <= 0:
+            continue
+        k = max(1, int(seg_len / step))
+        piece = seg_len / k
+        for j in range(k):
+            t = (j + 0.5) / k                      # midpoint of each piece
+            total += piece
+            if _on_edge(px + (qx - px) * t, py + (qy - py) * t):
+                on += piece
+    return coverage, (on / total if total > 0 else 0.0)
+
+
+def is_runaway_trace(coverage, border):
+    """True when the trace is the frame itself rather than an outline of anything.
+
+    This deliberately catches only the certain case. A trace that merely looks too big is
+    left alone: a false alarm blocks a real outline, and the user looking at the overlay
+    judges 'is that my part?' far better than any threshold here can. In particular a trace
+    that runs away INSIDE an Area box is not caught — it covers only the box, so coverage
+    stays low — and that is accepted rather than guessed at.
+    """
+    return coverage >= _RUNAWAY_COVERAGE and border >= _RUNAWAY_BORDER
 
 
 def _crop_to_roi(img_bgr, seed, exclude_boxes, roi, margin_frac=0.08, min_margin=10):

@@ -986,6 +986,14 @@ def api_trace():
 
     if not res or not res.get("outer"):
         return jsonify(ok=False, error="no_outline"), 200
+    # A trace that IS the frame is not an outline — the tap landed on something featureless
+    # (sky, a plain wall, bare concrete) and the segmenter had no edge to find. Handing it
+    # back would let the user measure and export the image border as their part.
+    if res.get("runaway"):
+        return jsonify(ok=False, error="runaway",
+                       hint="That trace covers the whole photo — the spot you tapped has no "
+                            "edge to find. Tap right on the part, draw an Area box around it "
+                            "first, or tap ✖ Not the part on the background."), 200
     # `points` is the outer boundary (unchanged shape for older clients); `holes` are interior
     # loops (a box-end ring, bolt holes) the client drops in as extra closed profiles.
     return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [])

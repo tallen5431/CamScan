@@ -1377,6 +1377,75 @@ def main():
     except Exception as e:
         check("/api/trace tolerates any shape of hint", False, repr(e))
 
+    # 8v) Tapping a featureless patch returns the IMAGE RECTANGLE, which the app would then
+    #     present as the part's outline, ready to measure and export. The guard must fire on
+    #     every such frame and on NOTHING legitimate — a false alarm blocks a real trace. The
+    #     thresholds were set from measured separation (coverage 98.9-99.2% / border 88-99%
+    #     for a dead frame, against 93.2% / 0.0% for the tightest legitimate close-up and
+    #     19.3% border for the worst real photo), so pin both sides here.
+    #
+    #     Every case goes through a JPEG round-trip because that is the path the client uses,
+    #     and compression moves these numbers: one dead frame reads 82% border as a raw array
+    #     and 64% after JPEG, so a test on raw arrays would pass while production missed it.
+    try:
+        from auto_outline import auto_outline_full as _aof
+        rng8 = np.random.default_rng(7)
+
+        def _jpeg(img):
+            _ok, _enc = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return cv2.imdecode(_enc, cv2.IMREAD_COLOR)
+
+        def _verdict(img, **kw):
+            with _quiet():
+                r = _aof(_jpeg(img), **kw)
+            return None if not r else bool(r.get("runaway"))
+
+        def _flat(tone):
+            f = np.full((600, 800, 3), tone, np.uint8)
+            return np.clip(f.astype(np.int16) + rng8.integers(-3, 4, f.shape), 0, 255).astype(np.uint8)
+
+        must_fire = {}
+        for tone in (40, 90, 128, 170, 210):
+            must_fire[f"flat {tone}"] = _verdict(_flat(tone), seed=[400, 300])
+        _blur = cv2.GaussianBlur(np.full((600, 800, 3), 150, np.uint8), (0, 0), 30)
+        _blur = np.clip(_blur.astype(np.int16) + rng8.integers(-6, 7, _blur.shape), 0, 255).astype(np.uint8)
+        must_fire["out-of-focus"] = _verdict(_blur, seed=[400, 300])
+
+        _p = np.full((600, 800, 3), 200, np.uint8)
+        cv2.rectangle(_p, (250, 180), (560, 420), (60, 60, 60), -1)
+        _big = np.full((600, 800, 3), 200, np.uint8)
+        cv2.rectangle(_big, (40, 30), (760, 570), (60, 60, 60), -1)      # fills 81% of frame
+        _tight = np.full((600, 800, 3), 200, np.uint8)
+        cv2.rectangle(_tight, (14, 10), (786, 590), (60, 60, 60), -1)    # fills 93%, 10px gap
+        must_not = {
+            "part 15% of frame": _verdict(_p, seed=[400, 300]),
+            "close-up fills 81%": _verdict(_big, seed=[400, 300]),
+            # The closest legitimate case to the guard: 93% of the frame, edge-to-edge but
+            # for a 10px gap. Only its border (0%) keeps it from tripping.
+            "close-up fills 93%": _verdict(_tight, seed=[400, 300]),
+            "generous Area box": _verdict(_p, roi=[220, 150, 370, 300], seed=[400, 300]),
+            "tight Area box": _verdict(_p, roi=[245, 175, 320, 250], seed=[400, 300]),
+            "box inside the part": _verdict(_p, roi=[250, 180, 90, 120], seed=[290, 230]),
+        }
+        fired = [k for k, v in must_fire.items() if v is not True]
+        false_alarm = [k for k, v in must_not.items() if v is True]
+        # And the endpoint must say so rather than handing the frame back as an outline.
+        import app as _app8
+        _of, _ef = cv2.imencode(".jpg", _flat(128))
+        with _quiet():
+            _r8 = _app8.server.test_client().post("/api/trace", json={
+                "image": "data:image/jpeg;base64," + base64.b64encode(_ef.tobytes()).decode(),
+                "seed": [400, 300]})
+        _j8 = _r8.get_json() or {}
+        api_ok = (_r8.status_code == 200 and _j8.get("ok") is False
+                  and _j8.get("error") == "runaway" and bool(_j8.get("hint")))
+        check("a trace that is just the frame is refused, real outlines are not",
+              not fired and not false_alarm and api_ok,
+              "missed={}, false alarms={}, endpoint refuses with a hint={}".format(
+                  fired or "none", false_alarm or "none", api_ok))
+    except Exception as e:
+        check("a trace that is just the frame is refused, real outlines are not", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

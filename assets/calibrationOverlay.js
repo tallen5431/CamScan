@@ -1433,9 +1433,13 @@
               setTimeout(toast.dismiss, isRetrace ? 1400 : 2800);
               self._showTraceDetail(nPts, nHoles);
             }else{
-              toast.update(isRetrace ? 'Re-trace found nothing — try a different detail level.'
-                                     : 'No part found there — tap right on the part, or trace it by hand.', 'err');
-              setTimeout(toast.dismiss, 3400);
+              // The server says WHY when it can be specific (a trace covering the whole frame
+              // means the tap had no edge to find); fall back to the generic advice otherwise.
+              const why = (j && typeof j.hint === 'string' && j.hint) ? j.hint
+                        : (isRetrace ? 'Re-trace found nothing — try a different detail level.'
+                                     : 'No part found there — tap right on the part, or trace it by hand.');
+              toast.update(why, 'err');
+              setTimeout(toast.dismiss, (j && j.hint) ? 6000 : 3400);
             }
           })
           .catch(function(){ toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
