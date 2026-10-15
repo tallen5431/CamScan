@@ -1,0 +1,9 @@
+# Test-only dependencies. The app itself needs only requirements.txt.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   python -m playwright install chromium     # skip if a Chromium is already provisioned
+#
+# Without these, tests/smoke_test.py still runs in full; the browser suites
+# (tests/test_*_e2e.py) report SKIP — set CAMSCAN_E2E_REQUIRE=1 to make a skip fail.
+playwright>=1.44
+pyflakes>=3.0
