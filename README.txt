@@ -192,6 +192,25 @@ Download menu:
         Fusion and most laser cutters. Generated in-browser (no ezdxf needed).
 
 --------------------------------------------------------------------------------
+TESTING
+--------------------------------------------------------------------------------
+  pip install -r requirements.txt -r requirements-dev.txt
+  python -m playwright install chromium        # once; skip if a Chromium is provisioned
+
+  python tests/smoke_test.py                   # fast: geometry, endpoints, exports, rules
+  python tests/test_newtools_e2e.py            # real browser: one per tests/test_*_e2e.py
+
+The browser suites report SKIP (and exit 0) where no browser is available, so they never
+break a machine that cannot run one. Set CAMSCAN_E2E_REQUIRE=1 to make a skip a failure —
+CI does, so the browser layer can never pass by not running.
+
+CI (.github/workflows/ci.yml) runs on every push and pull request: lint (flake8 --select=F),
+JavaScript syntax, the smoke suite, every browser suite, and tests/check_line_endings.py.
+That last one exists because this repository mixes CRLF and LF files with no .gitattributes:
+a text-mode edit silently converts a CRLF file, and the real change disappears under
+thousands of lines of line-ending churn. It fails a change that flips a file's endings.
+
+--------------------------------------------------------------------------------
 ARTIFACTS in /uploads
 --------------------------------------------------------------------------------
   <name>.jpg               original upload

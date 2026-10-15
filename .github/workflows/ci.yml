@@ -1,0 +1,71 @@
+# Runs everything that otherwise only ran when someone remembered to: the smoke suite, the
+# real-browser suites, lint, JS syntax, and a check that no file's line endings were converted
+# by accident. The browser suites run with CAMSCAN_E2E_REQUIRE=1, so a missing browser fails
+# the build instead of quietly reporting SKIP as success.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # the line-ending check compares against the base commit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libgl1          # opencv-python links against libGL
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Lint (pyflakes checks)
+        run: flake8 --select=F $(git ls-files '*.py')
+
+      - name: JavaScript syntax
+        run: for f in assets/*.js; do node --check "$f"; done
+
+      - name: Line endings unchanged
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: python tests/check_line_endings.py "$BASE"
+
+      - name: Smoke suite
+        run: python tests/smoke_test.py
+
+      - name: Browser suites
+        env:
+          CAMSCAN_E2E_REQUIRE: "1"
+        run: |
+          status=0
+          for t in tests/test_*_e2e.py; do
+            echo "::group::$t"
+            python "$t" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
