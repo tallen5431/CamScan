@@ -1233,6 +1233,41 @@ def main():
     except Exception as e:
         check("stored job reaches the disagreement rule; panel still opens", False, repr(e))
 
+    # 8o4) The capture guide states numbers ("a fifth as long", "more than 10%") that came from
+    #      constants elsewhere in the code. Tuning a constant without touching the prose turns
+    #      the guidance into a confident lie, which is worse than no guidance — so pin the two
+    #      that are written out in words to the values they describe.
+    try:
+        if node is None:
+            check("capture guide matches its constants (needs node)", True, "skipped — no node")
+        else:
+            r = subprocess.run([node, "-e",
+                                "global.window={};require(process.argv[1]);"
+                                "const G=window.CalibGeom;"
+                                "console.log(JSON.stringify({span:G.REF_SPAN_RATIO_WARN,"
+                                "cross:G.CROSS_VIEW_WARN}));",
+                                str(ROOT / "assets" / "calib.geometry.js")],
+                               capture_output=True, text=True, timeout=60)
+            c = _json.loads(r.stdout.strip())
+            readme = (ROOT / "README.txt").read_text(encoding="utf-8")
+            job_js = (ROOT / "assets" / "calib.job.js").read_text(encoding="utf-8")
+            # "at least a fifth as long" <- REF_SPAN_RATIO_WARN = 5
+            span_ok = (abs(c["span"] - 5) < 1e-9
+                       and "fifth as long" in readme.lower()
+                       and "fifth as long" in job_js.lower())
+            # "disagree ... by more than 10%" <- CROSS_VIEW_WARN = 0.10
+            cross_ok = (abs(c["cross"] - 0.10) < 1e-9
+                        and "more than 10%" in readme)
+            # the depth figures the guide quotes are the ones the geometry test measures
+            depth_ok = all(s in readme and s in job_js for s in ("+2.6%", "+5.3%", "+11.1%"))
+            check("capture guide matches the constants it quotes",
+                  span_ok and cross_ok and depth_ok,
+                  "span 1/{:g} consistent={}, cross-view {:.0%} consistent={}, "
+                  "depth figures present={}".format(c["span"], span_ok, c["cross"],
+                                                    cross_ok, depth_ok))
+    except Exception as e:
+        check("capture guide matches the constants it quotes", False, repr(e))
+
     # 8p) An extruded profile must survive the whole export path. depth_mm rides on a closed
     #     polyline so a consumer can build the solid instead of guessing; the DXF writer must
     #     ignore the key it does not know rather than dropping the profile.

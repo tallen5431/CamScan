@@ -107,6 +107,45 @@ Also worth doing: shoot from further back. The error scales as height/distance, 
 enough in frame to be detected.
 
 --------------------------------------------------------------------------------
+SHOOTING A PART CAMSCAN CAN ACTUALLY MEASURE
+--------------------------------------------------------------------------------
+Worth sending to whoever is holding the camera. The same list is in the app, under
+"Suggested shots" -> "What makes a photo measurable". Every number below is measured
+(see ACCURACY above and tests/smoke_test.py), not a rule of thumb.
+
+ 1. PUT THE REFERENCE ON THE FACE YOU ARE MEASURING.
+    The biggest error, and free to avoid. A face raised above the card is magnified:
+    +2.6% at 10 mm up, +5.3% at 20 mm, +11.1% at 40 mm. It does NOT go away in a
+    square-on photo. Rest the card on that face and the error is zero.
+
+ 2. USE A REFERENCE AT LEAST A FIFTH AS LONG AS THE PART.
+    Error multiplies by how far you extrapolate. A 40 mm card on a 1.5 m running board
+    is 1/38th of the span, so a pixel of error on the card becomes centimetres on the
+    board. A steel rule, a sheet of A4, a tape measure — anything big and rigid.
+
+ 3. A RECTANGLE BEATS A LINE.
+    Four corners of something of known size let CamScan undo the camera angle: a length
+    in that plane then measures within about 1% out to 40 degrees of tilt. A two-point
+    line cannot — it scales uniformly, so at 40 degrees the same photo reads -22% across
+    the part and -50% along it.
+
+ 4. STAND BACK AND ZOOM IN, RATHER THAN MOVING IN CLOSE.
+    Depth error scales as height/distance: a 20 mm-thick part reads +8.7% at 250 mm and
+    +3.4% at 600 mm. Just keep the reference big enough in frame to be found.
+
+ 5. GET THE WHOLE PART IN FRAME, WITH BACKGROUND AROUND IT.
+    The tracer needs to see where the part ends. A part photographed against something
+    its own colour — a dark part lying on its own shadow — needs the "✖ Not the part"
+    tap to separate the two; no brightness threshold can (measured on a real photo: part
+    71 grey, its shadow 57, the concrete 169).
+
+ 6. SHOOT THE SAME PART FROM MORE THAN ONE SIDE.
+    One photo gives an outline; thickness and profile come from the second and third.
+    Measuring one dimension in two views also lets CamScan check the scales against each
+    other — the only way a wrong scale ever shows itself. When two views disagree about a
+    dimension by more than 10%, the job panel says so.
+
+--------------------------------------------------------------------------------
 MEASURING
 --------------------------------------------------------------------------------
 Tools (toolbar):
