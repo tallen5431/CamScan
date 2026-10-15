@@ -1235,6 +1235,66 @@ def main():
     except Exception as e:
         check("/api/export/stl returns a valid STL and refuses everything else", False, repr(e))
 
+    # 8s) The same physical part appears in every photo of a job, so a length measured in a
+    #     view that HAD a usable reference is a valid reference in a view that had none. That
+    #     is what rescues a real set like this customer's: a ruler lying in the part's plane
+    #     in one shot, and no reference at all in the shot of the part laid out on the ground
+    #     — which is the most useful one for modelling. Without it that photo cannot be
+    #     measured at all. Guard the selection rules, because laundering a bad scale from one
+    #     view into another would make a wrong number look authoritative.
+    try:
+        import subprocess, json as _json
+        node = None
+        for cand in ("/opt/node22/bin/node", "node"):
+            try:
+                subprocess.run([cand, "-e", "0"], capture_output=True, check=True)
+                node = cand
+                break
+            except Exception:
+                continue
+        if node is None:
+            check("cross-view reference dimensions (needs node)", True, "skipped — no node runtime")
+        else:
+            script = r"""
+              require(process.argv[1]);
+              // the module reads the stored job at load time, so seed it first
+              localStorage.setItem('camscan.job.v1', JSON.stringify({ id:'j', views:[
+                {label:'Top', sourceId:'a', scale:{calibrated:true}, measurements:[
+                   {label:'Width', text:'142 mm', mm:142.3},
+                   {label:'Rib',   text:'38 mm',  mm:38.1},
+                   {label:'Outline', text:'peri 900'}]},
+                {label:'Front', sourceId:'b', scale:{calibrated:false}, measurements:[
+                   {label:'Bogus', text:'?', mm:999}]},
+                {label:'Detail', sourceId:'c', scale:{calibrated:true}, measurements:[
+                   {label:'Slot', text:'51 mm', mm:51.0}]},
+              ]}));
+              require(process.argv[2]);
+              const d = window.CalibJob.referenceDimensions();
+              console.log(JSON.stringify({
+                dims: d,
+                leakedUncalibrated: d.some(x => x.mm === 999),
+                keptNonLength: d.some(x => x.label === 'Outline'),
+                sorted: d.every((x, i) => i === 0 || d[i - 1].mm >= x.mm),
+              }));
+            """
+            r = subprocess.run([node, "-e", script,
+                                str(ROOT / "tests" / "support" / "dom_stub.js"),
+                                str(ROOT / "assets" / "calib.job.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            ok = (len(o["dims"]) == 3
+                  # a view whose own scale is not calibrated must never become a reference
+                  and not o["leakedUncalibrated"]
+                  # only single-length measurements carry a reusable mm
+                  and not o["keptNonLength"]
+                  # longest first: a bigger reference extrapolates far better
+                  and o["sorted"] and abs(o["dims"][0]["mm"] - 142.3) < 1e-9)
+            offered = ", ".join("{}={:.1f}mm".format(x["label"], x["mm"]) for x in o["dims"])
+            check("a dimension from a scaled view can scale a view with no reference", ok,
+                  "offered [{}]; uncalibrated leaked={}".format(offered, o["leakedUncalibrated"]))
+    except Exception as e:
+        check("a dimension from a scaled view can scale a view with no reference", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

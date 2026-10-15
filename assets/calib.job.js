@@ -611,8 +611,35 @@
   // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
   function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
 
+  // Dimensions already measured on THIS part, in other views, usable as a scale reference
+  // here. The same physical object appears in every photo of a job, so a length measured
+  // where a reference WAS in plane is a valid reference in a photo that had none — which is
+  // the only thing that makes an unreferenced shot (the part laid out on the ground, say)
+  // measurable at all. Excludes the view currently open, so a view cannot scale off itself.
+  function referenceDimensions(){
+    var openIdx = currentOpenIndex();
+    var sid = currentSourceId();
+    var out = [];
+    job.views.forEach(function(v, i){
+      if(i === openIdx) return;                       // not this view
+      if(sid && v.sourceId === sid) return;           // nor the same photo under another index
+      // Only from a view that was itself properly scaled — otherwise this just launders a
+      // bad number into another photo and makes it look authoritative.
+      if(!(v.scale && v.scale.calibrated)) return;
+      (v.measurements || []).forEach(function(m){
+        if(typeof m.mm === 'number' && isFinite(m.mm) && m.mm > 0){
+          out.push({ view: v.label || ('View ' + (i + 1)), label: m.label || 'length', mm: m.mm });
+        }
+      });
+    });
+    // Longest first: a big reference extrapolates far better than a small one.
+    out.sort(function(a, b){ return b.mm - a.mm; });
+    return out;
+  }
+
   // Minimal API so the simple-mode layer can drive submission without duplicating logic.
   window.CalibJob = {
+    referenceDimensions: referenceDimensions,
     addView: addView,
     open: openPanel,
     submit: submit,          // send/hand-off the collected set (used by simple mode + tests)

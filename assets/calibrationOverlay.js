@@ -856,7 +856,13 @@
         if(!a) return null;
         const unit=Units.get(this.opts.units), ctx=this._measureCtx(a);
         const cal=this.isCalibrated();
-        if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]); const t=this._fmtLen(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]),px); return {label:'Length', text:t, copy:cal?unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])).toFixed(3):String(Math.round(px))}; }
+        if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]);
+          const lmm=Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]);
+          const t=this._fmtLen(lmm,px);
+          // `mm` is the raw millimetre value, kept separate from the formatted text so
+          // another VIEW of the same part can reuse this dimension as its scale reference.
+          return {label:'Length', text:t, mm:(cal?lmm:null),
+                  copy:cal?unit.fromMM(lmm).toFixed(3):String(Math.round(px))}; }
         if(a.type==='polyline'){ const pts=a.pts||[]; const closed=!!a.closed && pts.length>=3;
           let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
           if(closed) px+=Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
@@ -898,7 +904,8 @@
 
       // ---- Submission (multi-view job) capture -------------------------------------
       // Every measurement on this view, as [{label,text}], for the review + email packet.
-      getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean).map(r=>({label:r.label, text:r.text})); }
+      getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean)
+        .map(r=>{ const o={label:r.label, text:r.text}; if(r.mm>0) o.mm=r.mm; return o; }); }
       // --- Is the scale reference big enough for what is being measured? ----------------
       // A homography is only trustworthy near the points that fixed it. Extrapolate far
       // outside the reference and the error explodes: measured on synthetic renders at 30 deg
@@ -1492,6 +1499,31 @@
           b.onclick=()=>finishMM(p.mm);
           presets.appendChild(b);
         }
+        // THE SAME PART appears in every photo of a job, so a length measured in a view
+        // that HAD a usable reference is a valid reference in a view that did not. That is
+        // what rescues a set like "ruler in one shot, none in the others": measure the part's
+        // width where the ruler lies in its plane, then reuse that width to scale every other
+        // angle. Without this, a photo with no reference simply cannot be measured at all.
+        try{
+          const J=window.CalibJob;
+          const dims=(J && J.referenceDimensions) ? J.referenceDimensions() : [];
+          if(dims.length){
+            const head=document.createElement('span');
+            head.textContent='…or a dimension you already measured on this part:';
+            head.style.cssText='flex:1 1 100%;font-size:12px;color:#9aa;margin-top:6px;';
+            presets.appendChild(head);
+            for(const dmn of dims.slice(0,6)){
+              const b=document.createElement('button'); b.type='button';
+              b.textContent=`📏 ${dmn.view}: ${dmn.label} · ${dmn.mm.toFixed(1)} mm`;
+              b.title=`Reuse ${dmn.mm.toFixed(2)} mm, measured on "${dmn.view}"`;
+              b.style.cssText='min-height:40px;padding:6px 11px;background:#151a1f;color:#cfe6ee;'
+                + 'border:1px solid #29414c;border-radius:8px;font-size:13px;cursor:pointer;';
+              b.onclick=()=>finishMM(dmn.mm);
+              presets.appendChild(b);
+            }
+          }
+        }catch(e){ /* the job layer is optional; presets above still work */ }
+
         box.append(lab,inp,us,ok,cancel,presets); document.body.appendChild(box);
         // Anchor ABOVE the drawn line (never below): the soft keyboard opens from the
         // bottom, so a box placed under the finger/midpoint gets covered on phones. Fall
