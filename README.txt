@@ -61,10 +61,29 @@ re-draw in CAD.
      Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
      and they become real through-holes in the solid.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
+     For a COVER, also fill in the wall thickness (see below).
   3) Download menu → "Save STL (3D print)".
 
-The result is a watertight mesh: every edge closed, normals facing out, volume equal
-to the profile area times the depth. Those are checked, not assumed — if a closed
+COVERS (hollow parts). Most replacement covers — a running-board step pad, a trim cap,
+an end cover — are a thin plate with a wall round its edge, open underneath. Enter a wall
+thickness in the ⇥ Depth box and the STL comes out that way instead of as a solid block:
+
+    900 x 180 mm step pad, 25 mm deep    solid: 4.05 L (~5.0 kg PLA)
+                                         3 mm wall: 0.63 L (~0.78 kg PLA)
+
+  * The plate and the wall are both that thick; the outer surface is your traced outline
+    exactly. The wall holds its thickness to within 2% (about 0.05 mm on a 3 mm wall).
+  * It comes out PLATE-DOWN, open side up — the way a cover prints without supports. It is
+    turned over by rotation, so it is never mirrored into the opposite-hand part.
+  * A hole over the hollow pierces the plate. A hole near the wall gets a solid boss round
+    it and runs the full depth, as a designer would draw it. The save message says so.
+  * Where the part is narrower than two walls there is no room for a hollow, so that part
+    of it is solid — and if that is all of it, you get the solid and a note saying why.
+  * Walls under 0.4 mm (one nozzle) are refused.
+
+The result is a watertight mesh: every edge closed, every triangle wound consistently with
+its neighbours, normals facing out, volume equal to what the profile says it should be.
+Those are checked, not assumed — if a closed
 solid cannot be built the export refuses and says why, because a slicer either
 rejects a leaky mesh or, worse, prints it wrong without telling you.
 
@@ -91,7 +110,7 @@ Two things worth knowing about that:
   * It does NOT go away in a perfectly square-on photo. The same +11.1% is there
     whether you shoot straight down or at 30 degrees.
   * Camera tilt, by contrast, is already handled well: a length lying IN the card's
-    plane measures within about 1% out to 40 degrees of tilt.
+    plane measures within about 1% at 20 degrees of tilt and 2% at 40.
 
 THE FIX (free, and exact): rest the card ON the face you are measuring, so the card
 and the feature are in the same plane. For a part 20 mm thick, that is the difference
@@ -125,7 +144,7 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
 
  3. A RECTANGLE BEATS A LINE.
     Four corners of something of known size let CamScan undo the camera angle: a length
-    in that plane then measures within about 1% out to 40 degrees of tilt. A two-point
+    in that plane then measures within about 1% at 20 degrees of tilt and 2% at 40. A two-point
     line cannot — it scales uniformly, so at 40 degrees the same photo reads -22% across
     the part and -50% along it.
 
@@ -171,6 +190,25 @@ Download menu:
         layers (CIRCLES / LINES / RECTANGLES / POLYLINES / ANGLES / NOTES / DIMTEXT).
   SVG   vector geometry in real millimetres — imports into Illustrator / Inkscape /
         Fusion and most laser cutters. Generated in-browser (no ezdxf needed).
+
+--------------------------------------------------------------------------------
+TESTING
+--------------------------------------------------------------------------------
+  pip install -r requirements.txt -r requirements-dev.txt
+  python -m playwright install chromium        # once; skip if a Chromium is provisioned
+
+  python tests/smoke_test.py                   # fast: geometry, endpoints, exports, rules
+  python tests/test_newtools_e2e.py            # real browser: one per tests/test_*_e2e.py
+
+The browser suites report SKIP (and exit 0) where no browser is available, so they never
+break a machine that cannot run one. Set CAMSCAN_E2E_REQUIRE=1 to make a skip a failure —
+CI does, so the browser layer can never pass by not running.
+
+CI (.github/workflows/ci.yml) runs on every push and pull request: lint (flake8 --select=F),
+JavaScript syntax, the smoke suite, every browser suite, and tests/check_line_endings.py.
+That last one exists because this repository mixes CRLF and LF files with no .gitattributes:
+a text-mode edit silently converts a CRLF file, and the real change disappears under
+thousands of lines of line-ending churn. It fails a change that flips a file's endings.
 
 --------------------------------------------------------------------------------
 ARTIFACTS in /uploads

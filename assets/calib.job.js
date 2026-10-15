@@ -640,7 +640,7 @@
     { t:'A rectangle beats a line',
       d:'Four corners of something you know the size of (a sheet of paper, the marker) let ' +
         'CamScan undo the camera angle: a length in that plane then measures within about 1% ' +
-        'out to 40° of tilt. A two-point line cannot — it scales everything uniformly, so ' +
+        'at 20° of tilt and 2% at 40°. A two-point line cannot — it scales everything uniformly, so ' +
         'at 40° the same photo reads −22% across the part and −50% along it.' },
     { t:'Stand back and zoom in, rather than moving in close',
       d:'Depth error scales as height over distance, so the same 20 mm-thick part reads +8.7% ' +

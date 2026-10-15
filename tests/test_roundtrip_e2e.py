@@ -10,7 +10,7 @@ Not part of the fast smoke test (it needs Chromium + a running server). Run it d
     .venv/bin/python tests/test_roundtrip_e2e.py
 
 It SKIPS cleanly (exit 0) where Playwright or a browser isn't available, so it never breaks
-an environment that can't run a browser.
+an environment that can't run a browser — unless CAMSCAN_E2E_REQUIRE=1, as CI sets it.
 """
 import os
 import sys
@@ -28,6 +28,12 @@ PORT = os.getenv("CAMSCAN_E2E_PORT", "8199")
 
 
 def _skip(msg):
+    # A skip is a pass by default, so a machine with no browser is never broken by this.
+    # CI sets CAMSCAN_E2E_REQUIRE=1: there a skip means the browser layer went untested
+    # while everything reported green — which it did, silently, until this was added.
+    if os.getenv("CAMSCAN_E2E_REQUIRE") == "1":
+        print(f"E2E_RESULT: FAIL (required but skipped: {msg})")
+        sys.exit(3)
     print(f"E2E_RESULT: SKIP ({msg})")
     sys.exit(0)
 

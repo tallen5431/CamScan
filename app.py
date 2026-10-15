@@ -679,6 +679,11 @@ def export_stl():
     inside it becomes a through-hole, which is exactly what the auto-trace already produces
     for a bolt pattern or a row of clip slots.
 
+    A profile that also carries wall_mm is built as a COVER instead — a plate that thick with
+    a wall that thick round its edge, open underneath, delivered plate-down the way it prints
+    (see solid_export.build_shell). Most replacement covers are that shape, and the solid
+    version of one is several times the plastic and will not fit over what it covers.
+
     Body: { geometry: [...], mm_per_px, image_height }
     Returns the STL, or 400/422 with a reason. Refuses rather than returning a leaky mesh:
     a slicer either rejects one or, worse, silently prints it wrong.
@@ -686,7 +691,7 @@ def export_stl():
     from flask import Response
 
     try:
-        from solid_export import build_extrusion, write_binary_stl, mesh_report
+        from solid_export import build_extrusion, build_shell, write_binary_stl, mesh_report
     except Exception:
         return "3D export unavailable", 500
 
@@ -757,19 +762,38 @@ def export_stl():
         if r is not None:
             holes.append(r)
 
-    tris = build_extrusion(outer, holes, depth_mm)
-    if tris is None:
-        return ("Could not build a closed solid from this profile. Check that the outline "
-                "does not cross itself and that the depth is sensible."), 422
+    wall_raw = outer_item.get("wall_mm")
+    info = {"kind": "solid", "note": None}
+    if wall_raw is not None:
+        try:
+            wall_mm = float(wall_raw)
+        except (TypeError, ValueError):
+            return "Invalid wall_mm", 400
+        if not math.isfinite(wall_mm):
+            return "Invalid wall_mm", 400
+    else:
+        wall_mm = None
+
+    if wall_mm is not None and wall_mm > 0:
+        tris, info = build_shell(outer, holes, depth_mm, wall_mm)
+        if tris is None:
+            return info.get("reason") or "Could not build the cover from this profile.", 422
+    else:
+        tris = build_extrusion(outer, holes, depth_mm)
+        if tris is None:
+            return ("Could not build a closed solid from this profile. Check that the outline "
+                    "does not cross itself and that the depth is sensible."), 422
     rep = mesh_report(tris)
-    if not rep.get("watertight"):
+    if not (rep.get("watertight") and rep.get("oriented")):
         # Never hand a slicer a leaky mesh; it either refuses it or prints it wrong.
         return "Could not build a watertight solid from this profile.", 422
 
     dxf_fd, stl_path = tempfile.mkstemp(suffix=".stl")
     os.close(dxf_fd)
     try:
-        if not write_binary_stl(tris, stl_path, "CamScan extruded profile"):
+        header = ("CamScan cover, plate-down" if info.get("kind") == "shell"
+                  else "CamScan extruded profile")
+        if not write_binary_stl(tris, stl_path, header):
             return "Could not write the STL", 500
         with open(stl_path, "rb") as f:
             payload = f.read()
@@ -783,10 +807,18 @@ def export_stl():
             pass
 
     print(f"[STL Export] {rep['triangles']} triangles, {rep['volume_mm3'] / 1000.0:.1f} cm3")
-    return Response(payload, mimetype="model/stl",
-                    headers={"Content-Disposition": "attachment; filename=part.stl",
-                             "X-CamScan-Triangles": str(rep["triangles"]),
-                             "X-CamScan-Volume-MM3": f"{rep['volume_mm3']:.1f}"})
+    headers = {"Content-Disposition": "attachment; filename=part.stl",
+               "X-CamScan-Triangles": str(rep["triangles"]),
+               "X-CamScan-Volume-MM3": f"{rep['volume_mm3']:.1f}",
+               "X-CamScan-Kind": str(info.get("kind") or "solid")}
+    if info.get("kind") == "shell":
+        headers["X-CamScan-Cavities"] = str(info.get("cavities", 0))
+        headers["X-CamScan-Bossed-Holes"] = str(info.get("bossed_holes", 0))
+    if info.get("note"):
+        # Headers are latin-1 on the wire; the notes are plain ASCII, but never risk a 500
+        # over a dash.
+        headers["X-CamScan-Note"] = str(info["note"]).encode("ascii", "replace").decode()
+    return Response(payload, mimetype="model/stl", headers=headers)
 
 
 @server.route("/api/plane", methods=["POST"])

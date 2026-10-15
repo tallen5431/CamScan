@@ -918,7 +918,12 @@ def main():
             a = project(K2, R2, t2, np.array([[0.0, -60.0, 0.0]]))[0]
             b = project(K2, R2, t2, np.array([[100.0, -60.0, 0.0]]))[0]
             inplane.append(abs(measure_mm(Hh, c2["marker_size_mm"], a, b) - 100.0))
-        tilt_ok = all(e < 3.0 for e in inplane)
+        # The README and the in-app capture guide quote these: "within about 1% at 20 degrees
+        # of tilt and 2% at 40". Pinned to what they say, so the claim cannot drift from the
+        # measurement again — it read "about 1% out to 40" while this asserted only < 3%, and
+        # the 40-degree figure it rested on (0.67%) came from a test renderer that truncated
+        # vertices to whole pixels. Rendered faithfully it is 1.76%.
+        tilt_ok = inplane[0] < 0.5 and inplane[1] < 1.5 and inplane[2] < 2.5
 
         # EXIF: read when present, absent without complaint, never raises on junk.
         im0, _k, _r, _t = render(EDGE, F_, W_, H_, 0, D_)
@@ -944,6 +949,28 @@ def main():
               f"exif={exif_ok}, camera={cam_ok}")
     except Exception as e:
         check("tilt is already handled; EXIF focal + camera block are sound", False, repr(e))
+
+    # 8l2) A REAL marker must be accepted at every ordinary angle. With polarity "both" each
+    #      pad is found twice (bright blob, and hole in the dark ring), and the 4-pad search
+    #      only looked at the top few candidates by score — so the twins of three pads could
+    #      crowd out the fourth, and the search accepted one pad twice. A genuine marker was
+    #      then rejected as "not a calibration target" at scattered angles: 13 of these 40
+    #      renders of the printed marker before the fix, 0 after. Found because CI rendered
+    #      the test images a pixel differently (see synthetic_camera._poly) and one tilt flipped.
+    try:
+        from synthetic_camera import render as _r8
+        rejected = []
+        for dist, blur in ((250.0, 0.0), (300.0, 0.0), (400.0, 0.0), (400.0, 0.8)):
+            for tilt in range(0, 46, 5):
+                im8 = _r8(40.0, 1500.0, 1600, 1200, tilt, dist, blur=blur)[0]
+                with _quiet():
+                    c8, _o8 = calibrate_image(im8, edge_mm=40.0, focal_px=1500.0)
+                if not c8.get("calibration_usable"):
+                    rejected.append(f"{int(dist)}mm/{tilt}deg" + (f"/blur{blur}" if blur else ""))
+        check("a real marker is accepted at every ordinary angle and distance", not rejected,
+              "40 renders, 0-45 deg at 250-400 mm; rejected: {}".format(rejected or "none"))
+    except Exception as e:
+        check("a real marker is accepted at every ordinary angle and distance", False, repr(e))
 
     # 8m) /api/plane is a public endpoint taking untrusted JSON — it must answer cleanly
     #     for every malformed shape rather than 500, and must actually reduce the error.
@@ -1343,6 +1370,8 @@ def main():
             rows.append(f"{name} {rep['triangles']}t")
             if not rep["watertight"]:
                 bad.append(f"{name}: {rep['open_edges']} open edges")
+            elif not rep["oriented"]:
+                bad.append(f"{name}: a triangle is wound against its neighbours")
             if err > 0.6:
                 bad.append(f"{name}: volume off {err:.2f}%")
             if rep["volume_mm3"] <= 0:
@@ -1423,6 +1452,223 @@ def main():
               f"{n} triangles; bad-input codes={sorted(set(codes.values()))}")
     except Exception as e:
         check("/api/export/stl returns a valid STL and refuses everything else", False, repr(e))
+
+    # 8r2) Most replacement covers are a plate with a wall round the edge, open underneath —
+    #      a running-board step pad is exactly that. Extruding the outline makes a solid
+    #      block: 4.05 L of plastic for a 900 x 180 x 25 mm pad against 0.63 L hollow, and a
+    #      block will not fit over the board it covers. Pin the shell on every shape class
+    #      that broke a step of building it.
+    try:
+        import math
+        from solid_export import (build_shell, build_extrusion, mesh_report,
+                                  signed_area as _sa)
+
+        def _rect(x, y, w, h):
+            return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+
+        def _disc(cx, cy, r, n=96):
+            a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+            return np.stack([cx + r * np.cos(a), cy + r * np.sin(a)], 1).tolist()
+
+        rng9 = np.random.default_rng(9)
+        _ang = np.linspace(0, 2 * np.pi, 220, endpoint=False)
+        _rad = 80 + rng9.normal(0, 0.6, len(_ang))       # a traced outline's pixel jitter
+        jitter = np.stack([200 + _rad * np.cos(_ang), 150 + 0.6 * _rad * np.sin(_ang)], 1).tolist()
+        L = [[0, 0], [120, 0], [120, 30], [30, 30], [30, 90], [0, 90]]
+
+        shells = {
+            "plain pad": (_rect(0, 0, 300, 120), [], 20, 3, dict(cavities=1)),
+            "L-shape": (L, [], 20, 3, dict(cavities=1)),
+            # a neck under two walls splits the cavity in two; its taper used to leave a
+            # zero-width spur in the contour, which no mesh can close
+            "dumbbell": ([[0, 0], [60, 0], [60, 25], [100, 25], [100, 0], [160, 0], [160, 60],
+                          [100, 60], [100, 31], [60, 31], [60, 60], [0, 60]], [], 15, 4,
+                         dict(cavities=2)),
+            "bolt holes in the plate": (_rect(0, 0, 300, 120), [_disc(80, 60, 6), _disc(220, 60, 6)],
+                                        20, 3, dict(plate_holes=2, bossed_holes=0)),
+            # a hole across the wall's inside edge gets a solid boss; refusing the whole export
+            # over it threw away two of seven real traces from the customer photos
+            "hole across the wall edge": (_rect(0, 0, 100, 60), [_disc(4, 30, 3)], 20, 3,
+                                          dict(bossed_holes=1)),
+            "jittery traced outline": (jitter, [], 25, 3, dict(cavities=1)),
+        }
+        bad9, rows9 = [], []
+        for name, (o, hs, D, t, want) in shells.items():
+            tris, info = build_shell(o, hs, D, t)
+            if tris is None:
+                bad9.append(f"{name}: refused ({info.get('reason')})")
+                continue
+            rep = mesh_report(tris)
+            if not rep["oriented"]:
+                bad9.append(f"{name}: not closed and consistently wound ({rep['open_edges']} open)")
+            exp = info["expected_volume_mm3"]
+            if abs(rep["volume_mm3"] - exp) > 1e-6 * exp:
+                bad9.append(f"{name}: volume {rep['volume_mm3']:.1f} vs closed form {exp:.1f}")
+            for k, v in want.items():
+                if info.get(k) != v:
+                    bad9.append(f"{name}: {k}={info.get(k)}, expected {v}")
+            # Plate-down: the face on the bed is the PLATE (outer less holes), and the face at
+            # the top is only the rim. Upside down, a cover hangs its plate over the cavity.
+            z = tris[:, :, 2]
+            flat = np.ptp(z, axis=1) == 0
+            def _area3(sel):
+                tt = tris[sel]
+                return 0.5 * float(np.abs(np.cross(tt[:, 1, :2] - tt[:, 0, :2],
+                                                   tt[:, 2, :2] - tt[:, 0, :2])).sum())
+            on_bed = _area3(flat & (z[:, 0] == 0))
+            plate = abs(_sa(np.asarray(o, float))) - sum(abs(_sa(np.asarray(h, float))) for h in hs)
+            if abs(on_bed - plate) > 1e-6 * plate:
+                bad9.append(f"{name}: {on_bed:.0f} mm2 on the bed, plate is {plate:.0f}")
+            rows9.append(name)
+
+        # Wall thickness is what the customer specified; check it against the closed form for
+        # a rectangle, where the cavity is exactly (W-2t) x (H-2t).
+        for W, H, t in ((300, 120, 3.0), (100, 60, 1.2), (157.3, 71.9, 4.4)):
+            tris, info = build_shell(_rect(0, 0, W, H), [], 20, t)
+            A = info.get("cavity_area_mm2", 0.0)
+            s_ = W + H
+            w_meas = (2 * s_ - math.sqrt(4 * s_ * s_ - 16 * (W * H - A))) / 8
+            if abs(w_meas - t) / t > 0.02:
+                bad9.append(f"{W}x{H} wall {t}: measured {w_meas:.3f} mm")
+
+        # The material saving the whole feature exists for.
+        pad_shell = mesh_report(build_shell(_rect(0, 0, 900, 180), [], 25, 3)[0])["volume_mm3"]
+        pad_solid = mesh_report(build_extrusion(_rect(0, 0, 900, 180), [], 25))["volume_mm3"]
+        ratio = pad_solid / pad_shell
+        if not (6.0 < ratio < 7.0):
+            bad9.append(f"solid/shell ratio {ratio:.2f}, expected ~6.5")
+
+        # When there is no cavity to make, say so and hand back the solid.
+        _t, inf_strip = build_shell(_rect(0, 0, 200, 5), [], 10, 3)
+        _t2, inf_deep = build_shell(_rect(0, 0, 100, 60), [], 3, 3)
+        _t3, inf_thin = build_shell(_rect(0, 0, 100, 60), [], 20, 0.2)
+        if not (_t is not None and inf_strip["kind"] == "solid" and inf_strip["note"]):
+            bad9.append("narrow strip did not fall back to a solid with a note")
+        if not (_t2 is not None and inf_deep["kind"] == "solid"):
+            bad9.append("wall >= depth did not fall back to a solid")
+        if not (_t3 is None and "nozzle" in (inf_thin.get("reason") or "")):
+            bad9.append("an unprintable wall was not refused with a reason")
+
+        check("covers are closed, wound, the right volume, and plate-down",
+              not bad9, "; ".join(bad9) if bad9 else
+              "{} shapes; walls within 2%; solid is {:.1f}x the plastic of the cover".format(
+                  len(rows9), ratio))
+    except Exception as e:
+        check("covers are closed, wound, the right volume, and plate-down", False, repr(e))
+
+    # 8r3) Turning a cover plate-down must be a ROTATION. A z flip alone looks identical on a
+    #      symmetric test part and mirrors an asymmetric one — and a mirrored step pad is the
+    #      part for the other side of the truck. Use an L, check the turned-back cover sits
+    #      inside the profile, and prove the check bites by feeding it the mirror.
+    try:
+        from solid_export import build_shell as _bs
+        L = np.array([[0, 0], [120, 0], [120, 30], [30, 30], [30, 90], [0, 90]], float)
+        D = 20.0
+        tris, _inf = _bs(L.tolist(), [], D, 3)
+
+        def _turn_back(t):
+            u = np.array(t, copy=True)
+            u[:, :, 1] = (float(u[:, :, 1].min()) + float(u[:, :, 1].max())) - u[:, :, 1]
+            u[:, :, 2] = D - u[:, :, 2]
+            return u
+
+        def _outside(t):
+            pts = t.reshape(-1, 3)[:, :2].astype(np.float32)
+            Lf = L.astype(np.float32)
+            return sum(1 for p in pts if cv2.pointPolygonTest(Lf, (float(p[0]), float(p[1])), True) < -1e-3)
+
+        installed = _turn_back(tris)
+        good_out = _outside(installed)
+        mirrored = np.array(installed, copy=True)
+        mirrored[:, :, 2] = D - mirrored[:, :, 2]              # the wrong turn: a z flip only
+        bad_out = _outside(_turn_back(mirrored))
+        check("a cover is turned plate-down without mirroring it",
+              good_out == 0 and bad_out > 0,
+              f"vertices outside the L: correct turn={good_out}, z-flip-only={bad_out} (must be >0)")
+    except Exception as e:
+        check("a cover is turned plate-down without mirroring it", False, repr(e))
+
+    # 8r4) The exports gate on mesh_report, so it must see every defect a slicer would. The
+    #      undirected edge count it used to rely on cannot see one triangle wound backwards —
+    #      that still shares each edge with two neighbours. And the vectorised point-in-polygon
+    #      that made covers fast must agree exactly with a brute-force ray cast, ties included.
+    try:
+        from solid_export import build_shell as _bs2, mesh_report as _mr, _inside
+        m = _bs2([[0, 0], [300, 0], [300, 120], [0, 120]], [], 20, 3)[0]
+        ok_m = _mr(m)
+        flipped = _mr(np.concatenate([m[1:], m[:1, ::-1]]))
+        removed = _mr(m[1:])
+        dup = _mr(np.concatenate([m, m[:1]]))
+        report_ok = (ok_m["oriented"] and flipped["watertight"] and not flipped["oriented"]
+                     and not removed["watertight"] and not dup["watertight"])
+
+        def _brute(pts, ring):
+            x1, y1 = ring[:, 0], ring[:, 1]
+            x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
+            dy = y2 - y1
+            px, py = pts[:, 0:1], pts[:, 1:2]
+            cr = (y1 > py) != (y2 > py)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                xi = (x2 - x1) * (py - y1) / np.where(dy == 0, np.inf, dy) + x1
+            return ((cr & (px < xi)).sum(1) % 2) == 1
+
+        rng10 = np.random.default_rng(5)
+        mism = n_pts = 0
+        for trial in range(30):
+            k = int(rng10.integers(3, 300))
+            ang = np.sort(rng10.uniform(0, 2 * np.pi, k))
+            rad = rng10.uniform(20, 100, k)
+            ring = np.stack([rad * np.cos(ang), rad * np.sin(ang)], 1)
+            pts = rng10.uniform(-110, 110, (1500, 2))
+            if trial % 3 == 0:                               # integer grid: forces exact ties
+                ring, pts = np.round(ring), np.round(pts)
+            mism += int((_inside(pts, ring) != _brute(pts, ring)).sum())
+            n_pts += len(pts)
+        check("mesh checks catch a backwards triangle; fast inside-test matches brute force",
+              report_ok and mism == 0,
+              "flipped triangle caught={}, removed/duplicated caught={}, "
+              "inside-test mismatches={} of {}".format(
+                  flipped["watertight"] and not flipped["oriented"],
+                  not removed["watertight"] and not dup["watertight"], mism, n_pts))
+    except Exception as e:
+        check("mesh checks catch a backwards triangle; fast inside-test matches brute force",
+              False, repr(e))
+
+    # 8r5) The endpoint builds a cover when the profile carries wall_mm, says what it built,
+    #      and turns away a wall it cannot honour with a reason the user can act on.
+    try:
+        import app as _app9
+        import struct as _s9
+        cli9 = _app9.server.test_client()
+        base = {"type": "polyline", "closed": True, "depth_mm": 25.0,
+                "points": [[0, 0], [900, 0], [900, 180], [0, 180]]}
+        with _quiet():
+            r_shell = cli9.post("/api/export/stl", json={"geometry": [dict(base, wall_mm=3.0)],
+                                                          "mm_per_px": 1.0, "image_height": 200})
+            r_solid = cli9.post("/api/export/stl", json={"geometry": [base],
+                                                          "mm_per_px": 1.0, "image_height": 200})
+            r_thin = cli9.post("/api/export/stl", json={"geometry": [dict(base, wall_mm=0.2)],
+                                                         "mm_per_px": 1.0})
+            r_junk = cli9.post("/api/export/stl", json={"geometry": [dict(base, wall_mm="thick")],
+                                                         "mm_per_px": 1.0})
+            r_nan = cli9.post("/api/export/stl", json={"geometry": [dict(base, wall_mm=float("nan"))],
+                                                        "mm_per_px": 1.0})
+        n9 = _s9.unpack("<I", r_shell.data[80:84])[0] if len(r_shell.data) >= 84 else -1
+        vs = float(r_shell.headers.get("X-CamScan-Volume-MM3", 0))
+        vb = float(r_solid.headers.get("X-CamScan-Volume-MM3", 0))
+        ok9 = (r_shell.status_code == 200 and len(r_shell.data) == 84 + 50 * n9
+               and r_shell.headers.get("X-CamScan-Kind") == "shell"
+               and r_solid.headers.get("X-CamScan-Kind") == "solid"
+               and vs > 0 and 6.0 < vb / vs < 7.0
+               and r_thin.status_code == 422 and b"nozzle" in r_thin.data
+               and r_junk.status_code == 400 and r_nan.status_code == 400)
+        check("/api/export/stl builds a cover from wall_mm and refuses a bad wall", ok9,
+              "shell={} ({}), solid/shell volume={:.2f}x, thin={}, junk={}, nan={}".format(
+                  r_shell.status_code, r_shell.headers.get("X-CamScan-Kind"),
+                  (vb / vs) if vs else 0, r_thin.status_code, r_junk.status_code,
+                  r_nan.status_code))
+    except Exception as e:
+        check("/api/export/stl builds a cover from wall_mm and refuses a bad wall", False, repr(e))
 
     # 8s) The same physical part appears in every photo of a job, so a length measured in a
     #     view that HAD a usable reference is a valid reference in a view that had none. That

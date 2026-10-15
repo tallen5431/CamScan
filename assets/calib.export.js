@@ -203,6 +203,9 @@ window.CalibExport = (function(){
             // the dimension table describes a flat silhouette of a part that is not flat.
             csv += `Extrusion,${label},${val.toFixed(3)},${unit.label},${mm.toFixed(3)},${area_mm2.toFixed(3)},closed profile · ${pts.length} points · extruded ${a.depth_mm.toFixed(3)} mm\n`;
             csv += `Extrusion depth,${label},${unit.fromMM(a.depth_mm).toFixed(3)},${unit.label},${a.depth_mm.toFixed(3)},,sweep length for the profile above\n`;
+            if(a.wall_mm > 0){
+              csv += `Wall thickness,${label},${unit.fromMM(a.wall_mm).toFixed(3)},${unit.label},${a.wall_mm.toFixed(3)},,hollow cover: plate and wall this thick; open underneath\n`;
+            }
           }else{
             csv += `Outline,${label},${val.toFixed(3)},${unit.label},${mm.toFixed(3)},${area_mm2.toFixed(3)},closed profile · ${pts.length} points\n`;
           }
@@ -292,7 +295,10 @@ window.CalibExport = (function(){
         // depth_mm rides along on a closed profile so whoever consumes this geometry can
         // extrude it instead of guessing. The DXF writer ignores keys it does not know, so
         // this is additive: the 2D profile still exports exactly as before.
-        const extra = (closed && a.depth_mm > 0) ? { depth_mm: a.depth_mm } : null;
+        // wall_mm makes it a hollow cover rather than a solid block (see solid_export.build_shell).
+        const extra = (closed && a.depth_mm > 0)
+          ? Object.assign({ depth_mm: a.depth_mm }, a.wall_mm > 0 ? { wall_mm: a.wall_mm } : null)
+          : null;
         if(plane){ geometry.push(Object.assign({ type:'polyline', points:pts.map(p=>P(p[0],p[1])), closed:closed, mm_per_px:1 }, extra)); }
         else geometry.push(Object.assign({ type:'polyline', points:pts, closed:closed, mm_per_px:s }, extra));
         if(pts.length){ const mid=pts[Math.floor(pts.length/2)]; emitText(mid[0], mid[1], `${fmt(M.polyline(ctx, pts, closed))} mm`, s); }

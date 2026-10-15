@@ -56,17 +56,37 @@ def project(K, R, t, P):
     return (uv[:2] / uv[2]).T
 
 
+_SHIFT = 8          # fixed-point bits for fillPoly: vertices placed to 1/256 px
+
+
+def _poly(pts):
+    """Projected vertices as fillPoly fixed-point, ROUNDED.
+
+    This used to be np.int32(pts) — a truncation, at whole-pixel resolution. At 25 degrees of
+    tilt several marker corners project to exact integers (800.0, 950.0, 600.0), and the last
+    bit of a matrix product depends on which BLAS kernel the CPU selects: 949.9999999999999 on
+    one machine, 950.0 on another, truncating to different pixels. The rendered "ground
+    truth" then differed by machine (different image hashes), a detected corner moved from
+    0.0 px to exactly 2.0 px off, and the tilted depth-correction check failed on GitHub's
+    runners (+4.19% -> -6.49%) while passing locally (+7.26% -> -2.55%). Reproduced locally
+    with OPENBLAS_CORETYPE=Haswell. Rounding at 1/256 px is not on a knife edge at integers,
+    and places every edge where the geometry says it is.
+    """
+    return np.round(np.asarray(pts, float) * (1 << _SHIFT)).astype(np.int32)
+
+
 def render(edge_mm, f_px, W, H, tilt_deg, dist_mm, blur=0.0):
     """A photo-like frame of the marker card. Returns (image, K, R, t)."""
     K, R, t = camera(f_px, W, H, tilt_deg, dist_mm)
     img = np.full((H, W, 3), 225, np.uint8)
     card = np.array([(-12, -14), (edge_mm + 30, -14),
                      (edge_mm + 30, edge_mm + 12), (-12, edge_mm + 12)], float)
-    cv2.fillPoly(img, [np.int32(project(K, R, t, card))], (245, 245, 245))
+    cv2.fillPoly(img, [_poly(project(K, R, t, card))], (245, 245, 245), shift=_SHIFT)
     w = marker_world(edge_mm)
-    cv2.fillPoly(img, [np.int32(project(K, R, t, w[:4]))], (18, 18, 18))
+    cv2.fillPoly(img, [_poly(project(K, R, t, w[:4]))], (18, 18, 18), shift=_SHIFT)
     for i in range(4):
-        cv2.fillPoly(img, [np.int32(project(K, R, t, w[4 + 4 * i:8 + 4 * i]))], (242, 242, 242))
+        cv2.fillPoly(img, [_poly(project(K, R, t, w[4 + 4 * i:8 + 4 * i]))], (242, 242, 242),
+                     shift=_SHIFT)
     if blur:
         img = cv2.GaussianBlur(img, (0, 0), blur)
     return img, K, R, t
