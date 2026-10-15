@@ -1098,6 +1098,141 @@ def main():
     except Exception as e:
         check("reference-span rule flags a too-small scale reference", False, repr(e))
 
+    # 8o2) A wrong scale is invisible on its own — the view looks fine, every number in it is
+    #      self-consistent, and only a SECOND view of the same part reveals it. Across the six
+    #      customer photos, scales taken off the wrong edge disagreed by 6.6x (60 mm against
+    #      396 mm for one feature) with nothing in the app saying so. Pin the rule: it must
+    #      catch a real disagreement, stay quiet inside the error honest measuring carries,
+    #      and never invent one out of data it cannot pair up.
+    try:
+        import subprocess, json as _json
+        node = None
+        for cand in ("/opt/node22/bin/node", "node"):
+            try:
+                subprocess.run([cand, "-e", "0"], capture_output=True, check=True)
+                node = cand
+                break
+            except Exception:
+                continue
+        if node is None:
+            check("cross-view scale disagreement (needs node)", True, "skipped — no node runtime")
+        else:
+            script = r"""
+              global.window = {};
+              require(process.argv[1]);
+              const G = window.CalibGeom;
+              const v = (label, calibrated, ms) => ({label, calibrated,
+                    measurements: ms.map(([l, mm]) => ({label: l, mm}))});
+              const first = r => (r && r[0]) ? {label:r[0].label, level:r[0].level,
+                                                spread:+r[0].spread.toFixed(4),
+                                                low:r[0].low.view, high:r[0].high.view} : null;
+              const out = {
+                // agree to within measuring error -> silence
+                agree: first(G.crossViewDisagreements([
+                  v('Top', true, [['Width', 142.3]]), v('Front', true, [['Width', 143.9]])])),
+                // 11% — out-of-plane magnification on a thick part reaches this honestly
+                atWarn: first(G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', true, [['Width', 111]])])),
+                // 30% — past anything tilt or thickness explains
+                atBad: first(G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', true, [['Width', 130]])])),
+                // the case that motivated it
+                real: first(G.crossViewDisagreements([
+                  v('Top', true, [['Board', 396]]), v('Detail', true, [['Board', 60]])])),
+                // an UNCALIBRATED view's millimetres are not millimetres
+                uncal: G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', false, [['Width', 400]])]).length,
+                // one view only — nothing to compare against
+                lone: G.crossViewDisagreements([v('Top', true, [['Width', 100]])]).length,
+                // same label twice in ONE view: no way to say which pairs with the other view
+                dupe: G.crossViewDisagreements([
+                  v('Top', true, [['Slot', 51], ['Slot', 38]]),
+                  v('Front', true, [['Slot', 50]])]).length,
+                // labels differing only in case/space are the same dimension
+                looseLabel: first(G.crossViewDisagreements([
+                  v('Top', true, [['  Over All  ', 100]]), v('Front', true, [['over all', 140]])])),
+                // different labels are different dimensions, however far apart
+                distinct: G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', true, [['Height', 400]])]).length,
+                // junk must not throw or produce a verdict
+                junk: G.crossViewDisagreements([
+                  v('Top', true, [['W', NaN], ['X', 0], ['Y', -5], ['', 100]]),
+                  v('Front', true, [['W', 100], ['', 400]])]).length,
+                empty: G.crossViewDisagreements([]).length,
+                nullish: G.crossViewDisagreements(null).length,
+                // worst first, so the most suspect pair is the one the user reads
+                order: G.crossViewDisagreements([
+                  v('A', true, [['small', 100], ['huge', 100]]),
+                  v('B', true, [['small', 115], ['huge', 300]])]).map(h => h.label),
+              };
+              console.log(JSON.stringify(out));
+            """
+            r = subprocess.run([node, "-e", script, str(ROOT / "assets" / "calib.geometry.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            ok = (o["agree"] is None
+                  and o["atWarn"] and o["atWarn"]["level"] == "warn"
+                  and o["atBad"] and o["atBad"]["level"] == "bad"
+                  # names BOTH readings and which view each came from, or it isn't actionable
+                  and o["real"] and o["real"]["level"] == "bad"
+                  and o["real"]["low"] == "Detail" and o["real"]["high"] == "Top"
+                  and o["uncal"] == 0 and o["lone"] == 0 and o["dupe"] == 0
+                  and o["looseLabel"] and o["looseLabel"]["label"] == "over all"
+                  and o["distinct"] == 0 and o["junk"] == 0
+                  and o["empty"] == 0 and o["nullish"] == 0
+                  and o["order"] == ["huge", "small"])
+            check("disagreeing scales across views are caught and ranked", ok,
+                  "11%={}, 30%={}, 396-vs-60mm={} ({} low / {} high), uncalibrated ignored={}, "
+                  "same-label-twice ignored={}, ranked={}".format(
+                      (o["atWarn"] or {}).get("level"), (o["atBad"] or {}).get("level"),
+                      (o["real"] or {}).get("level"), (o["real"] or {}).get("low"),
+                      (o["real"] or {}).get("high"), o["uncal"] == 0, o["dupe"] == 0, o["order"]))
+    except Exception as e:
+        check("disagreeing scales across views are caught and ranked", False, repr(e))
+
+    # 8o3) The rule above is only useful if the stored job actually reaches it. This drives the
+    #      real calib.job.js against the real saved format, so a renamed field (scale.calibrated,
+    #      m.mm, v.label) fails here instead of silently never warning. It also opens the panel,
+    #      which is where the warning is rendered — if that path threw, the whole panel would be
+    #      lost, so "opens" is the thing worth asserting with the DOM stub we have.
+    try:
+        if node is None:
+            check("stored job reaches the disagreement rule (needs node)", True, "skipped — no node")
+        else:
+            script = r"""
+              require(process.argv[1]);                          // DOM stub
+              require(process.argv[2]);                          // the rule
+              localStorage.setItem('camscan.job.v1', JSON.stringify({ id:'j', brief:{}, views:[
+                {label:'Top',    sourceId:'a', scale:{calibrated:true},
+                 measurements:[{label:'Board', text:'396 mm', mm:396}]},
+                {label:'Front',  sourceId:'b', scale:{calibrated:false},
+                 measurements:[{label:'Board', text:'9 mm', mm:9}]},
+                {label:'Detail', sourceId:'c', scale:{calibrated:true},
+                 measurements:[{label:'Board', text:'60 mm', mm:60}]}]}));
+              require(process.argv[3]);                          // calib.job.js
+              const w = window.CalibJob.scaleWarnings();
+              let opened = true;
+              try{ window.CalibJob.open(); }catch(e){ opened = String(e); }
+              console.log(JSON.stringify({w: w.map(h => ({label:h.label, level:h.level,
+                            low:h.low.view, lowMm:h.low.mm, high:h.high.view})), opened}));
+            """
+            r = subprocess.run([node, "-e", script,
+                                str(ROOT / "tests" / "support" / "dom_stub.js"),
+                                str(ROOT / "assets" / "calib.geometry.js"),
+                                str(ROOT / "assets" / "calib.job.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            w = o["w"]
+            ok = (o["opened"] is True and len(w) == 1 and w[0]["level"] == "bad"
+                  and w[0]["label"] == "board"
+                  # the uncalibrated view's 9 mm must not become the low reading
+                  and w[0]["low"] == "Detail" and abs(w[0]["lowMm"] - 60) < 1e-9
+                  and w[0]["high"] == "Top")
+            check("stored job reaches the disagreement rule; panel still opens", ok,
+                  "warnings={}, panel opens={}".format(w, o["opened"]))
+    except Exception as e:
+        check("stored job reaches the disagreement rule; panel still opens", False, repr(e))
+
     # 8p) An extruded profile must survive the whole export path. depth_mm rides on a closed
     #     polyline so a consumer can build the solid instead of guessing; the DXF writer must
     #     ignore the key it does not know rather than dropping the profile.

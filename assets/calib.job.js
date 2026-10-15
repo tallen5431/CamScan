@@ -257,6 +257,10 @@
         btns.appendChild(del);
         vr.appendChild(im); vr.appendChild(meta); vr.appendChild(btns); card.appendChild(vr);
       });
+      // Same dimension, two views, two different answers — one of the scales is wrong, and
+      // nothing else in the app would ever say so. Shown here because this is where the user
+      // can still fix it: re-open the offending side and re-set its scale.
+      scaleDisagreementRows().forEach(function(row){ card.appendChild(row); });
     }
 
     // brief
@@ -616,6 +620,46 @@
   // where a reference WAS in plane is a valid reference in a photo that had none — which is
   // the only thing that makes an unreferenced shot (the part laid out on the ground, say)
   // measurable at all. Excludes the view currently open, so a view cannot scale off itself.
+  // Views reduced to what the agreement check needs: did this view get a real scale, and
+  // what did it measure? Kept separate from the DOM so the rule itself stays testable.
+  function viewsForAgreement(){
+    return job.views.map(function(v, i){
+      return { label: v.label || ('View ' + (i + 1)),
+               calibrated: !!(v.scale && v.scale.calibrated),
+               measurements: (v.measurements || []).map(function(m){
+                 return { label: m.label, mm: m.mm };
+               }) };
+    });
+  }
+
+  // Dimensions measured in more than one view that do not agree, worst first. Empty when the
+  // rule module has not loaded — script order is not guaranteed, and a missing warning is far
+  // better than a panel that will not open.
+  function scaleWarnings(){
+    var G = window.CalibGeom;
+    if(!G || typeof G.crossViewDisagreements !== 'function') return [];
+    try{ return G.crossViewDisagreements(viewsForAgreement()) || []; }catch(e){ return []; }
+  }
+
+  // One row per disagreeing dimension, naming both readings and both views, because "these
+  // disagree" is not actionable on its own — the user needs to know WHICH side to re-scale.
+  function scaleDisagreementRows(){
+    return scaleWarnings().map(function(h){
+      var bad = h.level === 'bad';
+      var el = document.createElement('div');
+      el.style.cssText = 'margin:2px 0 7px;padding:9px 11px;border-radius:9px;font-size:12.5px;line-height:1.45;' +
+        (bad ? 'background:#2b1a16;border:1px solid #6b3a2c;color:#f0b9a6;'
+             : 'background:#2a2416;border:1px solid #5d4a22;color:#e8cf9a;');
+      el.innerHTML = '<b>' + (bad ? 'Scales disagree' : 'Check these two') + '</b> — “' + esc(h.label) +
+        '” measures <b>' + h.low.mm.toFixed(1) + ' mm</b> on ' + esc(h.low.view) +
+        ' but <b>' + h.high.mm.toFixed(1) + ' mm</b> on ' + esc(h.high.view) +
+        ' (' + Math.round(h.spread * 100) + '% apart). ' +
+        (bad ? 'One of those scales is wrong — re-open the side that looks off and set its scale again.'
+             : 'Worth a look: a part with thickness reads large when the card is not on the same face.');
+      return el;
+    });
+  }
+
   function referenceDimensions(){
     var openIdx = currentOpenIndex();
     var sid = currentSourceId();
@@ -640,6 +684,7 @@
   // Minimal API so the simple-mode layer can drive submission without duplicating logic.
   window.CalibJob = {
     referenceDimensions: referenceDimensions,
+    scaleWarnings: scaleWarnings,   // dimensions that two views disagree about, worst first
     addView: addView,
     open: openPanel,
     submit: submit,          // send/hand-off the collected set (used by simple mode + tests)

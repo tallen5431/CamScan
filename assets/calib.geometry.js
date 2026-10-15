@@ -114,7 +114,70 @@ window.CalibGeom = (function(){
     return { level: ratio >= REF_SPAN_RATIO_BAD ? 'bad' : 'warn', ratio };
   }
 
+  // --- Cross-view scale agreement -------------------------------------------------------
+  // Each view carries its own scale, so comparing mm-per-pixel across views says nothing — a
+  // close-up legitimately has a different one from a wide shot. What IS comparable is the
+  // same dimension measured twice: if the user labelled something "Width" in two views, both
+  // readings describe one piece of metal and must agree.
+  //
+  // This matters because a wrong scale is invisible on its own. Across the six customer
+  // photos that prompted it, scales derived from the wrong edge disagreed by 6.6x — 60 mm
+  // against 396 mm for the same feature — and nothing in the app said so; the part would
+  // have been modelled from whichever view happened to be open.
+  //
+  // The bands allow for the error that honest measuring carries: out-of-plane magnification
+  // reaches about 11% on a thick part (see README), tilt about 1%, plus a few percent of
+  // tracing imprecision. So a 10% spread is not worth a word, and 25% is past anything those
+  // explain.
+  const CROSS_VIEW_WARN = 0.10;
+  const CROSS_VIEW_BAD = 0.25;
+
+  function _normLabel(s){
+    return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  // views: [{ label, calibrated, measurements:[{label, mm}] }]
+  // Returns [{label, level:'warn'|'bad', spread, low:{view,mm}, high:{view,mm}}], worst first.
+  function crossViewDisagreements(views){
+    const byLabel = new Map();
+    (views || []).forEach(function(v, i){
+      // An uncalibrated view's millimetres are not millimetres; comparing them would invent
+      // a disagreement (or hide a real one) out of a number that was never a measurement.
+      if(!v || !v.calibrated) return;
+      const viewName = v.label || ('View ' + (i + 1));
+      const seen = new Map();
+      (v.measurements || []).forEach(function(m){
+        if(!m || typeof m.mm !== 'number' || !isFinite(m.mm) || m.mm <= 0) return;
+        const key = _normLabel(m.label);
+        if(!key) return;
+        seen.set(key, seen.has(key) ? null : { view: viewName, mm: m.mm });
+      });
+      // A label used twice WITHIN one view (two slots both called "Slot") gives no way to
+      // say which reading pairs with the other view's, so it is left out rather than guessed.
+      seen.forEach(function(entry, key){
+        if(!entry) return;
+        if(!byLabel.has(key)) byLabel.set(key, []);
+        byLabel.get(key).push(entry);
+      });
+    });
+
+    const out = [];
+    byLabel.forEach(function(entries, key){
+      if(entries.length < 2) return;
+      let low = entries[0], high = entries[0];
+      entries.forEach(function(e){ if(e.mm < low.mm) low = e; if(e.mm > high.mm) high = e; });
+      const spread = (high.mm - low.mm) / low.mm;      // "the larger reading is X% bigger"
+      if(!isFinite(spread) || spread <= CROSS_VIEW_WARN) return;
+      out.push({ label: key, level: spread >= CROSS_VIEW_BAD ? 'bad' : 'warn',
+                 spread: spread, low: low, high: high });
+    });
+    out.sort(function(a, b){ return b.spread - a.spread; });
+    return out;
+  }
+
   return { distPtLine, solveHomography, orderQuad, quadAreaPx,
            measuredExtentPx, referenceSpanVerdict,
-           REF_SPAN_RATIO_WARN, REF_SPAN_RATIO_BAD };
+           crossViewDisagreements,
+           REF_SPAN_RATIO_WARN, REF_SPAN_RATIO_BAD,
+           CROSS_VIEW_WARN, CROSS_VIEW_BAD };
 })();
