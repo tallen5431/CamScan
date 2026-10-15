@@ -906,14 +906,33 @@ window.CalibUI = (function(){
                      : 'background:#151515;color:#cde;border:1px solid #2a3540;');
         b.onclick = fn; return b; };
       const close = () => box.remove();
+      // Optional: hollow it into a cover. Most replacement covers are a thin plate with a wall
+      // round the edge; the solid version of a 900 x 180 x 25 mm step pad is 6.5x the plastic
+      // and would not fit over the board it covers.
+      const wallRow = document.createElement('label');
+      wallRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:10px;font-size:13px;color:#cde;';
+      const wallInp = document.createElement('input'); wallInp.type = 'number'; wallInp.min = '0';
+      wallInp.step = '0.1'; wallInp.inputMode = 'decimal'; wallInp.placeholder = 'solid';
+      wallInp.id = 'cal-wall-input';
+      wallInp.value = prof.wall_mm > 0 ? String(prof.wall_mm) : '';
+      wallInp.style.cssText = 'width:90px;min-height:40px;padding:6px 10px;background:#181818;'
+        + 'border:1px solid #2a2a2a;border-radius:8px;color:#eee;font:15px Segoe UI,system-ui,sans-serif;';
+      const wallTxt = document.createElement('span');
+      wallTxt.textContent = 'mm wall — hollow it as a cover (blank = solid)';
+      wallRow.append(wallInp, wallTxt);
+      const apply = () => {
+        overlay.setExtrusionDepth(parseFloat(inp.value));
+        if (overlay.setWallThickness) overlay.setWallThickness(parseFloat(wallInp.value));
+        close(); reflect();
+      };
       row.append(inp,
-        mk('Set', true, () => { overlay.setExtrusionDepth(parseFloat(inp.value)); close(); reflect(); }),
+        mk('Set', true, apply),
         mk('Clear', false, () => { overlay.setExtrusionDepth(0); close(); reflect(); }),
         mk('✕', false, close));
-      box.append(h, sub, row); document.body.appendChild(box);
+      box.append(h, sub, row, wallRow); document.body.appendChild(box);
       box.addEventListener('keydown', (e) => { e.stopPropagation();
         if (e.key === 'Escape') { e.preventDefault(); close(); }
-        if (e.key === 'Enter') { e.preventDefault(); overlay.setExtrusionDepth(parseFloat(inp.value)); close(); reflect(); } });
+        if (e.key === 'Enter') { e.preventDefault(); apply(); } });
       setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
     };
 
@@ -1004,7 +1023,9 @@ window.CalibUI = (function(){
       }
       const prof = overlay.selectedProfile && overlay.selectedProfile();
       ctxDepth.classList.toggle('show', !!prof);
-      if (prof) ctxDepth.innerHTML = prof.depth_mm > 0 ? `⇥ ${prof.depth_mm} mm` : '⇥ Depth';
+      if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
+        ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
+        : '⇥ Depth';
       undo.disabled = !(overlay.canUndo && overlay.canUndo());
       redo.disabled = !(overlay.canRedo && overlay.canRedo());
       reflectCalChip();

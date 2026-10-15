@@ -61,10 +61,29 @@ re-draw in CAD.
      Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
      and they become real through-holes in the solid.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
+     For a COVER, also fill in the wall thickness (see below).
   3) Download menu → "Save STL (3D print)".
 
-The result is a watertight mesh: every edge closed, normals facing out, volume equal
-to the profile area times the depth. Those are checked, not assumed — if a closed
+COVERS (hollow parts). Most replacement covers — a running-board step pad, a trim cap,
+an end cover — are a thin plate with a wall round its edge, open underneath. Enter a wall
+thickness in the ⇥ Depth box and the STL comes out that way instead of as a solid block:
+
+    900 x 180 mm step pad, 25 mm deep    solid: 4.05 L (~5.0 kg PLA)
+                                         3 mm wall: 0.63 L (~0.78 kg PLA)
+
+  * The plate and the wall are both that thick; the outer surface is your traced outline
+    exactly. The wall holds its thickness to within 2% (about 0.05 mm on a 3 mm wall).
+  * It comes out PLATE-DOWN, open side up — the way a cover prints without supports. It is
+    turned over by rotation, so it is never mirrored into the opposite-hand part.
+  * A hole over the hollow pierces the plate. A hole near the wall gets a solid boss round
+    it and runs the full depth, as a designer would draw it. The save message says so.
+  * Where the part is narrower than two walls there is no room for a hollow, so that part
+    of it is solid — and if that is all of it, you get the solid and a note saying why.
+  * Walls under 0.4 mm (one nozzle) are refused.
+
+The result is a watertight mesh: every edge closed, every triangle wound consistently with
+its neighbours, normals facing out, volume equal to what the profile says it should be.
+Those are checked, not assumed — if a closed
 solid cannot be built the export refuses and says why, because a slicer either
 rejects a leaky mesh or, worse, prints it wrong without telling you.
 

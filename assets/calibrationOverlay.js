@@ -962,7 +962,19 @@
         if(!a || a.type !== 'polyline' || !a.closed) return false;
         const d = Number(mm);
         this._pushHistory();
-        if(Number.isFinite(d) && d > 0) a.depth_mm = d; else delete a.depth_mm;
+        if(Number.isFinite(d) && d > 0) a.depth_mm = d; else { delete a.depth_mm; delete a.wall_mm; }
+        this.requestDraw();
+        return true;
+      }
+      // Hollow the selected profile into a cover: a plate this thick with a wall this thick
+      // round its edge, open underneath. 0 / blank goes back to a solid extrusion. The server
+      // enforces the printable minimum and says why when it refuses, so this only stores.
+      setWallThickness(mm){
+        const a = this.ann.items.find(it => it.id === this.ann.selectedId);
+        if(!a || a.type !== 'polyline' || !a.closed) return false;
+        const w = Number(mm);
+        this._pushHistory();
+        if(Number.isFinite(w) && w > 0) a.wall_mm = w; else delete a.wall_mm;
         this.requestDraw();
         return true;
       }
@@ -2132,8 +2144,18 @@
           a.href=URL.createObjectURL(blob); a.click();
           setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
           const n=r.headers.get('X-CamScan-Triangles'), v=r.headers.get('X-CamScan-Volume-MM3');
-          if(n && v) this._toast(`STL saved — ${n} triangles, ${(Number(v)/1000).toFixed(1)} cm³`,
-                                 {autoMs:3200});
+          const kind=r.headers.get('X-CamScan-Kind'), note=r.headers.get('X-CamScan-Note');
+          const bossed=Number(r.headers.get('X-CamScan-Bossed-Holes')||0);
+          if(n && v){
+            // Say what was actually built: a cover comes out plate-down, and a hole near the
+            // wall gets a solid boss — both worth knowing before it is on the printer.
+            let msg = kind==='shell'
+              ? `Cover STL saved — ${(Number(v)/1000).toFixed(1)} cm³, plate-down ready to print`
+              : `STL saved — ${n} triangles, ${(Number(v)/1000).toFixed(1)} cm³`;
+            if(bossed>0) msg += ` · ${bossed} hole${bossed>1?'s':''} near the wall got a solid boss`;
+            if(note) msg += ` · ${note}`;
+            this._toast(msg, {autoMs: (bossed>0 || note) ? 6000 : 3200});
+          }
           return true;
         }catch(e){ alert('3D export needs the server. ('+e.message+')'); return false; }
       }
