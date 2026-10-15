@@ -71,5 +71,50 @@ window.CalibGeom = (function(){
     return [[h[0],h[1],h[2]], [h[3],h[4],h[5]], [h[6],h[7],1]];
   }
 
-  return { distPtLine, solveHomography, orderQuad, quadAreaPx };
+  // --- How far past the scale reference are we measuring? -------------------------------
+  // A homography is only pinned where the points that fixed it are. Extrapolate well beyond
+  // them and the error explodes: measured on synthetic renders at 30 deg tilt with 1 px
+  // corner noise, a true 300 mm feature came back with an RMS error of ~6 mm at 5x the
+  // reference size, ~23 mm at 13x, and metres at 25x. A 40 mm calibration card against a
+  // 1.5 m running board is 38x — it reads plausibly and means nothing.
+  // Pure functions so they can be unit-tested without a DOM.
+  const REF_SPAN_RATIO_WARN = 5, REF_SPAN_RATIO_BAD = 12;
+
+  // Largest pixel distance spanned by a set of annotations.
+  function measuredExtentPx(items){
+    const pts = [];
+    for(const a of (items || [])){
+      if(!a) continue;
+      if(a.type === 'segment'){ pts.push(a.a, a.b); }
+      else if(a.type === 'polyline'){ for(const p of (a.pts || [])) pts.push(p); }
+      else if(a.type === 'rectangle' && a.rect){
+        const [x1, y1, x2, y2] = a.rect; pts.push([x1, y1], [x2, y2]);
+      }
+      else if(a.type === 'angle'){ pts.push(a.a, a.v, a.b); }
+      else if(a.type === 'circle' && a.center){
+        const [cx, cy] = a.center, r = a.radius || 0;
+        pts.push([cx - r, cy - r], [cx + r, cy + r]);
+      }
+    }
+    const ok = pts.filter(p => p && isFinite(p[0]) && isFinite(p[1]));
+    if(ok.length < 2) return 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for(const [x, y] of ok){
+      if(x < minX) minX = x; if(x > maxX) maxX = x;
+      if(y < minY) minY = y; if(y > maxY) maxY = y;
+    }
+    return Math.hypot(maxX - minX, maxY - minY);
+  }
+
+  // null when there is nothing worth saying, else {level:'warn'|'bad', ratio}.
+  function referenceSpanVerdict(refExtentPx, measuredPx){
+    if(!(refExtentPx > 0) || !(measuredPx > 0)) return null;
+    const ratio = measuredPx / refExtentPx;
+    if(!isFinite(ratio) || ratio <= REF_SPAN_RATIO_WARN) return null;
+    return { level: ratio >= REF_SPAN_RATIO_BAD ? 'bad' : 'warn', ratio };
+  }
+
+  return { distPtLine, solveHomography, orderQuad, quadAreaPx,
+           measuredExtentPx, referenceSpanVerdict,
+           REF_SPAN_RATIO_WARN, REF_SPAN_RATIO_BAD };
 })();

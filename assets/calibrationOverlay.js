@@ -856,7 +856,17 @@
           if(closed) px+=Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
           const mm=Measure.polyline(ctx,pts,closed);
           if(closed){
-            if(cal){ const ar=unit.areaFromMM2(Measure.polygonArea(ctx,pts)); return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
+            if(cal){ const ar=unit.areaFromMM2(Measure.polygonArea(ctx,pts));
+              // A closed outline with a depth is no longer a flat profile — it is a solid.
+              // Say so, because that is the whole description a modeller needs for an
+              // extruded part (a running board, trim, moulding, a bracket).
+              if(a.depth_mm>0){
+                const d=unit.fromMM(a.depth_mm), vol=unit.areaFromMM2(Measure.polygonArea(ctx,pts))*d;
+                return {label:'Extrusion',
+                        text:`profile ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel} · extruded ${d.toFixed(2)} ${unit.label} · vol ${vol.toFixed(1)} ${unit.areaLabel}·${unit.label}`,
+                        copy:d.toFixed(3)};
+              }
+              return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
             let pa=0; for(let i=0;i<pts.length;i++){ const q0=pts[i], q1=pts[(i+1)%pts.length]; pa+=q0[0]*q1[1]-q1[0]*q0[1]; } pa=Math.abs(pa)/2;
             return {label:'Outline', text:`peri ${Math.round(px)} px · A ${Math.round(pa)} px²`, copy:String(Math.round(px))};
           }
@@ -883,6 +893,66 @@
       // ---- Submission (multi-view job) capture -------------------------------------
       // Every measurement on this view, as [{label,text}], for the review + email packet.
       getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean).map(r=>({label:r.label, text:r.text})); }
+      // --- Is the scale reference big enough for what is being measured? ----------------
+      // A homography is only trustworthy near the points that fixed it. Extrapolate far
+      // outside the reference and the error explodes: measured on synthetic renders at 30 deg
+      // tilt with 1 px corner noise, a true 300 mm feature came back with an RMS error of
+      //   reference 1/5 of the measured span -> ~6 mm        (fine)
+      //   reference 1/13 of the span         -> ~23 mm       (marginal)
+      //   reference 1/25 of the span         -> metres        (nonsense)
+      // So a 40 mm calibration card against a 1.5 m running board — 1/38 — produces numbers
+      // that look plausible and are meaningless. Nothing warned about that before.
+      // The reference's extent in PIXELS, whatever supplied the scale.
+      _referenceExtentPx(){
+        if(this._refExtentPx > 0) return this._refExtentPx;
+        const m = (this.data && this.data.markers || [])[0];
+        if(m){
+          if(m.edge_px > 0) return m.edge_px;
+          const px = this._markerEdgePx && this._markerEdgePx(m);
+          if(px > 0) return px;
+        }
+        return 0;
+      }
+
+      // null when there is nothing to say; otherwise {level:'warn'|'bad', ratio, text}.
+      // The arithmetic lives in CalibGeom so it can be unit-tested without a DOM.
+      referenceSpanWarning(){
+        const v = Geom.referenceSpanVerdict(this._referenceExtentPx(),
+                                            Geom.measuredExtentPx(this.ann && this.ann.items));
+        if(!v) return null;
+        const ratio = v.ratio, bad = v.level === 'bad';
+        return {
+          level: bad ? 'bad' : 'warn',
+          ratio: ratio,
+          text: `You are measuring about ${Math.round(ratio)}x the size of your scale reference. `
+              + (bad ? 'These numbers are not trustworthy at this range. '
+                     : 'Accuracy falls off this far from the reference. ')
+              + 'Use a bigger reference that covers more of the part — with a ruler, lay out a '
+              + 'rectangle (e.g. 300 x 300 mm) and use Set scale > a rectangle you measured.'
+        };
+      }
+
+      // --- Extruded profiles -------------------------------------------------------------
+      // A traced closed outline plus one depth IS the part, for anything made by extrusion —
+      // which is most replacement trim: running boards, mouldings, sills, brackets. Without
+      // this the app can only ever describe a flat silhouette, and the modeller has to carry
+      // the depth across from a separate measurement by hand and hope it was the right one.
+      // Returns true when the depth was applied.
+      setExtrusionDepth(mm){
+        const a = this.ann.items.find(it => it.id === this.ann.selectedId);
+        if(!a || a.type !== 'polyline' || !a.closed) return false;
+        const d = Number(mm);
+        this._pushHistory();
+        if(Number.isFinite(d) && d > 0) a.depth_mm = d; else delete a.depth_mm;
+        this.requestDraw();
+        return true;
+      }
+      // The selected item when it is a closed profile that can take a depth, else null.
+      selectedProfile(){
+        const a = this.ann.items.find(it => it.id === this.ann.selectedId);
+        return (a && a.type === 'polyline' && a.closed) ? a : null;
+      }
+
       // A plain-language description of how THIS view is scaled, so the shop can trust it.
       getScaleInfo(){
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
@@ -890,9 +960,12 @@
         if(this.opts.manualHomography) source='paper/rectangle';   // perspective flag conveys tilt-correction
         else if(this.opts.manualMmPerPx) source='manual line';
         else if(this.currentMarkerSizeMM()) source=`printed square ${this.currentMarkerSizeMM()} mm`;
+        const span=this.referenceSpanWarning();
         return { calibrated:s>0, mm_per_px:s, unit:unit.label,
                  perspective:this._perspectiveActive(), source,
-                 confidence:(this.data&&this.data.calibration_confidence)||null };
+                 confidence:(this.data&&this.data.calibration_confidence)||null,
+                 referenceSpanRatio: span ? Math.round(span.ratio*10)/10 : null,
+                 referenceSpanLevel: span ? span.level : null };
       }
       // The annotated image as a downscaled JPEG data URL (long side <= maxDim) — small
       // enough to POST several per submission, clear enough to show the measurements.
@@ -1110,6 +1183,7 @@
         // tilt correction the single line can't provide.
         this.opts.manualHomography = null; this._manualRef = null;
         this.opts.manualMmPerPx = knownMM/pixelLength;
+        this._refExtentPx = pixelLength;        // for the too-small-reference check
         this._rescaleAnnotations();
         this.requestDraw();
       }
@@ -1511,8 +1585,9 @@
       // Set a perspective-corrected scale from a paper rectangle's 4 corners. H maps image
       // px -> plane mm; mmPerPx is a representative uniform scale kept for circles (which
       // aren't rectified), the KPI readout, and the fallback path. ref describes the sheet.
-      setManualRectScale(H, mmPerPx, ref){
+      setManualRectScale(H, mmPerPx, ref, extentPx){
         if(!H) return;
+        this._refExtentPx = extentPx || null;   // for the too-small-reference check
         // A manual paper rectangle carries no camera geometry, so a raised plane derived
         // from the marker's homography no longer applies.
         this._planeH = null; this._featureHeightMM = 0;
@@ -1540,7 +1615,12 @@
         const Hm=Geom.solveHomography(ordered, dst); if(!Hm) return false;
         const areaPx=Geom.quadAreaPx(ordered);
         const mmPerPx = areaPx>0 ? Math.sqrt((wmm*hmm)/areaPx) : 0;
-        this.setManualRectScale(Hm, mmPerPx, { w:long, h:short });
+        // Longest diagonal: how far the 4 corners actually brace the fit, which is what
+        // decides how far it can be trusted away from them.
+        let extentPx=0;
+        for(let i=0;i<4;i++) for(let j=i+1;j<4;j++)
+          extentPx=Math.max(extentPx, Math.hypot(ordered[j][0]-ordered[i][0], ordered[j][1]-ordered[i][1]));
+        this.setManualRectScale(Hm, mmPerPx, { w:long, h:short }, extentPx);
         return true;
       }
 
@@ -1560,7 +1640,10 @@
         const box=document.createElement('div'); box.id='cal-rect-input';
         box.style.cssText='position:fixed;z-index:41;left:50%;top:14%;transform:translateX(-50%);background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.6);max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
         const title=document.createElement('div'); title.textContent='What did you outline?'; title.style.cssText='font-weight:700;margin-bottom:4px;';
-        const sub=document.createElement('div'); sub.textContent='Tilt is corrected from the 4 corners, so an angled photo still measures true.'; sub.style.cssText='font-size:12px;color:#9aa;margin-bottom:10px;max-width:36ch;';
+        const sub=document.createElement('div');
+        sub.textContent='Any rectangle whose size you know — including one you laid out with a ruler. '
+          + 'Tilt is corrected from the 4 corners, so an angled photo still measures true.';
+        sub.style.cssText='font-size:12px;color:#9aa;margin-bottom:10px;max-width:36ch;';
         const row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
         const mkBtn=(label,cls,fn)=>{ const b=document.createElement('button'); b.type='button'; b.textContent=label;
           b.style.cssText='min-height:44px;padding:8px 14px;border-radius:8px;font-size:14px;cursor:pointer;'+(cls==='primary'
@@ -1568,6 +1651,13 @@
             :'background:#151515;color:#cde;border:1px solid #2a3540;'); b.onclick=fn; return b; };
         row.appendChild(mkBtn('A4 · 210×297', '', ()=>{ if(applyWH(210,297)) box.remove(); }));
         row.appendChild(mkBtn('US Letter · 216×279', '', ()=>{ if(applyWH(215.9,279.4)) box.remove(); }));
+        // Ruler-laid squares. For anything bigger than a sheet of paper these are the only
+        // reference most customers already own, and a 4-corner rectangle is the ONLY way a
+        // ruler buys tilt correction: a single line gives a uniform scale (no perspective at
+        // all), and even an L of two lines is just an affine fit, which measured no better
+        // than the single line. Four corners is what makes the difference.
+        row.appendChild(mkBtn('Ruler square · 300×300', '', ()=>{ if(applyWH(300,300)) box.remove(); }));
+        row.appendChild(mkBtn('Ruler square · 12×12 in', '', ()=>{ if(applyWH(304.8,304.8)) box.remove(); }));
         const custom=document.createElement('div'); custom.style.cssText='display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;';
         row.appendChild(mkBtn('Custom…', '', ()=>{ custom.style.display = custom.style.display==='none' ? 'flex' : 'none';
           if(custom.style.display==='flex') setTimeout(()=>wIn.focus(),0); }));
@@ -1819,6 +1909,12 @@
           // the card's own plane looked identical while reading several percent apart.
           const fh = this.featureHeightMM();
           if(fh) specs.push({text:`⬆ measuring ${fh} mm above the card`, cls:'cal-chip--lead'});
+          // Measuring far outside the reference is a correctness problem, not a nicety, so
+          // it shows at every width — a 40 mm card on a 1.5 m part reads plausibly and is
+          // meaningless, and nothing else on screen would hint at that.
+          const rs = this.referenceSpanWarning();
+          if(rs) specs.push({text:`${rs.level==='bad'?'⛔':'⚠️'} reference is ${Math.round(rs.ratio)}× too small for this span`,
+                             cls:'cal-chip--warn'});
           // Remembered-size flag shows on EVERY width (including phones) — a stale value
           // silently rescaling an unrelated photo is a correctness footgun, so never hide it.
           if(remembered) specs.push({text:`⚠️ saved ${this.currentMarkerSizeMM()} mm sq — tap 📐 to verify`, cls:'cal-chip--warn'});

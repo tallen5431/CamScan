@@ -403,8 +403,9 @@ window.CalibUI = (function(){
         'A credit card, coin, or ruler in the photo — presets appear as you draw.',
         () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscale'); }));
       // 3 — paper sheet (tilt-corrected).
-      card.appendChild(mkBig('📄', 'Use a sheet of paper (tilt-corrected)',
-        'Tap the 4 corners of an A4 / Letter sheet — corrects for camera angle.',
+      card.appendChild(mkBig('📄', 'A rectangle you know the size of (tilt-corrected)',
+        'Tap its 4 corners — a sheet of paper, or a square you lay out with a ruler. '
+        + 'Best for big parts: the reference should cover a good part of what you measure.',
         () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscalerect'); }));
 
       // 4 — the plane the feature actually sits in. This is the biggest single source of
@@ -868,7 +869,52 @@ window.CalibUI = (function(){
     const ctxAuto = document.createElement('button'); ctxAuto.type = 'button'; ctxAuto.className = 'cal-ctx-finish';
     ctxAuto.innerHTML = '✨ Auto-trace'; ctxAuto.setAttribute('aria-label', 'Auto-detect the part outline — then tap the part');
     ctxAuto.onclick = () => { if (overlay.armAutoOutline) overlay.armAutoOutline(); reflect(); };
-    ctx.append(ctxDelete, ctxAuto, ctxFinish);
+    // A closed outline is a PROFILE. Give it a depth and it stops being a silhouette and
+    // becomes the solid — which, for extruded trim like a running board or a moulding, is
+    // the entire part. Only shown when a closed outline is selected, so it never adds noise.
+    const ctxDepth = document.createElement('button'); ctxDepth.type = 'button'; ctxDepth.className = 'cal-ctx-finish';
+    ctxDepth.innerHTML = '⇥ Depth'; ctxDepth.setAttribute('aria-label', 'Set how far this profile extrudes');
+    ctxDepth.title = 'How far this profile runs — turns the outline into a solid';
+    ctxDepth.onclick = () => {
+      const prof = overlay.selectedProfile && overlay.selectedProfile();
+      if (!prof) return;
+      const prev = document.getElementById('cal-depth-input'); if (prev) prev.remove();
+      const box = document.createElement('div'); box.id = 'cal-depth-input';
+      box.style.cssText = 'position:fixed;z-index:41;left:50%;top:16%;transform:translateX(-50%);'
+        + 'background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:12px 14px;'
+        + 'box-shadow:0 8px 24px rgba(0,0,0,.6);font:15px Segoe UI,system-ui,sans-serif;color:#eee;'
+        + 'max-width:calc(100vw - 16px);';
+      const h = document.createElement('div'); h.textContent = 'How far does this profile run?';
+      h.style.cssText = 'font-weight:700;margin-bottom:4px;';
+      const sub = document.createElement('div');
+      sub.textContent = 'The length it is extruded along — e.g. the full length of a running board. '
+        + 'Leave blank to go back to a flat outline.';
+      sub.style.cssText = 'font-size:12px;color:#9aa;margin-bottom:10px;max-width:34ch;';
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;';
+      const inp = document.createElement('input'); inp.type = 'number'; inp.min = '0'; inp.step = '0.1';
+      inp.inputMode = 'decimal'; inp.placeholder = 'mm';
+      inp.value = prof.depth_mm > 0 ? String(prof.depth_mm) : '';
+      inp.style.cssText = 'width:120px;min-height:44px;padding:8px 10px;background:#181818;'
+        + 'border:1px solid #2a2a2a;border-radius:8px;color:#eee;font:16px Segoe UI,system-ui,sans-serif;';
+      const mk = (label, primary, fn) => { const b = document.createElement('button'); b.type = 'button';
+        b.textContent = label;
+        b.style.cssText = 'min-height:44px;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;'
+          + (primary ? 'background:#00d4ff;color:#000;border:none;font-weight:600;'
+                     : 'background:#151515;color:#cde;border:1px solid #2a3540;');
+        b.onclick = fn; return b; };
+      const close = () => box.remove();
+      row.append(inp,
+        mk('Set', true, () => { overlay.setExtrusionDepth(parseFloat(inp.value)); close(); reflect(); }),
+        mk('Clear', false, () => { overlay.setExtrusionDepth(0); close(); reflect(); }),
+        mk('✕', false, close));
+      box.append(h, sub, row); document.body.appendChild(box);
+      box.addEventListener('keydown', (e) => { e.stopPropagation();
+        if (e.key === 'Escape') { e.preventDefault(); close(); }
+        if (e.key === 'Enter') { e.preventDefault(); overlay.setExtrusionDepth(parseFloat(inp.value)); close(); reflect(); } });
+      setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
+    };
+
+    ctx.append(ctxDelete, ctxAuto, ctxDepth, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -938,6 +984,9 @@ window.CalibUI = (function(){
       ctxFinish.innerHTML = mode === 'outline' ? '✓ Close outline' : '✓ Finish path';
       // Offer auto-trace whenever the Outline tool is active and no trace is in progress.
       ctxAuto.classList.toggle('show', mode === 'outline' && pathN === 0);
+      const prof = overlay.selectedProfile && overlay.selectedProfile();
+      ctxDepth.classList.toggle('show', !!prof);
+      if (prof) ctxDepth.innerHTML = prof.depth_mm > 0 ? `⇥ ${prof.depth_mm} mm` : '⇥ Depth';
       undo.disabled = !(overlay.canUndo && overlay.canUndo());
       redo.disabled = !(overlay.canRedo && overlay.canRedo());
       reflectCalChip();

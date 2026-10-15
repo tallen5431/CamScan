@@ -980,6 +980,90 @@ def main():
     except Exception as e:
         check("pose keeps a proper rotation and uses the perpendicular plane distance", False, repr(e))
 
+    # 8o) A homography is only pinned where the points that fixed it are. Measure far
+    #     outside the reference and the error explodes — on synthetic renders at 30 deg tilt
+    #     with 1 px corner noise, a true 300 mm feature came back ~6 mm out at 5x the
+    #     reference size, ~23 mm at 13x, and METRES at 25x. A 40 mm card against a 1.5 m
+    #     running board is 23x and reads plausibly while meaning nothing. Lock the rule, and
+    #     the arithmetic behind the warning, by driving the real JS through node.
+    try:
+        import subprocess, json as _json
+        node = None
+        for cand in ("/opt/node22/bin/node", "node"):
+            try:
+                subprocess.run([cand, "-e", "0"], capture_output=True, check=True)
+                node = cand
+                break
+            except Exception:
+                continue
+        if node is None:
+            check("reference-span rule (needs node)", True, "skipped — no node runtime")
+        else:
+            script = r"""
+              global.window = {};
+              require(process.argv[1]);
+              const G = window.CalibGeom;
+              const seg = (x0,y0,x1,y1) => ({type:'segment', a:[x0,y0], b:[x1,y1]});
+              const out = {
+                empty: G.measuredExtentPx([]),
+                nullish: G.measuredExtentPx(null),
+                junk: G.measuredExtentPx([null, {type:'segment'}]),
+                nan: G.measuredExtentPx([seg(0,0,NaN,5)]),
+                seg500: G.measuredExtentPx([seg(0,0,300,400)]),
+                mixed: G.measuredExtentPx([{type:'polyline',pts:[[0,0],[100,0]]},
+                                           {type:'circle',center:[500,0],radius:50}]),
+                at4: G.referenceSpanVerdict(100,400),
+                at5: G.referenceSpanVerdict(100,500),
+                at6: G.referenceSpanVerdict(100,600),
+                at12: G.referenceSpanVerdict(100,1200),
+                card: G.referenceSpanVerdict(65,1500),
+                zeroRef: G.referenceSpanVerdict(0,500),
+                negRef: G.referenceSpanVerdict(-5,500),
+                zeroSpan: G.referenceSpanVerdict(100,0),
+              };
+              console.log(JSON.stringify(out));
+            """
+            r = subprocess.run([node, "-e", script, str(ROOT / "assets" / "calib.geometry.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            ok = (o["empty"] == 0 and o["nullish"] == 0 and o["junk"] == 0 and o["nan"] == 0
+                  and abs(o["seg500"] - 500) < 1e-6 and o["mixed"] > 500
+                  # the threshold itself: 5x is still fine, 6x warns, 12x is bad
+                  and o["at4"] is None and o["at5"] is None
+                  and o["at6"] and o["at6"]["level"] == "warn"
+                  and o["at12"] and o["at12"]["level"] == "bad"
+                  # the real case that motivated this
+                  and o["card"] and o["card"]["level"] == "bad"
+                  # degenerate inputs never produce a verdict
+                  and o["zeroRef"] is None and o["negRef"] is None and o["zeroSpan"] is None)
+            check("reference-span rule flags a too-small scale reference", ok,
+                  f"5x={o['at5']}, 6x={(o['at6'] or {}).get('level')}, "
+                  f"12x={(o['at12'] or {}).get('level')}, 40mm-card-on-1.5m="
+                  f"{(o['card'] or {}).get('level')}")
+    except Exception as e:
+        check("reference-span rule flags a too-small scale reference", False, repr(e))
+
+    # 8p) An extruded profile must survive the whole export path. depth_mm rides on a closed
+    #     polyline so a consumer can build the solid instead of guessing; the DXF writer must
+    #     ignore the key it does not know rather than dropping the profile.
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p_dxf = os.path.join(d, "extrusion.dxf")
+            with _quiet():
+                ok_dxf = export_to_dxf(
+                    [{"type": "polyline", "points": [[0, 0], [100, 0], [100, 40], [0, 40]],
+                      "closed": True, "mm_per_px": 1, "depth_mm": 1500.0},
+                     {"type": "circle", "center_x": 10, "center_y": 10, "radius_px": 5}],
+                    p_dxf, 1.0, image_height_px=200.0)
+            wrote = ok_dxf and os.path.exists(p_dxf) and os.path.getsize(p_dxf) > 0
+            body = open(p_dxf, errors="replace").read() if wrote else ""
+        # the profile itself must still be in the file (a closed LWPOLYLINE)
+        kept = "LWPOLYLINE" in body.upper()
+        check("extruded profile exports; unknown depth_mm key is harmless", bool(wrote and kept),
+              f"wrote={bool(wrote)}, profile kept={kept}")
+    except Exception as e:
+        check("extruded profile exports; unknown depth_mm key is harmless", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the
