@@ -636,6 +636,131 @@ def export_dxf():
     )
 
 
+@server.route("/api/export/stl", methods=["POST"])
+def export_stl():
+    """A watertight 3D solid, ready to slice and print.
+
+    Every other export here is flat — PNG, JSON, CSV, DXF, SVG — so a customer who
+    photographed a broken part still needed somebody to open CAD and extrude the profile by
+    hand. For the large class of replacement parts that ARE an extrusion (running boards,
+    mouldings, sills, trim, brackets, gaskets) the traced outline plus one depth is the whole
+    part, so the last step belongs here.
+
+    Takes the same geometry list the DXF endpoint takes. The outer profile is the closed
+    polyline carrying a positive depth_mm; any other closed polyline whose centroid falls
+    inside it becomes a through-hole, which is exactly what the auto-trace already produces
+    for a bolt pattern or a row of clip slots.
+
+    Body: { geometry: [...], mm_per_px, image_height }
+    Returns the STL, or 400/422 with a reason. Refuses rather than returning a leaky mesh:
+    a slicer either rejects one or, worse, silently prints it wrong.
+    """
+    from flask import Response
+
+    try:
+        from solid_export import build_extrusion, write_binary_stl, mesh_report
+    except Exception:
+        return "3D export unavailable", 500
+
+    data = _json_body()
+    geometry = data.get("geometry", [])
+    if not isinstance(geometry, list) or not geometry:
+        return "No geometry provided", 400
+    geometry = [g for g in geometry if isinstance(g, dict)]
+
+    try:
+        raw_scale = data.get("mm_per_px", None)
+        mm_per_px = 1.0 if raw_scale is None else float(raw_scale)
+    except (TypeError, ValueError):
+        return "Invalid mm_per_px", 400
+    if not (mm_per_px > 0) or not math.isfinite(mm_per_px):
+        return "mm_per_px must be a finite number > 0", 400
+
+    try:
+        image_height = float(data.get("image_height", 0)) or None
+        if image_height is not None and not math.isfinite(image_height):
+            image_height = None
+    except (TypeError, ValueError):
+        image_height = None
+
+    def _ring(item):
+        """A geometry item's points in millimetres, Y flipped to CAD's up, or None.
+
+        Mirrors export_to_dxf's conventions so the STL and the DXF describe the same part
+        rather than two mirror images of it.
+        """
+        pts = item.get("points")
+        if not isinstance(pts, (list, tuple)) or len(pts) < 3:
+            return None
+        out = []
+        for p in pts:
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError):
+                return None
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return None
+            if image_height is not None:
+                y = image_height - y
+            out.append([x * mm_per_px, y * mm_per_px])
+        return out
+
+    closed = [g for g in geometry if g.get("type") == "polyline" and g.get("closed")]
+    outer_item = next((g for g in closed
+                       if isinstance(g.get("depth_mm"), (int, float)) and g.get("depth_mm", 0) > 0),
+                      None)
+    if outer_item is None:
+        return ("No extrudable profile. Close an outline around the part, then set its "
+                "depth — how far the shape runs — and export again."), 422
+
+    outer = _ring(outer_item)
+    if outer is None:
+        return "The profile's points are not usable", 400
+    try:
+        depth_mm = float(outer_item["depth_mm"])
+    except (TypeError, ValueError):
+        return "Invalid depth_mm", 400
+
+    holes = []
+    for g in closed:
+        if g is outer_item:
+            continue
+        r = _ring(g)
+        if r is not None:
+            holes.append(r)
+
+    tris = build_extrusion(outer, holes, depth_mm)
+    if tris is None:
+        return ("Could not build a closed solid from this profile. Check that the outline "
+                "does not cross itself and that the depth is sensible."), 422
+    rep = mesh_report(tris)
+    if not rep.get("watertight"):
+        # Never hand a slicer a leaky mesh; it either refuses it or prints it wrong.
+        return "Could not build a watertight solid from this profile.", 422
+
+    dxf_fd, stl_path = tempfile.mkstemp(suffix=".stl")
+    os.close(dxf_fd)
+    try:
+        if not write_binary_stl(tris, stl_path, "CamScan extruded profile"):
+            return "Could not write the STL", 500
+        with open(stl_path, "rb") as f:
+            payload = f.read()
+    except Exception as e:
+        print(f"[STL Export] Error: {e}")
+        return "3D export failed", 500
+    finally:
+        try:
+            os.unlink(stl_path)
+        except OSError:
+            pass
+
+    print(f"[STL Export] {rep['triangles']} triangles, {rep['volume_mm3'] / 1000.0:.1f} cm3")
+    return Response(payload, mimetype="model/stl",
+                    headers={"Content-Disposition": "attachment; filename=part.stl",
+                             "X-CamScan-Triangles": str(rep["triangles"]),
+                             "X-CamScan-Volume-MM3": f"{rep['volume_mm3']:.1f}"})
+
+
 @server.route("/api/plane", methods=["POST"])
 def api_plane():
     """Homography for a plane parallel to the marker's, `height_mm` above it.

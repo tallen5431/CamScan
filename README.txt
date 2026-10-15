@@ -50,6 +50,29 @@ No square detected? Use the "Set Scale" tool (📐): draw a line across anything
 known length and type in that length — CamScan calibrates from it.
 
 --------------------------------------------------------------------------------
+3D MODEL FOR PRINTING (STL)
+--------------------------------------------------------------------------------
+Most replacement trim is an EXTRUSION — a running board, a moulding, a sill, a
+bracket, a gasket, a spacer. For those, one traced cross-section plus one depth is
+the whole part, so CamScan can finish the job rather than hand you a drawing to
+re-draw in CAD.
+
+  1) Trace a CLOSED outline around the part (the Path/Outline tool, or ✨ Auto-trace).
+     Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
+     and they become real through-holes in the solid.
+  2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
+  3) Download menu → "Save STL (3D print)".
+
+The result is a watertight mesh: every edge closed, normals facing out, volume equal
+to the profile area times the depth. Those are checked, not assumed — if a closed
+solid cannot be built the export refuses and says why, because a slicer either
+rejects a leaky mesh or, worse, prints it wrong without telling you.
+
+What this does NOT do: it sweeps one profile along a straight line. A part that
+tapers, twists, or has a different shape at each end (end caps, for instance) needs
+those modelled separately. Measure them from a second view and add them in CAD.
+
+--------------------------------------------------------------------------------
 ACCURACY — WHERE THE ERROR ACTUALLY COMES FROM
 --------------------------------------------------------------------------------
 The single biggest error in CamScan is not camera angle. It is measuring a face that

@@ -1064,6 +1064,141 @@ def main():
     except Exception as e:
         check("extruded profile exports; unknown depth_mm key is harmless", False, repr(e))
 
+    # 8q) The 3D solid. Every other export is flat, so for an extruded part this is the one
+    #     that finishes the job. A slicer needs a CLOSED surface: a mesh with a gap or a
+    #     flipped face either fails to load or silently prints wrong, so both properties are
+    #     asserted rather than assumed — every undirected edge shared by exactly two
+    #     triangles, and a positive signed volume equal to profile area x depth.
+    try:
+        from solid_export import build_extrusion, mesh_report, write_binary_stl
+
+        def _area(r):
+            a = np.asarray(r, float)
+            return abs(float(np.sum(a[:, 0] * np.roll(a[:, 1], -1)
+                                    - np.roll(a[:, 0], -1) * a[:, 1]))) / 2.0
+
+        def _circ(R, n, cx=0.0, cy=0.0):
+            return [[cx + R * np.cos(t), cy + R * np.sin(t)]
+                    for t in np.linspace(0, 2 * np.pi, n, endpoint=False)]
+
+        depth = 1500.0
+        cases = {
+            # a plain block, and the same block with a hole through it
+            "square": ([[0, 0], [100, 0], [100, 100], [0, 100]], []),
+            "square+hole": ([[0, 0], [100, 0], [100, 100], [0, 100]],
+                            [[[40, 40], [60, 40], [60, 60], [40, 60]]]),
+            # concavity: unconstrained Delaunay wants to cut across these
+            "L-shape": ([[0, 0], [100, 0], [100, 40], [40, 40], [40, 100], [0, 100]], []),
+            "U-channel": ([[0, 0], [100, 0], [100, 80], [75, 80],
+                           [75, 25], [25, 25], [25, 80], [0, 80]], []),
+            # irrational coordinates: these caught cv2.Subdiv2D's float32 round-trip, which
+            # left cap vertices a micro-millimetre off their walls and shredded the mesh
+            "circle": (_circ(50, 64), []),
+            "circle+4 bores": (_circ(50, 96), [_circ(6, 24, 25, 0), _circ(6, 24, -25, 0),
+                                               _circ(6, 24, 0, 25), _circ(6, 24, 0, -25)]),
+            # the real shape of this: a 1.5 m running board with a row of clip slots. Sizing
+            # the boundary spacing off the slots blew the point budget and truncated the
+            # outline, which cannot close.
+            "running board+8 clips": ([[0, 0], [1500, 0], [1500, 180], [0, 180]],
+                                      [[[100 + 170 * i, 70], [150 + 170 * i, 70],
+                                        [150 + 170 * i, 110], [100 + 170 * i, 110]]
+                                       for i in range(8)]),
+            # a reversed outline must still come out solid, not inside out
+            "CW input": ([[0, 100], [100, 100], [100, 0], [0, 0]], []),
+        }
+        rows, bad = [], []
+        for name, (o, h) in cases.items():
+            t = build_extrusion(o, h, depth)
+            if t is None:
+                bad.append(f"{name}: refused")
+                continue
+            rep = mesh_report(t)
+            want = (_area(o) - sum(_area(x) for x in h)) * depth
+            err = abs(rep["volume_mm3"] - want) / want * 100.0
+            rows.append(f"{name} {rep['triangles']}t")
+            if not rep["watertight"]:
+                bad.append(f"{name}: {rep['open_edges']} open edges")
+            if err > 0.6:
+                bad.append(f"{name}: volume off {err:.2f}%")
+            if rep["volume_mm3"] <= 0:
+                bad.append(f"{name}: normals inverted")
+
+        # A hole must actually remove material, not just draw a line on the cap.
+        soo = mesh_report(build_extrusion(cases["square"][0], [], depth))["volume_mm3"]
+        swh = mesh_report(build_extrusion(*cases["square+hole"], depth))["volume_mm3"]
+        if not (swh < soo * 0.97):
+            bad.append("hole removed no material")
+
+        # Degenerate input is refused rather than silently producing a broken solid.
+        for nm, args in (("collinear", ([[0, 0], [10, 0], [20, 0]], [], depth)),
+                         ("two points", ([[0, 0], [10, 0]], [], depth)),
+                         ("zero depth", ([[0, 0], [10, 0], [10, 10]], [], 0.0)),
+                         ("nan point", ([[0, 0], [float("nan"), 0], [10, 10]], [], depth))):
+            if build_extrusion(*args) is not None:
+                bad.append(f"accepted degenerate input: {nm}")
+
+        # And the bytes are a real binary STL: 80-byte header, count, 50 bytes per triangle.
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "p.stl")
+            tt = build_extrusion(cases["square"][0], [], depth)
+            wrote = write_binary_stl(tt, sp)
+            blob = open(sp, "rb").read() if wrote else b""
+        import struct as _struct
+        ntri = _struct.unpack("<I", blob[80:84])[0] if len(blob) >= 84 else -1
+        if not (wrote and len(blob) == 84 + 50 * ntri and ntri == len(tt)):
+            bad.append(f"STL malformed: {len(blob)} bytes for {ntri} triangles")
+
+        check("extruded solids are watertight, correctly sized, and valid STL",
+              not bad, "; ".join(bad) if bad else f"{len(rows)} profiles, all closed")
+    except Exception as e:
+        check("extruded solids are watertight, correctly sized, and valid STL", False, repr(e))
+
+    # 8r) /api/export/stl takes untrusted JSON and must answer cleanly for every malformed
+    #     shape, and must refuse rather than return a leaky mesh a slicer would mis-print.
+    try:
+        import app as _app6
+        cli = _app6.server.test_client()
+        prof = {"type": "polyline", "closed": True, "depth_mm": 1500.0,
+                "points": [[0, 0], [300, 0], [300, 60], [0, 60]]}
+        hole = {"type": "polyline", "closed": True,
+                "points": [[40, 20], [70, 20], [70, 40], [40, 40]]}
+        with _quiet():
+            good = cli.post("/api/export/stl", json={"geometry": [prof, hole],
+                                                     "mm_per_px": 1.0, "image_height": 200})
+        import struct as _s2
+        n = _s2.unpack("<I", good.data[80:84])[0] if len(good.data) >= 84 else -1
+        happy = (good.status_code == 200 and len(good.data) == 84 + 50 * n and n > 0
+                 and "part.stl" in (good.headers.get("Content-Disposition") or ""))
+
+        bad_bodies = {
+            "empty": {},
+            "no_geometry": {"geometry": []},
+            "junk_entries": {"geometry": ["junk", 7]},
+            "no_depth": {"geometry": [{"type": "polyline", "closed": True,
+                                        "points": [[0, 0], [10, 0], [10, 10]]}]},
+            "open_path": {"geometry": [{"type": "polyline", "closed": False, "depth_mm": 10,
+                                         "points": [[0, 0], [10, 0], [10, 10]]}]},
+            "two_points": {"geometry": [{"type": "polyline", "closed": True, "depth_mm": 10,
+                                          "points": [[0, 0], [10, 0]]}]},
+            "nan_point": {"geometry": [{"type": "polyline", "closed": True, "depth_mm": 10,
+                                         "points": [[0, 0], [float("nan"), 0], [10, 10]]}]},
+            "inf_scale": {"geometry": [prof], "mm_per_px": float("inf")},
+            "zero_scale": {"geometry": [prof], "mm_per_px": 0},
+            "collinear": {"geometry": [{"type": "polyline", "closed": True, "depth_mm": 10,
+                                         "points": [[0, 0], [10, 0], [20, 0]]}]},
+        }
+        codes = {}
+        with _quiet():
+            for k, b in bad_bodies.items():
+                codes[k] = cli.post("/api/export/stl", json=b).status_code
+        # 400 for malformed input, 422 for well-formed input that cannot make a solid.
+        validated = all(v in (400, 422) for v in codes.values())
+        check("/api/export/stl returns a valid STL and refuses everything else",
+              happy and validated,
+              f"{n} triangles; bad-input codes={sorted(set(codes.values()))}")
+    except Exception as e:
+        check("/api/export/stl returns a valid STL and refuses everything else", False, repr(e))
+
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography
     #    columns /s, mm_per_px /s, coordinates *s), so millimetres are unchanged. Guard the

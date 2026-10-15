@@ -762,6 +762,9 @@ window.CalibUI = (function(){
       mkSave('📊', 'Save CSV spreadsheet', () => overlay.saveCSV && overlay.saveCSV()),
       mkSave('📐', 'Save DXF (CAD)', () => overlay.saveDXF && overlay.saveDXF()),
       mkSave('🖋️', 'Save SVG (vector, mm)', () => overlay.saveSVG && overlay.saveSVG()),
+      // The only export that is not flat. For an extruded part this is the finished thing a
+      // slicer can open, instead of a drawing somebody has to extrude again by hand.
+      mkSave('🧊', 'Save STL (3D print)', () => overlay.saveSTL && overlay.saveSTL()),
       mkSave('📦', 'Save both (PNG + JSON)', () => { if (overlay.savePNG) overlay.savePNG(); if (overlay.saveJSON) setTimeout(() => overlay.saveJSON(), 500); }),
     );
     function closeSaveMenu(returnFocus){

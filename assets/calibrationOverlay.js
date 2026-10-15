@@ -1993,6 +1993,40 @@
       }
       saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this._dataForMeasure(), this._exportStore(), this.opts.units, this.getScale(), this._allowHomography()); }
       saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this._dataForMeasure(), this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:this._allowHomography() }); }
+      // A watertight solid, ready to slice. Every other export here is flat, so for an
+      // extruded part this is the one that finishes the job instead of handing the shop a
+      // drawing to re-draw. Needs a closed outline carrying a depth; any other closed
+      // outline inside it (a bolt hole, a clip slot — the auto-trace already emits these)
+      // becomes a through-hole.
+      async saveSTL(){
+        if(!this._confirmUncalibrated()) return false;
+        const req = Xport._buildDXFRequest(this._dataForMeasure(), this._exportStore(),
+                      { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0,
+                        allowHomography:this._allowHomography() });
+        const hasProfile = (req.geometry||[]).some(g => g.type==='polyline' && g.closed && g.depth_mm>0);
+        if(!hasProfile){
+          alert('No extrudable profile yet.\n\nTrace a closed outline around the part, select it, '
+              + 'then use ⇥ Depth to say how far the shape runs. That outline plus the depth is '
+              + 'the solid.');
+          return false;
+        }
+        try{
+          const r = await fetch(Xport._apiUrl('api/export/stl'), {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ geometry:req.geometry, mm_per_px:req.mm_per_px,
+                                   image_height:req.image_height })});
+          if(!r.ok){ alert('3D export failed: ' + (await r.text())); return false; }
+          const blob = await r.blob();
+          const a=document.createElement('a'); a.download='part.stl';
+          a.href=URL.createObjectURL(blob); a.click();
+          setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+          const n=r.headers.get('X-CamScan-Triangles'), v=r.headers.get('X-CamScan-Volume-MM3');
+          if(n && v) this._toast(`STL saved — ${n} triangles, ${(Number(v)/1000).toFixed(1)} cm³`,
+                                 {autoMs:3200});
+          return true;
+        }catch(e){ alert('3D export needs the server. ('+e.message+')'); return false; }
+      }
+
       saveSVG(){ if(!this._confirmUncalibrated()) return; return Xport.exportSVG(this._dataForMeasure(), this._exportStore(), { mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:this._allowHomography() }); }
     }
 
