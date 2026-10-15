@@ -227,6 +227,7 @@
     var tip=document.createElement('div'); tip.style.cssText='font-size:12px;color:#7f8f98;margin-top:6px;';
     tip.textContent='Keep the same reference (card/marker) flat in every shot, and measure features that sit flat on it.';
     guide.appendChild(tip);
+    guide.appendChild(captureGuide());
     card.appendChild(guide);
 
     // collected views
@@ -257,6 +258,10 @@
         btns.appendChild(del);
         vr.appendChild(im); vr.appendChild(meta); vr.appendChild(btns); card.appendChild(vr);
       });
+      // Same dimension, two views, two different answers — one of the scales is wrong, and
+      // nothing else in the app would ever say so. Shown here because this is where the user
+      // can still fix it: re-open the offending side and re-set its scale.
+      scaleDisagreementRows().forEach(function(row){ card.appendChild(row); });
     }
 
     // brief
@@ -611,8 +616,141 @@
   // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
   function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
 
+  // Dimensions already measured on THIS part, in other views, usable as a scale reference
+  // here. The same physical object appears in every photo of a job, so a length measured
+  // where a reference WAS in plane is a valid reference in a photo that had none — which is
+  // the only thing that makes an unreferenced shot (the part laid out on the ground, say)
+  // measurable at all. Excludes the view currently open, so a view cannot scale off itself.
+  // What actually makes a photo measurable, in the order the errors matter. Every number here
+  // is measured, not estimated — against a virtual camera with a known pose for the geometry
+  // (tests/synthetic_camera.py) and against the real pipeline for the rest. They are stated
+  // because "hold it flat" is advice nobody can act on, while "a 20 mm-thick part reads 5 mm
+  // long on a 100 mm dimension" tells someone exactly what it costs to get it wrong.
+  var CAPTURE_RULES = [
+    { t:'Put the reference ON the face you are measuring',
+      d:'This is the single biggest error, and it is free to avoid. A face raised above the ' +
+        'card is magnified by the camera: +2.6% at 10 mm up, +5.3% at 20 mm, +11.1% at 40 mm ' +
+        '(at arm’s length). It does NOT go away in a square-on photo. Rest the card on the ' +
+        'face itself and the error is zero.' },
+    { t:'Use a reference at least a fifth as long as the part',
+      d:'Scale error multiplies by how far you extrapolate. A 40 mm card on a 1.5 m running ' +
+        'board is a thirty-eighth of the span, and a pixel of error on the card becomes ' +
+        'centimetres on the board. A steel rule, a sheet of A4, a tape measure — anything ' +
+        'big and rigid beats a small card.' },
+    { t:'A rectangle beats a line',
+      d:'Four corners of something you know the size of (a sheet of paper, the marker) let ' +
+        'CamScan undo the camera angle: a length in that plane then measures within about 1% ' +
+        'out to 40° of tilt. A two-point line cannot — it scales everything uniformly, so ' +
+        'at 40° the same photo reads −22% across the part and −50% along it.' },
+    { t:'Stand back and zoom in, rather than moving in close',
+      d:'Depth error scales as height over distance, so the same 20 mm-thick part reads +8.7% ' +
+        'from 250 mm away and +3.4% from 600 mm. Just keep the reference big enough in frame ' +
+        'to be found.' },
+    { t:'Get the whole part in the frame, with background around it',
+      d:'The outline tracer needs to see where the part ends. If it runs out of frame there is ' +
+        'no edge to find, and a part photographed against something its own colour — a dark ' +
+        'part on its own shadow — needs the ✖ Not the part tap to separate them.' },
+    { t:'Shoot the same part from more than one side',
+      d:'One photo gives an outline; thickness and profile come from the second and third. ' +
+        'Measuring one dimension in two views also lets CamScan check the scales against each ' +
+        'other, which is the only way a wrong scale ever shows itself.' }
+  ];
+
+  // Collapsed by default: it is reference material, and the shot list above is the thing most
+  // visits need. Open state is remembered so someone working through it is not re-collapsed
+  // every time the panel re-renders.
+  var _guideOpen = false;
+  function captureGuide(){
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-top:9px;';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.style.cssText = 'background:none;border:0;color:#7fb0c4;font-size:12.5px;cursor:pointer;' +
+      'padding:0;text-decoration:underline;';
+    var body = document.createElement('div');
+    body.style.cssText = 'font-size:12.5px;color:#9fb2bb;line-height:1.5;margin-top:7px;' +
+      'border-left:2px solid #22303a;padding-left:10px;';
+    CAPTURE_RULES.forEach(function(r){
+      var row = document.createElement('div');
+      row.style.cssText = 'margin:0 0 8px;';
+      row.innerHTML = '<b style="color:#cfe3ea;">' + esc(r.t) + '</b><br>' + esc(r.d);
+      body.appendChild(row);
+    });
+    function reflect(){
+      btn.textContent = (_guideOpen ? '▾ ' : '▸ ') + 'What makes a photo measurable';
+      body.style.display = _guideOpen ? 'block' : 'none';
+    }
+    btn.onclick = function(){ _guideOpen = !_guideOpen; reflect(); };
+    reflect();
+    wrap.appendChild(btn); wrap.appendChild(body);
+    return wrap;
+  }
+
+  // Views reduced to what the agreement check needs: did this view get a real scale, and
+  // what did it measure? Kept separate from the DOM so the rule itself stays testable.
+  function viewsForAgreement(){
+    return job.views.map(function(v, i){
+      return { label: v.label || ('View ' + (i + 1)),
+               calibrated: !!(v.scale && v.scale.calibrated),
+               measurements: (v.measurements || []).map(function(m){
+                 return { label: m.label, mm: m.mm };
+               }) };
+    });
+  }
+
+  // Dimensions measured in more than one view that do not agree, worst first. Empty when the
+  // rule module has not loaded — script order is not guaranteed, and a missing warning is far
+  // better than a panel that will not open.
+  function scaleWarnings(){
+    var G = window.CalibGeom;
+    if(!G || typeof G.crossViewDisagreements !== 'function') return [];
+    try{ return G.crossViewDisagreements(viewsForAgreement()) || []; }catch(e){ return []; }
+  }
+
+  // One row per disagreeing dimension, naming both readings and both views, because "these
+  // disagree" is not actionable on its own — the user needs to know WHICH side to re-scale.
+  function scaleDisagreementRows(){
+    return scaleWarnings().map(function(h){
+      var bad = h.level === 'bad';
+      var el = document.createElement('div');
+      el.style.cssText = 'margin:2px 0 7px;padding:9px 11px;border-radius:9px;font-size:12.5px;line-height:1.45;' +
+        (bad ? 'background:#2b1a16;border:1px solid #6b3a2c;color:#f0b9a6;'
+             : 'background:#2a2416;border:1px solid #5d4a22;color:#e8cf9a;');
+      el.innerHTML = '<b>' + (bad ? 'Scales disagree' : 'Check these two') + '</b> — “' + esc(h.label) +
+        '” measures <b>' + h.low.mm.toFixed(1) + ' mm</b> on ' + esc(h.low.view) +
+        ' but <b>' + h.high.mm.toFixed(1) + ' mm</b> on ' + esc(h.high.view) +
+        ' (' + Math.round(h.spread * 100) + '% apart). ' +
+        (bad ? 'One of those scales is wrong — re-open the side that looks off and set its scale again.'
+             : 'Worth a look: a part with thickness reads large when the card is not on the same face.');
+      return el;
+    });
+  }
+
+  function referenceDimensions(){
+    var openIdx = currentOpenIndex();
+    var sid = currentSourceId();
+    var out = [];
+    job.views.forEach(function(v, i){
+      if(i === openIdx) return;                       // not this view
+      if(sid && v.sourceId === sid) return;           // nor the same photo under another index
+      // Only from a view that was itself properly scaled — otherwise this just launders a
+      // bad number into another photo and makes it look authoritative.
+      if(!(v.scale && v.scale.calibrated)) return;
+      (v.measurements || []).forEach(function(m){
+        if(typeof m.mm === 'number' && isFinite(m.mm) && m.mm > 0){
+          out.push({ view: v.label || ('View ' + (i + 1)), label: m.label || 'length', mm: m.mm });
+        }
+      });
+    });
+    // Longest first: a big reference extrapolates far better than a small one.
+    out.sort(function(a, b){ return b.mm - a.mm; });
+    return out;
+  }
+
   // Minimal API so the simple-mode layer can drive submission without duplicating logic.
   window.CalibJob = {
+    referenceDimensions: referenceDimensions,
+    scaleWarnings: scaleWarnings,   // dimensions that two views disagree about, worst first
     addView: addView,
     open: openPanel,
     submit: submit,          // send/hand-off the collected set (used by simple mode + tests)

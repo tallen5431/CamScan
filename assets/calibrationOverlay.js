@@ -318,6 +318,12 @@
               return this.requestDraw();
             }
 
+            // "Not the part": a tap marks background and re-traces. Checked BEFORE the
+            // auto-trace arm so the two cannot both fire on one tap.
+            if(this._bgTapArm){
+              return this.addBackgroundTap(p);
+            }
+
             // Outline auto-trace: when armed, a tap seeds server-side segmentation of the
             // part under it (instead of adding a vertex) → a full editable outline in one tap.
             if(this.opts.mode==='outline' && this._autoOutlineArm){
@@ -807,6 +813,12 @@
           if(m && m.mm_per_px) return m.mm_per_px;
           // fall through to auto if the locked marker is missing/invalid
         }
+        // An UNVERIFIED detection is "a dark square-ish thing", not "the calibration target".
+        // Applying it as a scale is how a photo containing no reference at all ends up
+        // quoting millimetres: across six real customer photos of one part, with no marker
+        // in any of them, this path produced scales spanning 6.6x. Measure in pixels and ask
+        // for a scale instead — unless the user has confirmed the object themselves.
+        if(!this._markerConfirmed && this.data.calibration_usable === false) return 0;
         // 3) Nearest marker (to `ref`) with a valid scale.
         ref = ref || [0,0];
         let best=null, bestD=1e18;
@@ -850,13 +862,29 @@
         if(!a) return null;
         const unit=Units.get(this.opts.units), ctx=this._measureCtx(a);
         const cal=this.isCalibrated();
-        if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]); const t=this._fmtLen(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]),px); return {label:'Length', text:t, copy:cal?unit.fromMM(Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1])).toFixed(3):String(Math.round(px))}; }
+        if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]);
+          const lmm=Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]);
+          const t=this._fmtLen(lmm,px);
+          // `mm` is the raw millimetre value, kept separate from the formatted text so
+          // another VIEW of the same part can reuse this dimension as its scale reference.
+          return {label:'Length', text:t, mm:(cal?lmm:null),
+                  copy:cal?unit.fromMM(lmm).toFixed(3):String(Math.round(px))}; }
         if(a.type==='polyline'){ const pts=a.pts||[]; const closed=!!a.closed && pts.length>=3;
           let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
           if(closed) px+=Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
           const mm=Measure.polyline(ctx,pts,closed);
           if(closed){
-            if(cal){ const ar=unit.areaFromMM2(Measure.polygonArea(ctx,pts)); return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
+            if(cal){ const ar=unit.areaFromMM2(Measure.polygonArea(ctx,pts));
+              // A closed outline with a depth is no longer a flat profile — it is a solid.
+              // Say so, because that is the whole description a modeller needs for an
+              // extruded part (a running board, trim, moulding, a bracket).
+              if(a.depth_mm>0){
+                const d=unit.fromMM(a.depth_mm), vol=unit.areaFromMM2(Measure.polygonArea(ctx,pts))*d;
+                return {label:'Extrusion',
+                        text:`profile ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel} · extruded ${d.toFixed(2)} ${unit.label} · vol ${vol.toFixed(1)} ${unit.areaLabel}·${unit.label}`,
+                        copy:d.toFixed(3)};
+              }
+              return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
             let pa=0; for(let i=0;i<pts.length;i++){ const q0=pts[i], q1=pts[(i+1)%pts.length]; pa+=q0[0]*q1[1]-q1[0]*q0[1]; } pa=Math.abs(pa)/2;
             return {label:'Outline', text:`peri ${Math.round(px)} px · A ${Math.round(pa)} px²`, copy:String(Math.round(px))};
           }
@@ -882,7 +910,87 @@
 
       // ---- Submission (multi-view job) capture -------------------------------------
       // Every measurement on this view, as [{label,text}], for the review + email packet.
-      getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean).map(r=>({label:r.label, text:r.text})); }
+      getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean)
+        .map(r=>{ const o={label:r.label, text:r.text}; if(r.mm>0) o.mm=r.mm; return o; }); }
+      // --- Is the scale reference big enough for what is being measured? ----------------
+      // A homography is only trustworthy near the points that fixed it. Extrapolate far
+      // outside the reference and the error explodes: measured on synthetic renders at 30 deg
+      // tilt with 1 px corner noise, a true 300 mm feature came back with an RMS error of
+      //   reference 1/5 of the measured span -> ~6 mm        (fine)
+      //   reference 1/13 of the span         -> ~23 mm       (marginal)
+      //   reference 1/25 of the span         -> metres        (nonsense)
+      // So a 40 mm calibration card against a 1.5 m running board — 1/38 — produces numbers
+      // that look plausible and are meaningless. Nothing warned about that before.
+      // The reference's extent in PIXELS, whatever supplied the scale.
+      _referenceExtentPx(){
+        if(this._refExtentPx > 0) return this._refExtentPx;
+        const m = (this.data && this.data.markers || [])[0];
+        if(m){
+          if(m.edge_px > 0) return m.edge_px;
+          const px = this._markerEdgePx && this._markerEdgePx(m);
+          if(px > 0) return px;
+        }
+        return 0;
+      }
+
+      // null when there is nothing to say; otherwise {level:'warn'|'bad', ratio, text}.
+      // The arithmetic lives in CalibGeom so it can be unit-tested without a DOM.
+      referenceSpanWarning(){
+        const v = Geom.referenceSpanVerdict(this._referenceExtentPx(),
+                                            Geom.measuredExtentPx(this.ann && this.ann.items));
+        if(!v) return null;
+        const ratio = v.ratio, bad = v.level === 'bad';
+        return {
+          level: bad ? 'bad' : 'warn',
+          ratio: ratio,
+          text: `You are measuring about ${Math.round(ratio)}x the size of your scale reference. `
+              + (bad ? 'These numbers are not trustworthy at this range. '
+                     : 'Accuracy falls off this far from the reference. ')
+              + 'Use a bigger reference that covers more of the part — with a ruler, lay out a '
+              + 'rectangle (e.g. 300 x 300 mm) and use Set scale > a rectangle you measured.'
+        };
+      }
+
+      // --- Extruded profiles -------------------------------------------------------------
+      // A traced closed outline plus one depth IS the part, for anything made by extrusion —
+      // which is most replacement trim: running boards, mouldings, sills, brackets. Without
+      // this the app can only ever describe a flat silhouette, and the modeller has to carry
+      // the depth across from a separate measurement by hand and hope it was the right one.
+      // Returns true when the depth was applied.
+      setExtrusionDepth(mm){
+        const a = this.ann.items.find(it => it.id === this.ann.selectedId);
+        if(!a || a.type !== 'polyline' || !a.closed) return false;
+        const d = Number(mm);
+        this._pushHistory();
+        if(Number.isFinite(d) && d > 0) a.depth_mm = d; else delete a.depth_mm;
+        this.requestDraw();
+        return true;
+      }
+      // The selected item when it is a closed profile that can take a depth, else null.
+      selectedProfile(){
+        const a = this.ann.items.find(it => it.id === this.ann.selectedId);
+        return (a && a.type === 'polyline' && a.closed) ? a : null;
+      }
+
+      // The user telling us the detected object really IS their calibration square. Keeps a
+      // genuine marker in poor light from being a dead end, while still refusing to assume it.
+      confirmDetectedMarker(sizeMM){
+        const mm = parseFloat(sizeMM);
+        if(!(mm > 0)) return false;
+        const m = (this.data && this.data.markers || [])[0];
+        if(!m) return false;
+        this._markerConfirmed = true;
+        this.setMarkerSizeMM(mm);          // rescales from the detected edge in pixels
+        this.updateKPI(); this.requestDraw();
+        return true;
+      }
+      // True when the server found something square but could not confirm it is the target.
+      hasUnconfirmedDetection(){
+        return !this._markerConfirmed
+            && !!(this.data && this.data.calibration_usable === false
+                  && (this.data.markers || []).length);
+      }
+
       // A plain-language description of how THIS view is scaled, so the shop can trust it.
       getScaleInfo(){
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
@@ -890,9 +998,12 @@
         if(this.opts.manualHomography) source='paper/rectangle';   // perspective flag conveys tilt-correction
         else if(this.opts.manualMmPerPx) source='manual line';
         else if(this.currentMarkerSizeMM()) source=`printed square ${this.currentMarkerSizeMM()} mm`;
+        const span=this.referenceSpanWarning();
         return { calibrated:s>0, mm_per_px:s, unit:unit.label,
                  perspective:this._perspectiveActive(), source,
-                 confidence:(this.data&&this.data.calibration_confidence)||null };
+                 confidence:(this.data&&this.data.calibration_confidence)||null,
+                 referenceSpanRatio: span ? Math.round(span.ratio*10)/10 : null,
+                 referenceSpanLevel: span ? span.level : null };
       }
       // The annotated image as a downscaled JPEG data URL (long side <= maxDim) — small
       // enough to POST several per submission, clear enough to show the measurements.
@@ -1110,10 +1221,16 @@
         // tilt correction the single line can't provide.
         this.opts.manualHomography = null; this._manualRef = null;
         this.opts.manualMmPerPx = knownMM/pixelLength;
+        this._refExtentPx = pixelLength;        // for the too-small-reference check
         this._rescaleAnnotations();
         this.requestDraw();
       }
-      clearManualScale(){ this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null; this._rescaleAnnotations(); this.requestDraw(); }
+      clearManualScale(){
+        this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null;
+        // The raised-plane homography was derived from the calibration that just went away.
+        this._planeH = null; this._featureHeightMM = 0;
+        this._rescaleAnnotations(); this.requestDraw();
+      }
       currentMarkerSizeMM(){ return (this.data && this.data.marker_size_mm) || null; }
 
       // Commit the in-progress path/outline. An open path needs >=2 points; a closed
@@ -1155,6 +1272,36 @@
       }
 
       // Arm the next tap (in Outline mode) to auto-trace the part it lands on.
+      // "That bit isn't the part." One tap on something wrongly included — almost always a
+      // shadow — and the trace runs again as GrabCut with that as background. This is the
+      // only thing that fixes a dark part lying next to its own shadow: the two differ by
+      // about 15 grey levels, so no threshold can separate them, and the plain trace swallows
+      // the shadow whole (measured: 100% of the frame on a real customer photo, 37% once a
+      // background tap was supplied).
+      armBackgroundTap(){
+        if(!Array.isArray(this._lastAutoSeed)){
+          this._toast('Trace the part first, then mark what it got wrong.', {autoMs:3000});
+          return;
+        }
+        this._bgTapArm = true;
+        if(this._armToast) this._armToast.dismiss();
+        this._armToast = this._toast('Tap something that is NOT the part (its shadow, the ground).',
+                                     {autoMs:6000});
+        this.requestDraw();
+      }
+      // Record a background tap and immediately re-trace with it.
+      addBackgroundTap(pt){
+        if(!Array.isArray(pt)) return;
+        this._bgTapArm = false;
+        if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        this._bgTaps = (this._bgTaps||[]).concat([[pt[0], pt[1]]]);
+        // The seed itself is the strongest "this IS the part" evidence we have.
+        this._fgTaps = Array.isArray(this._lastAutoSeed) ? [this._lastAutoSeed.slice()] : [];
+        this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, true);
+      }
+      backgroundTapCount(){ return (this._bgTaps||[]).length; }
+      clearBackgroundTaps(){ this._bgTaps=[]; this._fgTaps=[]; }
+
       armAutoOutline(){
         if(this.opts.mode!=='outline') this.setMode('outline');
         this.selectedPoints=[]; this.hover=null;
@@ -1172,6 +1319,8 @@
       autoOutline(seed){
         if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
         if(!this.img){ return; }
+        // A new seed means a new object: the old "not the part" taps described the old one.
+        this.clearBackgroundTaps();
         this._lastAutoSeed = Array.isArray(seed) ? seed.slice() : null;
         // An Area box around the part becomes the trace's region-of-interest: the server builds
         // a clean LOCAL background model inside it and ignores everything outside, so distant
@@ -1231,6 +1380,9 @@
           });
         }catch(e){}
         const seedSent = seed ? [seed[0]*sentScale, seed[1]*sentScale] : null;
+        // Hints travel in the SAME sent-image coords as the seed and the ROI; a tap left in
+        // full-resolution coords would land somewhere else entirely on the posted image.
+        const sent = p => [p[0]*sentScale, p[1]*sentScale];
         // Carry the Area box (if any) as the ROI, in the SAME sent-image coords as the seed.
         let roiSent=null;
         if(Array.isArray(this._lastAutoRoi) && this._lastAutoRoi.length===4){
@@ -1240,7 +1392,8 @@
 
         const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent }) })
+            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent,
+                                  fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) }) })
           .then(r=>r.json())
           .then(function(j){
             if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){
@@ -1280,9 +1433,13 @@
               setTimeout(toast.dismiss, isRetrace ? 1400 : 2800);
               self._showTraceDetail(nPts, nHoles);
             }else{
-              toast.update(isRetrace ? 'Re-trace found nothing — try a different detail level.'
-                                     : 'No part found there — tap right on the part, or trace it by hand.', 'err');
-              setTimeout(toast.dismiss, 3400);
+              // The server says WHY when it can be specific (a trace covering the whole frame
+              // means the tap had no edge to find); fall back to the generic advice otherwise.
+              const why = (j && typeof j.hint === 'string' && j.hint) ? j.hint
+                        : (isRetrace ? 'Re-trace found nothing — try a different detail level.'
+                                     : 'No part found there — tap right on the part, or trace it by hand.');
+              toast.update(why, 'err');
+              setTimeout(toast.dismiss, (j && j.hint) ? 6000 : 3400);
             }
           })
           .catch(function(){ toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
@@ -1388,6 +1545,31 @@
           b.onclick=()=>finishMM(p.mm);
           presets.appendChild(b);
         }
+        // THE SAME PART appears in every photo of a job, so a length measured in a view
+        // that HAD a usable reference is a valid reference in a view that did not. That is
+        // what rescues a set like "ruler in one shot, none in the others": measure the part's
+        // width where the ruler lies in its plane, then reuse that width to scale every other
+        // angle. Without this, a photo with no reference simply cannot be measured at all.
+        try{
+          const J=window.CalibJob;
+          const dims=(J && J.referenceDimensions) ? J.referenceDimensions() : [];
+          if(dims.length){
+            const head=document.createElement('span');
+            head.textContent='…or a dimension you already measured on this part:';
+            head.style.cssText='flex:1 1 100%;font-size:12px;color:#9aa;margin-top:6px;';
+            presets.appendChild(head);
+            for(const dmn of dims.slice(0,6)){
+              const b=document.createElement('button'); b.type='button';
+              b.textContent=`📏 ${dmn.view}: ${dmn.label} · ${dmn.mm.toFixed(1)} mm`;
+              b.title=`Reuse ${dmn.mm.toFixed(2)} mm, measured on "${dmn.view}"`;
+              b.style.cssText='min-height:40px;padding:6px 11px;background:#151a1f;color:#cfe6ee;'
+                + 'border:1px solid #29414c;border-radius:8px;font-size:13px;cursor:pointer;';
+              b.onclick=()=>finishMM(dmn.mm);
+              presets.appendChild(b);
+            }
+          }
+        }catch(e){ /* the job layer is optional; presets above still work */ }
+
         box.append(lab,inp,us,ok,cancel,presets); document.body.appendChild(box);
         // Anchor ABOVE the drawn line (never below): the soft keyboard opens from the
         // bottom, so a box placed under the finger/midpoint gets covered on phones. Fall
@@ -1419,7 +1601,84 @@
       _dataForMeasure(){
         if(this.opts.manualHomography)
           return Object.assign({}, this.data, { homography:this.opts.manualHomography, marker_size_mm:1 });
+        // Measuring a face that is NOT in the card's plane? Swap in the homography for that
+        // raised plane. Everything downstream (lengths, areas, rectangles, angles, 3-point
+        // circles) already reads its geometry from here, so one substitution corrects them
+        // all. Without it a face h mm above the card reads d/(d-h) too large — +5.3% for a
+        // part only 20 mm thick at arm's length, and that error is there just as much in a
+        // perfectly square-on shot as in a tilted one.
+        if(this._planeH) return Object.assign({}, this.data, { homography:this._planeH });
         return this.data;
+      }
+
+      // --- Measuring off the card's plane -------------------------------------------------
+      // Height in mm of the face being measured ABOVE the card (a part's top face is
+      // positive; a recess is negative). 0 means measure in the card's own plane.
+      featureHeightMM(){ return this._featureHeightMM || 0; }
+
+      // How wrong an UNCORRECTED measurement of a face `h` mm off the card's plane would be,
+      // as a percentage, or null when the working distance is unknown. Taken from the
+      // server's camera block so this readout and the correction cannot disagree.
+      parallaxPctFor(h){
+        const cam = this.data && this.data.camera;
+        if(!cam || !cam.distance_mm || !h) return null;
+        // 100h/(d-h), NOT parallax_pct_per_mm * h. The error is a hyperbola, not a line, so
+        // scaling the per-millimetre figure understates it — by 1.1 points at h=40 mm and
+        // 400 mm, and 2.8 points at h=40 mm and 257 mm (a tilted, close-in shot), always in
+        // the direction of looking better than it is. camera.distance_mm is already the
+        // perpendicular distance to the card's plane, which is the d this needs.
+        const d = cam.distance_mm;
+        if(!(d > 0) || h >= d / 3) return null;   // past a third of the way to the lens, meaningless
+        return 100 * h / (d - h);
+      }
+
+      // A plain sentence for the customer, or null when there is nothing worth saying.
+      parallaxAdvice(h){
+        const pct = this.parallaxPctFor(h);
+        if(pct == null || Math.abs(pct) < 0.5) return null;
+        const cam = this.data.camera || {};
+        const hedge = cam.focal_source === 'exif' ? '' : ' (estimated \u2014 this photo carries no lens data)';
+        return 'A face ' + h + ' mm off the card reads about ' + pct.toFixed(0) + '% ' +
+               (pct > 0 ? 'large' : 'small') + hedge +
+               '. Resting the card on that face and re-shooting is exact; correcting here is an estimate.';
+      }
+
+      // Ask the server for the homography of the plane `h` mm above the card, and measure
+      // there instead. Resolves true when the correction is active.
+      async setFeatureHeight(h){
+        const mm = Number(h) || 0;
+        this._featureHeightMM = mm;
+        if(!mm){ this._planeH = null; this.updateKPI(); this.requestDraw(); return true; }
+        // Only the auto marker homography can be lifted: a manual paper rectangle carries no
+        // camera geometry, and a manual line scale is uniform by nature.
+        if(this.opts.manualHomography || this.opts.manualMmPerPx || !this.data || !this.data.homography){
+          this._featureHeightMM = 0; this._planeH = null; this.updateKPI(); this.requestDraw(); return false;
+        }
+        const cam = this.data.camera || {};
+        const sz = this.data.image_size || {};
+        const m0 = (this.data.markers || [])[0] || {};
+        try{
+          const r = await fetch(Xport._apiUrl('api/plane'), {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ homography:this.data.homography, marker_size_mm:this.data.marker_size_mm,
+                                   focal_px:cam.focal_px, edge_px:m0.edge_px,
+                                   image_size:{ width:sz.width||this.img.naturalWidth||this.img.width,
+                                                height:sz.height||this.img.naturalHeight||this.img.height },
+                                   height_mm:mm })
+          });
+          const j = await r.json();
+          if(!r.ok || !j.ok || !j.homography){ this._featureHeightMM = 0; this._planeH = null; return false; }
+          this._planeH = j.homography;
+          // Deliberately NOT calling _rescaleAnnotations(): the per-annotation frozen
+          // mm_per_px comes from the marker and is unchanged by which plane we measure in.
+          // It is only the fallback for paths with no homography (a 2-point circle), and
+          // those stay in the card's plane — as they already do under tilt.
+          this.updateKPI(); this.requestDraw();
+          return true;
+        }catch(e){
+          this._featureHeightMM = 0; this._planeH = null; this.updateKPI(); this.requestDraw();
+          return false;
+        }
       }
       // Whether the perspective homography should rectify measurements right now. A manual
       // paper rectangle carries its own homography (use it); a manual LINE scale is uniform
@@ -1429,8 +1688,12 @@
       // Set a perspective-corrected scale from a paper rectangle's 4 corners. H maps image
       // px -> plane mm; mmPerPx is a representative uniform scale kept for circles (which
       // aren't rectified), the KPI readout, and the fallback path. ref describes the sheet.
-      setManualRectScale(H, mmPerPx, ref){
+      setManualRectScale(H, mmPerPx, ref, extentPx){
         if(!H) return;
+        this._refExtentPx = extentPx || null;   // for the too-small-reference check
+        // A manual paper rectangle carries no camera geometry, so a raised plane derived
+        // from the marker's homography no longer applies.
+        this._planeH = null; this._featureHeightMM = 0;
         this._markerSizeFromMemory=false;
         this.opts.manualHomography=H;
         if(mmPerPx>0) this.opts.manualMmPerPx=mmPerPx;   // wins over any detected marker
@@ -1455,7 +1718,12 @@
         const Hm=Geom.solveHomography(ordered, dst); if(!Hm) return false;
         const areaPx=Geom.quadAreaPx(ordered);
         const mmPerPx = areaPx>0 ? Math.sqrt((wmm*hmm)/areaPx) : 0;
-        this.setManualRectScale(Hm, mmPerPx, { w:long, h:short });
+        // Longest diagonal: how far the 4 corners actually brace the fit, which is what
+        // decides how far it can be trusted away from them.
+        let extentPx=0;
+        for(let i=0;i<4;i++) for(let j=i+1;j<4;j++)
+          extentPx=Math.max(extentPx, Math.hypot(ordered[j][0]-ordered[i][0], ordered[j][1]-ordered[i][1]));
+        this.setManualRectScale(Hm, mmPerPx, { w:long, h:short }, extentPx);
         return true;
       }
 
@@ -1475,7 +1743,10 @@
         const box=document.createElement('div'); box.id='cal-rect-input';
         box.style.cssText='position:fixed;z-index:41;left:50%;top:14%;transform:translateX(-50%);background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.6);max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
         const title=document.createElement('div'); title.textContent='What did you outline?'; title.style.cssText='font-weight:700;margin-bottom:4px;';
-        const sub=document.createElement('div'); sub.textContent='Tilt is corrected from the 4 corners, so an angled photo still measures true.'; sub.style.cssText='font-size:12px;color:#9aa;margin-bottom:10px;max-width:36ch;';
+        const sub=document.createElement('div');
+        sub.textContent='Any rectangle whose size you know — including one you laid out with a ruler. '
+          + 'Tilt is corrected from the 4 corners, so an angled photo still measures true.';
+        sub.style.cssText='font-size:12px;color:#9aa;margin-bottom:10px;max-width:36ch;';
         const row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
         const mkBtn=(label,cls,fn)=>{ const b=document.createElement('button'); b.type='button'; b.textContent=label;
           b.style.cssText='min-height:44px;padding:8px 14px;border-radius:8px;font-size:14px;cursor:pointer;'+(cls==='primary'
@@ -1483,6 +1754,13 @@
             :'background:#151515;color:#cde;border:1px solid #2a3540;'); b.onclick=fn; return b; };
         row.appendChild(mkBtn('A4 · 210×297', '', ()=>{ if(applyWH(210,297)) box.remove(); }));
         row.appendChild(mkBtn('US Letter · 216×279', '', ()=>{ if(applyWH(215.9,279.4)) box.remove(); }));
+        // Ruler-laid squares. For anything bigger than a sheet of paper these are the only
+        // reference most customers already own, and a 4-corner rectangle is the ONLY way a
+        // ruler buys tilt correction: a single line gives a uniform scale (no perspective at
+        // all), and even an L of two lines is just an affine fit, which measured no better
+        // than the single line. Four corners is what makes the difference.
+        row.appendChild(mkBtn('Ruler square · 300×300', '', ()=>{ if(applyWH(300,300)) box.remove(); }));
+        row.appendChild(mkBtn('Ruler square · 12×12 in', '', ()=>{ if(applyWH(304.8,304.8)) box.remove(); }));
         const custom=document.createElement('div'); custom.style.cssText='display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;';
         row.appendChild(mkBtn('Custom…', '', ()=>{ custom.style.display = custom.style.display==='none' ? 'flex' : 'none';
           if(custom.style.display==='flex') setTimeout(()=>wIn.focus(),0); }));
@@ -1729,6 +2007,25 @@
           const unitPerPx=unit.fromMM(s);
           specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
                                     : `Scale ${unitPerPx.toFixed(6)} ${unit.label}/px`});
+          // WHICH PLANE we are measuring in changes every number on screen, so it is never
+          // hidden — not even on a narrow phone. Silence here would mean a raised face and
+          // the card's own plane looked identical while reading several percent apart.
+          const fh = this.featureHeightMM();
+          if(fh) specs.push({text:`⬆ measuring ${fh} mm above the card`, cls:'cal-chip--lead'});
+          // A scale from a single drawn line (a ruler, a card edge) is UNIFORM: it is right
+          // along the line, at the line's distance, and degrades everywhere else. Measured on
+          // synthetic renders at 40 deg of tilt, a true 300 mm length read 232 mm measured
+          // across the line and 150 mm further down the part. The absence of the
+          // "perspective-corrected" chip was the only hint, and that chip is hidden on a
+          // phone anyway — so say it outright, at every width.
+          if(this.opts.manualMmPerPx && !this.opts.manualHomography)
+            specs.push({text:'↔ uniform scale — not tilt-corrected', cls:'cal-chip--warn'});
+          // Measuring far outside the reference is a correctness problem, not a nicety, so
+          // it shows at every width — a 40 mm card on a 1.5 m part reads plausibly and is
+          // meaningless, and nothing else on screen would hint at that.
+          const rs = this.referenceSpanWarning();
+          if(rs) specs.push({text:`${rs.level==='bad'?'⛔':'⚠️'} reference is ${Math.round(rs.ratio)}× too small for this span`,
+                             cls:'cal-chip--warn'});
           // Remembered-size flag shows on EVERY width (including phones) — a stale value
           // silently rescaling an unrelated photo is a correctness footgun, so never hide it.
           if(remembered) specs.push({text:`⚠️ saved ${this.currentMarkerSizeMM()} mm sq — tap 📐 to verify`, cls:'cal-chip--warn'});
@@ -1807,6 +2104,40 @@
       }
       saveCSV(){ if(!this._confirmUncalibrated()) return; Xport.exportCSV(this._dataForMeasure(), this._exportStore(), this.opts.units, this.getScale(), this._allowHomography()); }
       saveDXF(){ if(!this._confirmUncalibrated()) return; return Xport.exportDXF(this._dataForMeasure(), this._exportStore(), { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:this._allowHomography() }); }
+      // A watertight solid, ready to slice. Every other export here is flat, so for an
+      // extruded part this is the one that finishes the job instead of handing the shop a
+      // drawing to re-draw. Needs a closed outline carrying a depth; any other closed
+      // outline inside it (a bolt hole, a clip slot — the auto-trace already emits these)
+      // becomes a through-hole.
+      async saveSTL(){
+        if(!this._confirmUncalibrated()) return false;
+        const req = Xport._buildDXFRequest(this._dataForMeasure(), this._exportStore(),
+                      { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0,
+                        allowHomography:this._allowHomography() });
+        const hasProfile = (req.geometry||[]).some(g => g.type==='polyline' && g.closed && g.depth_mm>0);
+        if(!hasProfile){
+          alert('No extrudable profile yet.\n\nTrace a closed outline around the part, select it, '
+              + 'then use ⇥ Depth to say how far the shape runs. That outline plus the depth is '
+              + 'the solid.');
+          return false;
+        }
+        try{
+          const r = await fetch(Xport._apiUrl('api/export/stl'), {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ geometry:req.geometry, mm_per_px:req.mm_per_px,
+                                   image_height:req.image_height })});
+          if(!r.ok){ alert('3D export failed: ' + (await r.text())); return false; }
+          const blob = await r.blob();
+          const a=document.createElement('a'); a.download='part.stl';
+          a.href=URL.createObjectURL(blob); a.click();
+          setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+          const n=r.headers.get('X-CamScan-Triangles'), v=r.headers.get('X-CamScan-Volume-MM3');
+          if(n && v) this._toast(`STL saved — ${n} triangles, ${(Number(v)/1000).toFixed(1)} cm³`,
+                                 {autoMs:3200});
+          return true;
+        }catch(e){ alert('3D export needs the server. ('+e.message+')'); return false; }
+      }
+
       saveSVG(){ if(!this._confirmUncalibrated()) return; return Xport.exportSVG(this._dataForMeasure(), this._exportStore(), { mm_per_px:this.getScale()||this.data?.mm_per_px||0, allowHomography:this._allowHomography() }); }
     }
 

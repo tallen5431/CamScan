@@ -17,6 +17,7 @@ curvature is high and saved on straight runs — so curves read smooth, sharp co
 aren't chorded across, and the result stays light enough to edit by hand.
 """
 from typing import List, Optional, Sequence, Tuple
+import math
 
 import cv2
 import numpy as np
@@ -85,6 +86,8 @@ def auto_outline_full(
     min_hole_frac: float = 0.004,
     roi: Optional[Sequence[float]] = None,
     edge_snap: bool = True,
+    fg_points: Optional[Sequence[Sequence[float]]] = None,
+    bg_points: Optional[Sequence[Sequence[float]]] = None,
 ) -> Optional[dict]:
     """Segment the tapped part and return both its outer boundary AND its interior holes:
 
@@ -97,11 +100,28 @@ def auto_outline_full(
     A wrench's OPEN jaw is not a hole (it opens to the exterior) so it stays part of `outer`.
     Returns None if nothing could be segmented.
 
+    fg_points / bg_points : taps saying "this IS the part" and "this is NOT". Supplying any
+          background point switches segmentation to GrabCut, which models both sides as
+          colour distributions instead of drawing one threshold. This is the only thing that
+          separates a part from something the SAME COLOUR beside it — above all a dark part
+          lying next to its own shadow, where the two differ by ~15 grey levels and the
+          colour-distance split traces the shadow instead of the part.
+
     roi : (x, y, w, h) region-of-interest (the user's Area box) — see auto_outline. Restricts
           segmentation to that region plus a background collar; results stay in image coords.
     """
     crop, seed2, excl2, ox, oy = _crop_to_roi(img_bgr, seed, exclude_boxes, roi)
-    seg = _segment(crop, seed2, excl2, downscale_to)
+    # Hints are in full-image coords like everything else the caller passes; shift them into
+    # the crop's frame so they still land on what the user pointed at.
+    def _shift(pts):
+        out = []
+        for p in (pts or ()):
+            try:
+                out.append([float(p[0]) - ox, float(p[1]) - oy])
+            except (TypeError, ValueError, IndexError):
+                continue
+        return out
+    seg = _segment(crop, seed2, excl2, downscale_to, _shift(fg_points), _shift(bg_points))
     if seg is None:
         return None
     mask, scale, sh, sw, grad = seg
@@ -112,7 +132,93 @@ def auto_outline_full(
     if ox or oy:
         outer = [[x + ox, y + oy] for (x, y) in outer]
         holes = [_offset_hole(h, ox, oy) for h in holes]
-    return {"outer": outer, "holes": holes}
+    H, W = img_bgr.shape[:2]
+    cov, border = trace_extent(outer, W, H)
+    return {"outer": outer, "holes": holes, "coverage": cov, "border": border,
+            "runaway": is_runaway_trace(cov, border)}
+
+
+# ---------------------------------------------------------------------------------------
+# Runaway guard
+# ---------------------------------------------------------------------------------------
+# Tapping a featureless patch — sky, a plain wall, an out-of-focus area, bare concrete —
+# gives the segmenter nothing to find an edge against, and it returns the image rectangle.
+# The caller then presents that to the user as "your part's outline", and it can be measured
+# and exported like any other trace. Catching it needs a signal that is certain rather than
+# merely suspicious, because a false alarm blocks a real trace.
+#
+# Measured through auto_outline_full over the six customer photos, synthetic parts and
+# featureless frames, THROUGH A JPEG ROUND-TRIP — the client posts quality-85 JPEG, and
+# compression moves these numbers enough to matter (one dead frame read 82% border raw and
+# 64% after JPEG, which a threshold set on raw arrays would have missed):
+#
+#                                                 coverage        border
+#     flat tone / out-of-focus (nothing there)    98.9-99.2%    88.1-99.2%
+#     legitimate close-up, part fills the frame        93.2%          0.0%
+#     real customer photos, plain centre tap       1.8-53.3%     0.0-19.3%
+#
+# Border does the separating — 41 points clear of the worst legitimate reading — and coverage
+# is the sanity bar that keeps a merely edge-hugging trace from tripping it. Both are
+# required: coverage alone fires on the 93% close-up.
+#
+# Border is measured by SAMPLING along the perimeter, not by testing segment endpoints. The
+# endpoint test is brittle in exactly the case that matters: one vertex drifting a few pixels
+# inward discards that whole segment, and on the same dead frames it swung 66.8-91.6% where
+# sampling gave a steady 88.1-99.2%.
+_RUNAWAY_COVERAGE = 0.90
+_RUNAWAY_BORDER = 0.60
+_BORDER_SAMPLES = 4000          # bounds the work on a long perimeter; ~2px steps at 1080p
+
+
+def trace_extent(pts, frame_w, frame_h):
+    """(coverage, border) for a traced outline: its area as a fraction of the frame, and the
+    fraction of its PERIMETER LENGTH running along the frame's edge. Pure — no image, no
+    OpenCV, so the rule can be tested directly."""
+    n = len(pts or ())
+    if n < 3 or frame_w <= 0 or frame_h <= 0:
+        return 0.0, 0.0
+    area = perim = 0.0
+    for i in range(n):
+        (x0, y0), (x1, y1) = pts[i][:2], pts[(i + 1) % n][:2]
+        area += x0 * y1 - x1 * y0
+        perim += math.hypot(x1 - x0, y1 - y0)
+    coverage = abs(area) * 0.5 / float(frame_w * frame_h)
+    if perim <= 0:
+        return coverage, 0.0
+
+    tol = max(2.0, 0.004 * min(frame_w, frame_h))
+    step = max(1.0, perim / _BORDER_SAMPLES)
+
+    def _on_edge(x, y):
+        return (x <= tol or y <= tol
+                or x >= frame_w - 1 - tol or y >= frame_h - 1 - tol)
+
+    total = on = 0.0
+    for i in range(n):
+        (px, py), (qx, qy) = pts[i][:2], pts[(i + 1) % n][:2]
+        seg_len = math.hypot(qx - px, qy - py)
+        if seg_len <= 0:
+            continue
+        k = max(1, int(seg_len / step))
+        piece = seg_len / k
+        for j in range(k):
+            t = (j + 0.5) / k                      # midpoint of each piece
+            total += piece
+            if _on_edge(px + (qx - px) * t, py + (qy - py) * t):
+                on += piece
+    return coverage, (on / total if total > 0 else 0.0)
+
+
+def is_runaway_trace(coverage, border):
+    """True when the trace is the frame itself rather than an outline of anything.
+
+    This deliberately catches only the certain case. A trace that merely looks too big is
+    left alone: a false alarm blocks a real outline, and the user looking at the overlay
+    judges 'is that my part?' far better than any threshold here can. In particular a trace
+    that runs away INSIDE an Area box is not caught — it covers only the box, so coverage
+    stays low — and that is accepted rather than guessed at.
+    """
+    return coverage >= _RUNAWAY_COVERAGE and border >= _RUNAWAY_BORDER
 
 
 def _crop_to_roi(img_bgr, seed, exclude_boxes, roi, margin_frac=0.08, min_margin=10):
@@ -165,7 +271,61 @@ def _offset_hole(h, ox, oy):
     return h
 
 
-def _segment(img_bgr, seed, exclude_boxes, downscale_to):
+def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4):
+    """Foreground binary from user hints, via GrabCut.
+
+    The Otsu split below separates the part from the BACKGROUND by colour distance. That
+    fails completely when the part and the thing beside it are the same colour — which is
+    the normal case for a dark part photographed in sunlight, because its own shadow is the
+    same brightness as it is. Measured on a real customer photo of a black running board on
+    concrete: part 71.4 mean grey, its shadow 56.7, bare concrete 169.3. The part and the
+    shadow differ by 15 levels while the shadow and the concrete differ by 113, so no
+    threshold can draw the line and the trace runs away into the shadow.
+
+    Two taps fix what no threshold can: the user says "this is the part" and "this is not".
+    GrabCut then models both as colour distributions rather than a single cut.
+    """
+    gc = np.full((sh, sw), cv2.GC_PR_BGD, np.uint8)
+    r = max(6, int(round(0.022 * min(sh, sw))))          # brush radius, resolution-independent
+
+    def _paint(pts, value, rad):
+        n = 0
+        for p in (pts or ()):
+            try:
+                x, y = float(p[0]) * scale, float(p[1]) * scale
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            if 0 <= x < sw and 0 <= y < sh:
+                cv2.circle(gc, (int(x), int(y)), rad, value, -1)
+                n += 1
+        return n
+
+    # A generous probable-foreground halo round the taps keeps GrabCut from starving: seeded
+    # with nothing but certain-FG discs in a sea of probable-background it tends to collapse.
+    _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_PR_FGD, r * 4)
+    n_fg = _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_FGD, r)
+    n_bg = _paint(bg_pts, cv2.GC_BGD, r)
+    if n_fg == 0 or n_bg == 0:
+        return None                                       # needs both sides to be worth running
+
+    try:
+        bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+        cv2.grabCut(small, gc, None, bgd, fgd, int(iters), cv2.GC_INIT_WITH_MASK)
+    except cv2.error:
+        return None
+    fg = np.where((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    if not fg.any():
+        return None
+    # Same tidy-up the threshold path gets, so downstream sees a comparable mask.
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k)
+    return fg
+
+
+def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_points=None):
     """Segment the tapped part. Returns (mask, scale, sh, sw, grad) at the downscaled
     resolution, or None. `mask` is the filled part (255) with interior holes preserved as 0, so
     callers can read both its outer boundary and its holes; `grad` is the image gradient
@@ -195,6 +355,15 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     # on the part side and the outline bulges into it.
     _, fg = cv2.threshold(dist_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
+    # When the user has pointed at the background, trust that over the colour-distance split:
+    # it is the only thing that can separate a part from something the same colour as it.
+    used_grabcut = False
+    if bg_points:
+        gc_fg = _grabcut_mask(small, seed, fg_points, bg_points, scale, sw, sh)
+        if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:
+            fg = gc_fg
+            used_grabcut = True
+
     mask = _component(fg, exclude_boxes, scale, sw, sh, seed)
     if mask is None:
         return None
@@ -208,9 +377,13 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to):
     # bulk of the tapped object. So a dark, low-contrast part whose own body reads shadow-like
     # (chrome reflections, a matte-dark part) is never eaten: its refined mask either collapses
     # or fails the edge test, and the plain mask stands.
-    refined = _shadow_refine(dist_u8, fg, grad, exclude_boxes, scale, sw, sh, seed, mask)
-    if refined is not None:
-        mask = refined
+    # Shadow refinement is a guess about which side of a colour split the shadow fell on.
+    # When the user has TOLD us where the background is, that guess can only do harm, so it
+    # is skipped — GrabCut already used better information.
+    if not used_grabcut:
+        refined = _shadow_refine(dist_u8, fg, grad, exclude_boxes, scale, sw, sh, seed, mask)
+        if refined is not None:
+            mask = refined
 
     return mask, scale, sh, sw, grad
 

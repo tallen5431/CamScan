@@ -50,6 +50,102 @@ No square detected? Use the "Set Scale" tool (📐): draw a line across anything
 known length and type in that length — CamScan calibrates from it.
 
 --------------------------------------------------------------------------------
+3D MODEL FOR PRINTING (STL)
+--------------------------------------------------------------------------------
+Most replacement trim is an EXTRUSION — a running board, a moulding, a sill, a
+bracket, a gasket, a spacer. For those, one traced cross-section plus one depth is
+the whole part, so CamScan can finish the job rather than hand you a drawing to
+re-draw in CAD.
+
+  1) Trace a CLOSED outline around the part (the Path/Outline tool, or ✨ Auto-trace).
+     Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
+     and they become real through-holes in the solid.
+  2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
+  3) Download menu → "Save STL (3D print)".
+
+The result is a watertight mesh: every edge closed, normals facing out, volume equal
+to the profile area times the depth. Those are checked, not assumed — if a closed
+solid cannot be built the export refuses and says why, because a slicer either
+rejects a leaky mesh or, worse, prints it wrong without telling you.
+
+What this does NOT do: it sweeps one profile along a straight line. A part that
+tapers, twists, or has a different shape at each end (end caps, for instance) needs
+those modelled separately. Measure them from a second view and add them in CAD.
+
+--------------------------------------------------------------------------------
+ACCURACY — WHERE THE ERROR ACTUALLY COMES FROM
+--------------------------------------------------------------------------------
+The single biggest error in CamScan is not camera angle. It is measuring a face that
+is not in the SAME PLANE as the card.
+
+The calibration square gives a perspective correction for the card's own plane. Any
+feature above that plane — the top face of a part with thickness — is magnified by
+the camera, and reads too LARGE. Measured against a virtual camera with a known pose
+(tests/synthetic_camera.py), at a typical 400 mm working distance:
+
+    face height above the card :    0 mm    5 mm   10 mm   20 mm   40 mm
+    measurement reads          :   0.0%   +1.3%   +2.6%   +5.3%  +11.1%
+
+Two things worth knowing about that:
+
+  * It does NOT go away in a perfectly square-on photo. The same +11.1% is there
+    whether you shoot straight down or at 30 degrees.
+  * Camera tilt, by contrast, is already handled well: a length lying IN the card's
+    plane measures within about 1% out to 40 degrees of tilt.
+
+THE FIX (free, and exact): rest the card ON the face you are measuring, so the card
+and the feature are in the same plane. For a part 20 mm thick, that is the difference
+between a 5 mm error on a 100 mm dimension and no error at all.
+
+If the photo is already taken, open "Set Scale" (📐) → "Measuring a raised face?" and
+enter how far above the card the face sits. CamScan re-derives the calibration for
+that plane. This is a correction, not a measurement — it is most accurate when the
+photo carries lens data (EXIF), and is an estimate otherwise; the panel says which.
+
+Also worth doing: shoot from further back. The error scales as height/distance, so a
+20 mm-thick part reads +8.7% at 250 mm and +3.4% at 600 mm. Just keep the card large
+enough in frame to be detected.
+
+--------------------------------------------------------------------------------
+SHOOTING A PART CAMSCAN CAN ACTUALLY MEASURE
+--------------------------------------------------------------------------------
+Worth sending to whoever is holding the camera. The same list is in the app, under
+"Suggested shots" -> "What makes a photo measurable". Every number below is measured
+(see ACCURACY above and tests/smoke_test.py), not a rule of thumb.
+
+ 1. PUT THE REFERENCE ON THE FACE YOU ARE MEASURING.
+    The biggest error, and free to avoid. A face raised above the card is magnified:
+    +2.6% at 10 mm up, +5.3% at 20 mm, +11.1% at 40 mm. It does NOT go away in a
+    square-on photo. Rest the card on that face and the error is zero.
+
+ 2. USE A REFERENCE AT LEAST A FIFTH AS LONG AS THE PART.
+    Error multiplies by how far you extrapolate. A 40 mm card on a 1.5 m running board
+    is 1/38th of the span, so a pixel of error on the card becomes centimetres on the
+    board. A steel rule, a sheet of A4, a tape measure — anything big and rigid.
+
+ 3. A RECTANGLE BEATS A LINE.
+    Four corners of something of known size let CamScan undo the camera angle: a length
+    in that plane then measures within about 1% out to 40 degrees of tilt. A two-point
+    line cannot — it scales uniformly, so at 40 degrees the same photo reads -22% across
+    the part and -50% along it.
+
+ 4. STAND BACK AND ZOOM IN, RATHER THAN MOVING IN CLOSE.
+    Depth error scales as height/distance: a 20 mm-thick part reads +8.7% at 250 mm and
+    +3.4% at 600 mm. Just keep the reference big enough in frame to be found.
+
+ 5. GET THE WHOLE PART IN FRAME, WITH BACKGROUND AROUND IT.
+    The tracer needs to see where the part ends. A part photographed against something
+    its own colour — a dark part lying on its own shadow — needs the "✖ Not the part"
+    tap to separate the two; no brightness threshold can (measured on a real photo: part
+    71 grey, its shadow 57, the concrete 169).
+
+ 6. SHOOT THE SAME PART FROM MORE THAN ONE SIDE.
+    One photo gives an outline; thickness and profile come from the second and third.
+    Measuring one dimension in two views also lets CamScan check the scales against each
+    other — the only way a wrong scale ever shows itself. When two views disagree about a
+    dimension by more than 10%, the job panel says so.
+
+--------------------------------------------------------------------------------
 MEASURING
 --------------------------------------------------------------------------------
 Tools (toolbar):

@@ -304,6 +304,14 @@ class ImageTooLarge(Exception):
 
 
 def _decode_b64_image(contents: str):
+    """Returns (decoded_bgr_image, original_file_bytes).
+
+    The RAW bytes come back too because they still carry EXIF, and cv2.imdecode drops it.
+    The camera's focal length is the one thing that turns the marker's plane into a usable
+    3D reference — it buys the working distance, and with it the size of the out-of-plane
+    error that dominates this app's accuracy (see camera_geometry). We re-encode to JPEG
+    before saving, so this is the only point at which EXIF still exists.
+    """
     header, b64data = contents.split(",", 1)
     img_bytes = base64.b64decode(b64data)
     np_arr = np.frombuffer(img_bytes, np.uint8)
@@ -316,7 +324,7 @@ def _decode_b64_image(contents: str):
         h, w = img.shape[:2]
         if w * h > MAX_IMAGE_PIXELS:
             raise ImageTooLarge(f"{w}x{h} = {w * h:,}px exceeds cap {MAX_IMAGE_PIXELS:,}")
-    return img
+    return img, img_bytes
 
 
 # The landing card (which hosts #status) is tucked off-screen once a photo loads, so anything
@@ -386,6 +394,22 @@ _UPLOADER_TUCKED = {"position": "fixed", "left": "-9999px", "top": "0",
                     "width": "1px", "height": "1px", "overflow": "hidden", "opacity": "0"}
 
 
+_BANNER_NOTICE = dict(_BANNER_SHOWN,
+                      background="#2a2416", border="1px solid #6b5a2b", color="#ffe9b8")
+
+
+def _upload_notice(status, viewer):
+    """A loaded photo that still needs something from the user — the photo is fine, but it
+    has no usable scale, so nothing measured on it means anything yet.
+
+    This goes in the always-visible banner rather than #status for the same reason upload
+    FAILURES do: #status lives inside the landing card, which this very return tucks to
+    left:-9999px. Writing the one message the user has to act on into an element that is
+    being hidden in the same breath left only a small KPI chip to carry it.
+    """
+    return status, viewer, _UPLOADER_TUCKED, None, status, _BANNER_NOTICE
+
+
 def _upload_failed(msg):
     """Return value for a failed upload: keep the current viewer, reset the uploader so the
     same file can be picked again, and put `msg` in the always-visible banner as well as
@@ -424,7 +448,7 @@ def on_upload(contents, filename):
     # Decode defensively: a malformed data-URI (missing comma, bad base64 padding)
     # would otherwise raise inside the callback and surface as an opaque HTTP 500.
     try:
-        img = _decode_b64_image(contents)
+        img, raw_bytes = _decode_b64_image(contents)
     except ImageTooLarge:
         return _upload_failed(f"⚠️ Image is too large (over {MAX_IMAGE_PIXELS:,} pixels). "
                               "Resize it and try again.")
@@ -467,8 +491,19 @@ def on_upload(contents, filename):
         except OSError:
             pass
 
+    # Focal length from the photo's own EXIF when it has any. Best-effort: a photo without
+    # it still calibrates, the app just has to assume a typical phone lens for the working
+    # distance and says so (cal["camera"]["focal_source"]).
+    focal_px = None
     try:
-        cal, overlay = calibrate_image(img, edge_mm=edge_mm_env)
+        from camera_geometry import focal_px_from_jpeg_bytes
+        focal_px = focal_px_from_jpeg_bytes(raw_bytes, img.shape[1])
+    except Exception as e:
+        print(f"[App] EXIF focal unavailable: {e}")
+    print(f"[App] Focal: {focal_px if focal_px else 'not in EXIF — assuming a typical phone lens'}")
+
+    try:
+        cal, overlay = calibrate_image(img, edge_mm=edge_mm_env, focal_px=focal_px)
     except Exception as e:
         _discard_partial()
         return _upload_failed(f"⚠️ Processing error: {e}")
@@ -509,14 +544,26 @@ def on_upload(contents, filename):
     # a green "✅ success": that led people to submit un-scaled photos believing they were
     # measured in mm. Be honest and point straight at the recovery tool. (Matches the
     # app's pixel-honesty philosophy — see the uncalibrated export confirm.)
-    if n_markers == 0 or confidence == "none":
+    # `calibration_usable` is False when nothing in the frame was CONFIRMED to be the
+    # calibration target — including the common case where the detector latched onto a
+    # shadow or some other dark square-ish object and measured it perfectly well. Reporting
+    # "1 marker, 40 mm" there is exactly the dressed-up success this branch exists to avoid,
+    # so an unconfirmed detection takes the same honest path as finding nothing at all.
+    usable = cal.get("calibration_usable", n_markers > 0)
+    if n_markers == 0 or confidence == "none" or not usable:
+        found_something = n_markers > 0 and not usable
+        lead = (f"⚠️ Loaded '{filename}'. I found a square-ish shape but can't confirm it is a "
+                "calibration target, so I haven't used it for scale"
+                if found_something else
+                f"⚠️ Loaded '{filename}', but no calibration target was found")
         status = (
-            f"⚠️ Loaded '{filename}', but no calibration square was found — "
-            "measurements would be in pixels, not mm. Use the Set Scale tool (📐): draw a "
-            "line across something of known size (a coin, a card, a sheet of paper, or a "
-            "ruler) and type its real length."
+            f"{lead} — measurements are in PIXELS until you set a scale. "
+            "Open Set scale (📐) and either draw along something of known length — a ruler, "
+            "a credit card, a coin — or, for a big part, tap the 4 corners of a rectangle "
+            "you know the size of (a sheet of paper, or a square laid out with a ruler), "
+            "which also corrects for camera angle."
         )
-        return status, viewer, _UPLOADER_TUCKED, None, "", _BANNER_HIDDEN
+        return _upload_notice(status, viewer)
 
     status = (
         f"✅ Processed '{filename}' — {n_markers} marker(s). "
@@ -617,6 +664,226 @@ def export_dxf():
     )
 
 
+@server.route("/api/export/stl", methods=["POST"])
+def export_stl():
+    """A watertight 3D solid, ready to slice and print.
+
+    Every other export here is flat — PNG, JSON, CSV, DXF, SVG — so a customer who
+    photographed a broken part still needed somebody to open CAD and extrude the profile by
+    hand. For the large class of replacement parts that ARE an extrusion (running boards,
+    mouldings, sills, trim, brackets, gaskets) the traced outline plus one depth is the whole
+    part, so the last step belongs here.
+
+    Takes the same geometry list the DXF endpoint takes. The outer profile is the closed
+    polyline carrying a positive depth_mm; any other closed polyline whose centroid falls
+    inside it becomes a through-hole, which is exactly what the auto-trace already produces
+    for a bolt pattern or a row of clip slots.
+
+    Body: { geometry: [...], mm_per_px, image_height }
+    Returns the STL, or 400/422 with a reason. Refuses rather than returning a leaky mesh:
+    a slicer either rejects one or, worse, silently prints it wrong.
+    """
+    from flask import Response
+
+    try:
+        from solid_export import build_extrusion, write_binary_stl, mesh_report
+    except Exception:
+        return "3D export unavailable", 500
+
+    data = _json_body()
+    geometry = data.get("geometry", [])
+    if not isinstance(geometry, list) or not geometry:
+        return "No geometry provided", 400
+    geometry = [g for g in geometry if isinstance(g, dict)]
+
+    try:
+        raw_scale = data.get("mm_per_px", None)
+        mm_per_px = 1.0 if raw_scale is None else float(raw_scale)
+    except (TypeError, ValueError):
+        return "Invalid mm_per_px", 400
+    if not (mm_per_px > 0) or not math.isfinite(mm_per_px):
+        return "mm_per_px must be a finite number > 0", 400
+
+    try:
+        image_height = float(data.get("image_height", 0)) or None
+        if image_height is not None and not math.isfinite(image_height):
+            image_height = None
+    except (TypeError, ValueError):
+        image_height = None
+
+    def _ring(item):
+        """A geometry item's points in millimetres, Y flipped to CAD's up, or None.
+
+        Mirrors export_to_dxf's conventions so the STL and the DXF describe the same part
+        rather than two mirror images of it.
+        """
+        pts = item.get("points")
+        if not isinstance(pts, (list, tuple)) or len(pts) < 3:
+            return None
+        out = []
+        for p in pts:
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError):
+                return None
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return None
+            if image_height is not None:
+                y = image_height - y
+            out.append([x * mm_per_px, y * mm_per_px])
+        return out
+
+    closed = [g for g in geometry if g.get("type") == "polyline" and g.get("closed")]
+    outer_item = next((g for g in closed
+                       if isinstance(g.get("depth_mm"), (int, float)) and g.get("depth_mm", 0) > 0),
+                      None)
+    if outer_item is None:
+        return ("No extrudable profile. Close an outline around the part, then set its "
+                "depth — how far the shape runs — and export again."), 422
+
+    outer = _ring(outer_item)
+    if outer is None:
+        return "The profile's points are not usable", 400
+    try:
+        depth_mm = float(outer_item["depth_mm"])
+    except (TypeError, ValueError):
+        return "Invalid depth_mm", 400
+
+    holes = []
+    for g in closed:
+        if g is outer_item:
+            continue
+        r = _ring(g)
+        if r is not None:
+            holes.append(r)
+
+    tris = build_extrusion(outer, holes, depth_mm)
+    if tris is None:
+        return ("Could not build a closed solid from this profile. Check that the outline "
+                "does not cross itself and that the depth is sensible."), 422
+    rep = mesh_report(tris)
+    if not rep.get("watertight"):
+        # Never hand a slicer a leaky mesh; it either refuses it or prints it wrong.
+        return "Could not build a watertight solid from this profile.", 422
+
+    dxf_fd, stl_path = tempfile.mkstemp(suffix=".stl")
+    os.close(dxf_fd)
+    try:
+        if not write_binary_stl(tris, stl_path, "CamScan extruded profile"):
+            return "Could not write the STL", 500
+        with open(stl_path, "rb") as f:
+            payload = f.read()
+    except Exception as e:
+        print(f"[STL Export] Error: {e}")
+        return "3D export failed", 500
+    finally:
+        try:
+            os.unlink(stl_path)
+        except OSError:
+            pass
+
+    print(f"[STL Export] {rep['triangles']} triangles, {rep['volume_mm3'] / 1000.0:.1f} cm3")
+    return Response(payload, mimetype="model/stl",
+                    headers={"Content-Disposition": "attachment; filename=part.stl",
+                             "X-CamScan-Triangles": str(rep["triangles"]),
+                             "X-CamScan-Volume-MM3": f"{rep['volume_mm3']:.1f}"})
+
+
+@server.route("/api/plane", methods=["POST"])
+def api_plane():
+    """Homography for a plane parallel to the marker's, `height_mm` above it.
+
+    The marker's homography rectifies the marker's plane and nothing else, so a feature on a
+    raised face — the top of a part with thickness — reads d/(d-h) too large. That is the
+    largest error in this app (+5.3% for a part only 20 mm thick at a 400 mm working
+    distance) and, unlike tilt, it does NOT go away in a square-on shot.
+
+    Body: { homography: 3x3, marker_size_mm, focal_px, image_size:{width,height},
+            height_mm }
+    Returns { ok, homography, applied_height_mm, error_removed_pct } — feed the returned
+    matrix to the same measurement code and the raised face measures true.
+
+    The exact fix is still to rest the card ON that face and re-shoot; this is for photos
+    already taken. Correcting is worthwhile even when the focal length was assumed rather
+    than read from EXIF: on synthetic renders a 21% focal error still turned +11.1% into
+    -2.9%, because the focal error scales only the (small) correction term.
+    """
+    from flask import jsonify
+    data = _json_body()
+
+    try:
+        from camera_geometry import (homography_at_height, parallax_error_pct,
+                                     working_distance_mm, default_focal_px)
+    except Exception:
+        return jsonify(ok=False, error="unavailable"), 500
+
+    H = data.get("homography")
+    if not (isinstance(H, list) and len(H) == 3
+            and all(isinstance(r, list) and len(r) == 3 for r in H)):
+        return jsonify(ok=False, error="bad_homography"), 400
+    try:
+        H = [[float(v) for v in row] for row in H]
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="bad_homography"), 400
+    if not all(math.isfinite(v) for row in H for v in row):
+        return jsonify(ok=False, error="bad_homography"), 400
+
+    def _pos(key):
+        try:
+            v = float(data.get(key))
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) and v > 0 else None
+
+    edge_mm = _pos("marker_size_mm")
+    if edge_mm is None:
+        return jsonify(ok=False, error="bad_marker_size"), 400
+
+    size = data.get("image_size") or {}
+    w = _pos_from(size, "width")
+    h = _pos_from(size, "height")
+    if w is None or h is None:
+        return jsonify(ok=False, error="bad_image_size"), 400
+
+    focal = _pos("focal_px") or default_focal_px(w)
+
+    try:
+        height_mm = float(data.get("height_mm", 0.0))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="bad_height"), 400
+    if not math.isfinite(height_mm):
+        return jsonify(ok=False, error="bad_height"), 400
+    # A raised face is toward the camera; a recess is away. Bound it so a typo can't ask for
+    # a plane at or behind the camera, where the transform degenerates.
+    if not (-500.0 <= height_mm <= 500.0):
+        return jsonify(ok=False, error="height_out_of_range"), 400
+
+    Hc = homography_at_height(H, edge_mm, focal, w / 2.0, h / 2.0, height_mm)
+    if Hc is None:
+        return jsonify(ok=False, error="pose_unavailable"), 200
+
+    removed = None
+    try:
+        edge_px = _pos("edge_px")
+        dist = working_distance_mm(edge_px, edge_mm, focal) if edge_px else None
+        if dist:
+            removed = parallax_error_pct(height_mm, dist)
+    except Exception:
+        removed = None
+
+    return jsonify(ok=True, homography=Hc, applied_height_mm=height_mm,
+                   error_removed_pct=(round(removed, 2) if removed is not None else None))
+
+
+def _pos_from(d, key):
+    """A strictly-positive finite float from dict `d`, or None."""
+    try:
+        v = float(d.get(key))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
 @server.route("/api/trace", methods=["POST"])
 def api_trace():
     """Auto-trace a part outline from a seed tap.
@@ -690,14 +957,43 @@ def api_trace():
     else:
         roi = None
 
+    # Taps saying "this IS the part" / "this is NOT". A background tap switches segmentation
+    # to GrabCut, which is the only thing that separates a part from something the same
+    # colour beside it — a dark part next to its own shadow differs from it by ~15 grey
+    # levels, so no threshold can draw that line.
+    def _points(key):
+        out = []
+        raw = data.get(key)
+        for p in (raw if isinstance(raw, (list, tuple)) else []):
+            try:
+                x, y = float(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                out.append([x, y])
+            if len(out) >= 64:          # a tap count no human reaches; bounds the work
+                break
+        return out
+
+    fg_points, bg_points = _points("fg"), _points("bg")
+
     try:
-        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify, roi=roi)
+        res = auto_outline_full(img, seed=seed, exclude_boxes=exclude, simplify=simplify, roi=roi,
+                                fg_points=fg_points, bg_points=bg_points)
     except Exception as e:
         print(f"[trace] error: {e}")
         return jsonify(ok=False, error="trace_failed"), 500
 
     if not res or not res.get("outer"):
         return jsonify(ok=False, error="no_outline"), 200
+    # A trace that IS the frame is not an outline — the tap landed on something featureless
+    # (sky, a plain wall, bare concrete) and the segmenter had no edge to find. Handing it
+    # back would let the user measure and export the image border as their part.
+    if res.get("runaway"):
+        return jsonify(ok=False, error="runaway",
+                       hint="That trace covers the whole photo — the spot you tapped has no "
+                            "edge to find. Tap right on the part, draw an Area box around it "
+                            "first, or tap ✖ Not the part on the background."), 200
     # `points` is the outer boundary (unchanged shape for older clients); `holes` are interior
     # loops (a box-end ring, bolt holes) the client drops in as extra closed profiles.
     return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [])

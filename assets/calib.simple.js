@@ -86,7 +86,11 @@
     if(cal && si){
       return { ok:true, text:'✓ Marker found — scale set ('+ (si.source||'scaled') + (si.perspective?', tilt-corrected':'') +'). Ready to add this view.' };
     }
-    return { ok:false, text:'⚠️ No marker detected. Retake with the printed card flat and fully in frame — or tap “Mark up” to set the scale by hand.' };
+    // Assuming the customer HAS a printed card is wrong for most of them — the common case
+    // is a tape measure or a ruler already in the shot. Lead with what they are holding.
+    return { ok:false, text:'⚠️ No scale yet — measurements are in pixels. Tap “Mark up”, then '
+           + 'Set scale (📐): draw along a ruler or anything of known length. For a big part, '
+           + 'tap the 4 corners of a known rectangle instead — that also corrects camera angle.' };
   }
 
   function renderCard(){

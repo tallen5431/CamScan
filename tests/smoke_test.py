@@ -355,6 +355,42 @@ def main():
     except Exception as e:
         check("lone-square confidence guard", False, repr(e))
 
+    # 3c) ...and low confidence was NOT enough. An unverified detection must not be applied
+    #     as a scale at all. Run on six real customer photos of one part, none of which
+    #     contained a calibration marker, the detector latched onto a shadow or a tyre in
+    #     every single one and emitted scales spanning 6.6x — the same feature would have
+    #     read 60 mm in one shot and 396 mm in another, presented as millimetres and flagged
+    #     only "Approximate". The app must measure in PIXELS and ask for a scale instead.
+    try:
+        scenes = {
+            # a dark square-ish object on a light ground: a shadow, a tyre, a vent
+            "dark blob": (np.full((700, 900, 3), 200, np.uint8), (380, 300), (520, 440), 35),
+            # a bright panel on a dark ground
+            "bright blob": (np.full((700, 900, 3), 40, np.uint8), (300, 250), (470, 430), 235),
+        }
+        unusable, spread = {}, []
+        for name, (im, p0, p1, fg) in scenes.items():
+            img2 = im.copy()
+            cv2.rectangle(img2, p0, p1, (fg, fg, fg), -1)
+            with _quiet():
+                c, _o = calibrate_image(img2, edge_mm=40.0)
+            unusable[name] = (c.get("calibration_usable") is False
+                              and all(m.get("unverified") for m in (c.get("markers") or [])))
+            if c.get("markers"):
+                spread.append(c["mm_per_px"])
+        # and the real marker is untouched: still usable, still high, still correctly scaled
+        with _quiet():
+            good, _o = calibrate_image(_make_marker_image(), edge_mm=30.0)
+        real_ok = (good.get("calibration_usable") is True
+                   and good["calibration_confidence"] == "high"
+                   and 0.08 <= good["mm_per_px"] <= 0.12
+                   and not any(m.get("unverified") for m in good["markers"]))
+        check("an unverified detection is never applied as a scale",
+              all(unusable.values()) and real_ok,
+              f"unusable={unusable}, real marker still calibrates={real_ok}")
+    except Exception as e:
+        check("an unverified detection is never applied as a scale", False, repr(e))
+
     # 4) save_outputs writes calibration JSON atomically.
     if overlay is not None:
         try:
@@ -458,12 +494,31 @@ def main():
                 r = _app.on_upload(_c, _fn)
             shown.append(len(r) == 6 and r[4] not in ("", None)
                          and r[5].get("display") == "block" and r[1] is no_update)
-        # ...and a success clears it again rather than leaving a stale error on screen.
+        # ...and a genuinely CALIBRATED upload clears it rather than leaving a stale message.
+        # It has to be a real marker: a blank frame has no usable scale, which is itself a
+        # notice now, so a featureless image would not exercise the clearing path at all.
+        _okm, _em = cv2.imencode(".jpg", _make_marker_image())
+        _marker_url = "data:image/jpeg;base64," + base64.b64encode(_em.tobytes()).decode()
         with _quiet(), _app.server.test_request_context("/"):
-            ok_r = _app.on_upload(good, "p.jpg")
+            ok_r = _app.on_upload(_marker_url, "marker.jpg")
         cleared = len(ok_r) == 6 and ok_r[4] == "" and ok_r[5].get("display") == "none"
-        check("upload failures reach the always-visible banner", all(shown) and cleared,
-              f"failure paths shown={sum(shown)}/{len(shown)}, success clears={cleared}")
+        # A photo that LOADS but has no usable scale is the same problem in a different
+        # coat: the guidance telling the user what to do lands in #status, which this very
+        # return tucks off-screen. It has to reach the banner too, styled as a notice rather
+        # than a failure, because the photo itself is fine.
+        _no_marker = np.full((700, 900, 3), 200, np.uint8)
+        cv2.rectangle(_no_marker, (380, 300), (520, 440), (35, 35, 35), -1)   # a shadow, not a target
+        _ok2, _e2 = cv2.imencode(".jpg", _no_marker)
+        _nm = "data:image/jpeg;base64," + base64.b64encode(_e2.tobytes()).decode()
+        with _quiet(), _app.server.test_request_context("/"):
+            nr = _app.on_upload(_nm, "shadow.jpg")
+        notice = (len(nr) == 6 and nr[5].get("display") == "block"
+                  and "scale" in str(nr[4]).lower()
+                  and nr[2].get("left") == "-9999px"      # panel tucked, so #status is hidden
+                  and nr[1] is not no_update)             # ...and the viewer DID load
+        check("upload failures reach the always-visible banner", all(shown) and cleared and notice,
+              f"failure paths shown={sum(shown)}/{len(shown)}, success clears={cleared}, "
+              f"no-scale notice visible={notice}")
     except Exception as e:
         check("upload failures reach the always-visible banner", False, repr(e))
 
@@ -744,6 +799,822 @@ def main():
               f"clean tilt measured={meas_ok} at {d_ok:.1f}deg, blob measured={meas2}")
     except Exception as e:
         check("edge_finder reports whether the quad was actually measured", False, repr(e))
+
+    # 8k) OUT-OF-PLANE (parallax) error — the largest error in this app, and the one a
+    #     "shoot it flat" instinct does not fix. The homography rectifies the marker's
+    #     plane only, so a feature h mm above it reads d/(d-h) too large REGARDLESS of
+    #     tilt. Measured against a virtual camera whose answer is known:
+    #       h=10mm -> +2.6%, h=20mm -> +5.3%, h=40mm -> +11.1% at d=400mm, at 0 deg tilt.
+    #     Assert both halves: that the error is real and that the correction removes it.
+    try:
+        sys.path.insert(0, str(ROOT / "tests"))
+        from synthetic_camera import render, project, measure_mm
+        from camera_geometry import homography_at_height, default_focal_px, parallax_error_pct
+
+        EDGE, W_, H_, F_, D_ = 40.0, 1600, 1200, 1500.0, 400.0
+        img_, K_, R_, t_ = render(EDGE, F_, W_, H_, 0, D_)
+        with _quiet():
+            cal_, _ov = calibrate_image(img_, edge_mm=EDGE, focal_px=F_)
+        Hu = cal_.get("homography")
+
+        def _at(h_mm, Hh):
+            a = project(K_, R_, t_, np.array([[0.0, -60.0, h_mm]]))[0]
+            b = project(K_, R_, t_, np.array([[100.0, -60.0, h_mm]]))[0]
+            return measure_mm(Hh, cal_["marker_size_mm"], a, b) - 100.0
+
+        # The error exists and grows with height (this is the bug being characterised).
+        raw = [_at(h, Hu) for h in (10.0, 20.0, 40.0)]
+        grows = raw[0] < raw[1] < raw[2] and raw[2] > 8.0
+        # The correction removes most of it, at every height.
+        corr = []
+        for h in (10.0, 20.0, 40.0):
+            Hc = homography_at_height(Hu, cal_["marker_size_mm"], F_, W_ / 2, H_ / 2, h)
+            corr.append(abs(_at(h, Hc)) if Hc else 99.0)
+        fixed = all(c < 0.5 for c in corr)
+        # ...and it still helps when the focal length was ASSUMED, not read from EXIF.
+        fdef = default_focal_px(W_)
+        Hd = homography_at_height(Hu, cal_["marker_size_mm"], fdef, W_ / 2, H_ / 2, 40.0)
+        assumed_ok = Hd is not None and abs(_at(40.0, Hd)) < abs(raw[2]) / 2.0
+        # A near-zero height must be a near-exact passthrough. Testing at literally h=0 is
+        # VACUOUS: homography_at_height short-circuits below MIN_CORRECTABLE_HEIGHT_MM and
+        # returns the input untouched, so it would pass even if the maths below were wrong.
+        # Test just past the short-circuit, where the real code path runs.
+        Heps = homography_at_height(Hu, cal_["marker_size_mm"], F_, W_ / 2, H_ / 2, 1.001)
+        passthrough = Heps is not None and abs(_at(1.001, Heps) - _at(1.001, Hu)) < 0.4
+
+        # The correction must preserve SHAPE, not just scale. Rebuilding the homography from
+        # the recovered pose instead of composing it leaves the scale roughly right while
+        # skewing the plane — a true square comes back up to 25% out of square at 40 deg of
+        # tilt. Scale-only assertions miss that entirely, so measure both sides of a square.
+        # Build the base homography from the EXACT projected corners so this measures the
+        # correction and nothing else. Feeding it a DETECTED homography would fail on the
+        # detector's own corner error, which is already ~2.6% out of square at 20 deg of tilt
+        # before any correction is applied and is not what this test is about.
+        from synthetic_camera import marker_world
+        def _aniso(tilt, h_mm, focal):
+            _im2, K2, R2, t2 = render(EDGE, F_, W_, H_, tilt, D_)
+            exact = project(K2, R2, t2, marker_world(EDGE)[:4]).astype(np.float32)
+            unit = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], np.float32)
+            Hi = cv2.getPerspectiveTransform(exact, unit).tolist()
+            Hc2 = homography_at_height(Hi, EDGE, focal, W_ / 2, H_ / 2, h_mm)
+            if Hc2 is None:
+                return 99.0
+            sq = [[0.0, -60.0], [20.0, -60.0], [20.0, -80.0], [0.0, -80.0]]
+            P = [project(K2, R2, t2, np.array([[x, y, h_mm]]))[0] for (x, y) in sq]
+            w1 = measure_mm(Hc2, EDGE, P[0], P[1])
+            h1 = measure_mm(Hc2, EDGE, P[1], P[2])
+            return abs(w1 - h1) / max(w1, h1) * 100.0
+        # A true square must come back square across tilt AND a badly wrong focal. This is the
+        # property that catches rebuilding the homography from the pose instead of composing
+        # it: rebuilding leaves the SCALE roughly right while skewing the plane, up to ~25%
+        # out of square at 40 deg, which a scale-only assertion sails straight past.
+        aniso = [_aniso(20, 10.0, F_), _aniso(40, 10.0, F_ * 1.6), _aniso(40, 10.0, F_ * 0.6)]
+        shape_ok = all(a < 0.05 for a in aniso)
+
+        # ...and the correction must work on a TILTED shot, not just the square-on one. At
+        # tilt 0 the renderer draws an axis-aligned square with pixel-exact edges, so a 0.00%
+        # result there is partly an oracle; a tilted render exercises the real geometry.
+        imT, KT, RT, tT = render(EDGE, F_, W_, H_, 25, D_)
+        with _quiet():
+            calT, _oT = calibrate_image(imT, edge_mm=EDGE, focal_px=F_)
+        HuT = calT.get("homography")
+        aT = project(KT, RT, tT, np.array([[0.0, -60.0, 30.0]]))[0]
+        bT = project(KT, RT, tT, np.array([[100.0, -60.0, 30.0]]))[0]
+        rawT = abs(measure_mm(HuT, calT["marker_size_mm"], aT, bT) - 100.0)
+        HcT = homography_at_height(HuT, calT["marker_size_mm"], F_, W_ / 2, H_ / 2, 30.0)
+        corT = abs(measure_mm(HcT, calT["marker_size_mm"], aT, bT) - 100.0) if HcT else 99.0
+        tilted_ok = corT < rawT / 2.0
+        # The closed form the UI quotes must agree with the measurement.
+        model_ok = abs(parallax_error_pct(40.0, D_) - 11.11) < 0.2
+
+        check("out-of-plane error is real, and the height correction removes it",
+              grows and fixed and assumed_ok and passthrough and model_ok
+              and shape_ok and tilted_ok,
+              f"uncorrected {raw[0]:+.1f}/{raw[1]:+.1f}/{raw[2]:+.1f}% at h=10/20/40mm -> "
+              f"corrected {corr[0]:.2f}/{corr[1]:.2f}/{corr[2]:.2f}%; "
+              f"tilted 25deg {rawT:.2f}%->{corT:.2f}%; "
+              f"anisotropy {max(aniso):.3f}%; assumed-focal helps={assumed_ok}")
+    except Exception as e:
+        check("out-of-plane error is real, and the height correction removes it", False, repr(e))
+
+    # 8l) Tilt must NOT be confused for the depth problem: an in-plane length already
+    #     measures well out to a steep angle, which is why the fix for the user's
+    #     complaint is height, not tilt. Also locks the EXIF focal reader and the
+    #     camera block that the UI quotes.
+    try:
+        from synthetic_camera import render, project, measure_mm, jpeg_with_focal35
+        from camera_geometry import focal_px_from_jpeg_bytes
+
+        EDGE, W_, H_, F_, D_ = 40.0, 1600, 1200, 1500.0, 400.0
+        inplane = []
+        for tilt in (0, 20, 40):
+            im, K2, R2, t2 = render(EDGE, F_, W_, H_, tilt, D_)
+            with _quiet():
+                c2, _o = calibrate_image(im, edge_mm=EDGE, focal_px=F_)
+            Hh = c2.get("homography")
+            if not Hh:
+                inplane.append(99.0)
+                continue
+            a = project(K2, R2, t2, np.array([[0.0, -60.0, 0.0]]))[0]
+            b = project(K2, R2, t2, np.array([[100.0, -60.0, 0.0]]))[0]
+            inplane.append(abs(measure_mm(Hh, c2["marker_size_mm"], a, b) - 100.0))
+        tilt_ok = all(e < 3.0 for e in inplane)
+
+        # EXIF: read when present, absent without complaint, never raises on junk.
+        im0, _k, _r, _t = render(EDGE, F_, W_, H_, 0, D_)
+        with_exif = jpeg_with_focal35(im0, 27)
+        no_exif = cv2.imencode(".jpg", im0)[1].tobytes()
+        exif_ok = (abs(focal_px_from_jpeg_bytes(with_exif, 1600) - 27 / 36 * 1600) < 1e-6
+                   and focal_px_from_jpeg_bytes(no_exif, 1600) is None
+                   and focal_px_from_jpeg_bytes(b"not a jpeg", 1600) is None
+                   and focal_px_from_jpeg_bytes(b"", 1600) is None)
+
+        # The camera block the client reads must be present and roughly right.
+        with _quiet():
+            c3, _o = calibrate_image(im0, edge_mm=EDGE, focal_px=F_)
+        cam = c3.get("camera") or {}
+        cam_ok = (cam.get("focal_source") == "exif"
+                  and cam.get("distance_mm") is not None
+                  and abs(cam["distance_mm"] - D_) < 0.15 * D_
+                  and cam.get("parallax_pct_per_mm") is not None
+                  and abs(cam["parallax_pct_per_mm"] * 20 - 5.26) < 1.5)
+        check("tilt is already handled; EXIF focal + camera block are sound",
+              tilt_ok and exif_ok and cam_ok,
+              f"in-plane err at 0/20/40deg = {inplane[0]:.2f}/{inplane[1]:.2f}/{inplane[2]:.2f}%, "
+              f"exif={exif_ok}, camera={cam_ok}")
+    except Exception as e:
+        check("tilt is already handled; EXIF focal + camera block are sound", False, repr(e))
+
+    # 8m) /api/plane is a public endpoint taking untrusted JSON — it must answer cleanly
+    #     for every malformed shape rather than 500, and must actually reduce the error.
+    try:
+        import app as _app5
+        from synthetic_camera import render, project, measure_mm
+        EDGE, W_, H_, F_, D_ = 40.0, 1600, 1200, 1500.0, 400.0
+        im, K3, R3, t3 = render(EDGE, F_, W_, H_, 15, D_)
+        with _quiet():
+            c4, _o = calibrate_image(im, edge_mm=EDGE, focal_px=F_)
+        cli = _app5.server.test_client()
+        base = {"homography": c4["homography"], "marker_size_mm": c4["marker_size_mm"],
+                "focal_px": F_, "image_size": {"width": W_, "height": H_},
+                "edge_px": c4["markers"][0]["edge_px"]}
+        with _quiet():
+            good = cli.post("/api/plane", json=dict(base, height_mm=20.0))
+        gj = good.get_json()
+        a = project(K3, R3, t3, np.array([[0.0, -60.0, 20.0]]))[0]
+        b = project(K3, R3, t3, np.array([[100.0, -60.0, 20.0]]))[0]
+        before = abs(measure_mm(c4["homography"], EDGE, a, b) - 100.0)
+        after = abs(measure_mm(gj["homography"], EDGE, a, b) - 100.0)
+        happy = good.status_code == 200 and gj.get("ok") is True and after < before / 2.0
+
+        bad = {
+            "empty": {},
+            "ragged": dict(base, homography=[[1, 2], [3, 4], [5, 6]]),
+            "nan": dict(base, homography=[[float("nan"), 0, 0], [0, 1, 0], [0, 0, 1]]),
+            "zero_marker": dict(base, marker_size_mm=0),
+            "no_size": {k: v for k, v in base.items() if k != "image_size"},
+            "huge_height": dict(base, height_mm=99999),
+            "nan_height": dict(base, height_mm=float("nan")),
+        }
+        codes = {}
+        with _quiet():
+            for k, body in bad.items():
+                codes[k] = cli.post("/api/plane", json=body).status_code
+        validated = all(v == 400 for v in codes.values())
+        check("/api/plane corrects for height and rejects malformed input",
+              happy and validated,
+              f"{before:.2f}% -> {after:.2f}%, removed={gj.get('error_removed_pct')}, "
+              f"bad-input codes={sorted(set(codes.values()))}")
+    except Exception as e:
+        check("/api/plane corrects for height and rejects malformed input", False, repr(e))
+
+    # 8n) Two things the pose recovery has to get right, both of which were wrong first time:
+    #     (a) the sign fix that puts the marker in front of the camera must not destroy the
+    #         rotation. Negating the assembled 3x3 flips r3 too, and det(-R) = -det(R), so R
+    #         silently becomes a reflection. Both homography signs must give the same pose.
+    #     (b) parallax depends on the PERPENDICULAR distance to the marker's plane, not the
+    #         line of sight. Under tilt they move in opposite directions — perpendicular
+    #         falls 400 -> 257 mm from 0 to 50 deg while line-of-sight rises to 512 — so a
+    #         warning built on line-of-sight under-reports the real error by about half.
+    try:
+        from camera_geometry import pose_from_homography, working_distance_mm
+        Kt = np.array([[1500.0, 0, 800.0], [0, 1500.0, 600.0], [0, 0, 1.0]])
+        th = np.deg2rad(25.0)
+        Rt = np.array([[1.0, 0, 0], [0, np.cos(th), -np.sin(th)], [0, np.sin(th), np.cos(th)]])
+        tt = np.array([0.0, 0.0, 400.0])
+        Gt = Kt @ np.stack([Rt[:, 0], Rt[:, 1], tt], axis=1)
+        EDGE = 40.0
+        poses = []
+        for sign in (1.0, -1.0):
+            Hu = (np.diag([1 / EDGE, 1 / EDGE, 1.0]) @ np.linalg.inv(sign * Gt)).tolist()
+            poses.append(pose_from_homography(Hu, EDGE, 1500.0, 800.0, 600.0))
+        rot_ok = (all(p is not None for p in poses)
+                  and all(abs(np.linalg.det(p["R"]) - 1.0) < 1e-6 for p in poses)
+                  and abs(poses[0]["tilt_deg"] - poses[1]["tilt_deg"]) < 1e-6
+                  and abs(poses[0]["plane_distance_mm"] - poses[1]["plane_distance_mm"]) < 1e-6
+                  and abs(poses[0]["tilt_deg"] - 25.0) < 1.0)
+
+        # (b) as tilt grows the two distances must diverge, and the camera block must follow
+        #     the perpendicular one (which falls), not the line of sight (which rises).
+        from synthetic_camera import render
+        perp, los = [], []
+        for tilt in (0, 50):
+            im, _k, _r, _t = render(EDGE, 1500.0, 1600, 1200, tilt, 400.0)
+            with _quiet():
+                cc, _o = calibrate_image(im, edge_mm=EDGE, focal_px=1500.0)
+            if not cc.get("homography"):
+                continue
+            perp.append(cc["camera"]["distance_mm"])
+            los.append(working_distance_mm(cc["markers"][0]["edge_px"], EDGE, 1500.0))
+        diverge_ok = (len(perp) == 2 and perp[1] < perp[0] * 0.85 and los[1] > los[0] * 1.15)
+
+        check("pose keeps a proper rotation and uses the perpendicular plane distance",
+              rot_ok and diverge_ok,
+              f"det(R)={[round(float(np.linalg.det(p['R'])), 3) for p in poses]}, "
+              f"perp {perp[0]:.0f}->{perp[1]:.0f}mm while line-of-sight {los[0]:.0f}->{los[1]:.0f}mm")
+    except Exception as e:
+        check("pose keeps a proper rotation and uses the perpendicular plane distance", False, repr(e))
+
+    # 8o) A homography is only pinned where the points that fixed it are. Measure far
+    #     outside the reference and the error explodes — on synthetic renders at 30 deg tilt
+    #     with 1 px corner noise, a true 300 mm feature came back ~6 mm out at 5x the
+    #     reference size, ~23 mm at 13x, and METRES at 25x. A 40 mm card against a 1.5 m
+    #     running board is 23x and reads plausibly while meaning nothing. Lock the rule, and
+    #     the arithmetic behind the warning, by driving the real JS through node.
+    try:
+        import subprocess, json as _json
+        node = None
+        for cand in ("/opt/node22/bin/node", "node"):
+            try:
+                subprocess.run([cand, "-e", "0"], capture_output=True, check=True)
+                node = cand
+                break
+            except Exception:
+                continue
+        if node is None:
+            check("reference-span rule (needs node)", True, "skipped — no node runtime")
+        else:
+            script = r"""
+              global.window = {};
+              require(process.argv[1]);
+              const G = window.CalibGeom;
+              const seg = (x0,y0,x1,y1) => ({type:'segment', a:[x0,y0], b:[x1,y1]});
+              const out = {
+                empty: G.measuredExtentPx([]),
+                nullish: G.measuredExtentPx(null),
+                junk: G.measuredExtentPx([null, {type:'segment'}]),
+                nan: G.measuredExtentPx([seg(0,0,NaN,5)]),
+                seg500: G.measuredExtentPx([seg(0,0,300,400)]),
+                mixed: G.measuredExtentPx([{type:'polyline',pts:[[0,0],[100,0]]},
+                                           {type:'circle',center:[500,0],radius:50}]),
+                at4: G.referenceSpanVerdict(100,400),
+                at5: G.referenceSpanVerdict(100,500),
+                at6: G.referenceSpanVerdict(100,600),
+                at12: G.referenceSpanVerdict(100,1200),
+                card: G.referenceSpanVerdict(65,1500),
+                zeroRef: G.referenceSpanVerdict(0,500),
+                negRef: G.referenceSpanVerdict(-5,500),
+                zeroSpan: G.referenceSpanVerdict(100,0),
+              };
+              console.log(JSON.stringify(out));
+            """
+            r = subprocess.run([node, "-e", script, str(ROOT / "assets" / "calib.geometry.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            ok = (o["empty"] == 0 and o["nullish"] == 0 and o["junk"] == 0 and o["nan"] == 0
+                  and abs(o["seg500"] - 500) < 1e-6 and o["mixed"] > 500
+                  # the threshold itself: 5x is still fine, 6x warns, 12x is bad
+                  and o["at4"] is None and o["at5"] is None
+                  and o["at6"] and o["at6"]["level"] == "warn"
+                  and o["at12"] and o["at12"]["level"] == "bad"
+                  # the real case that motivated this
+                  and o["card"] and o["card"]["level"] == "bad"
+                  # degenerate inputs never produce a verdict
+                  and o["zeroRef"] is None and o["negRef"] is None and o["zeroSpan"] is None)
+            check("reference-span rule flags a too-small scale reference", ok,
+                  f"5x={o['at5']}, 6x={(o['at6'] or {}).get('level')}, "
+                  f"12x={(o['at12'] or {}).get('level')}, 40mm-card-on-1.5m="
+                  f"{(o['card'] or {}).get('level')}")
+    except Exception as e:
+        check("reference-span rule flags a too-small scale reference", False, repr(e))
+
+    # 8o2) A wrong scale is invisible on its own — the view looks fine, every number in it is
+    #      self-consistent, and only a SECOND view of the same part reveals it. Across the six
+    #      customer photos, scales taken off the wrong edge disagreed by 6.6x (60 mm against
+    #      396 mm for one feature) with nothing in the app saying so. Pin the rule: it must
+    #      catch a real disagreement, stay quiet inside the error honest measuring carries,
+    #      and never invent one out of data it cannot pair up.
+    try:
+        import subprocess, json as _json
+        node = None
+        for cand in ("/opt/node22/bin/node", "node"):
+            try:
+                subprocess.run([cand, "-e", "0"], capture_output=True, check=True)
+                node = cand
+                break
+            except Exception:
+                continue
+        if node is None:
+            check("cross-view scale disagreement (needs node)", True, "skipped — no node runtime")
+        else:
+            script = r"""
+              global.window = {};
+              require(process.argv[1]);
+              const G = window.CalibGeom;
+              const v = (label, calibrated, ms) => ({label, calibrated,
+                    measurements: ms.map(([l, mm]) => ({label: l, mm}))});
+              const first = r => (r && r[0]) ? {label:r[0].label, level:r[0].level,
+                                                spread:+r[0].spread.toFixed(4),
+                                                low:r[0].low.view, high:r[0].high.view} : null;
+              const out = {
+                // agree to within measuring error -> silence
+                agree: first(G.crossViewDisagreements([
+                  v('Top', true, [['Width', 142.3]]), v('Front', true, [['Width', 143.9]])])),
+                // 11% — out-of-plane magnification on a thick part reaches this honestly
+                atWarn: first(G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', true, [['Width', 111]])])),
+                // 30% — past anything tilt or thickness explains
+                atBad: first(G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', true, [['Width', 130]])])),
+                // the case that motivated it
+                real: first(G.crossViewDisagreements([
+                  v('Top', true, [['Board', 396]]), v('Detail', true, [['Board', 60]])])),
+                // an UNCALIBRATED view's millimetres are not millimetres
+                uncal: G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', false, [['Width', 400]])]).length,
+                // one view only — nothing to compare against
+                lone: G.crossViewDisagreements([v('Top', true, [['Width', 100]])]).length,
+                // same label twice in ONE view: no way to say which pairs with the other view
+                dupe: G.crossViewDisagreements([
+                  v('Top', true, [['Slot', 51], ['Slot', 38]]),
+                  v('Front', true, [['Slot', 50]])]).length,
+                // labels differing only in case/space are the same dimension
+                looseLabel: first(G.crossViewDisagreements([
+                  v('Top', true, [['  Over All  ', 100]]), v('Front', true, [['over all', 140]])])),
+                // different labels are different dimensions, however far apart
+                distinct: G.crossViewDisagreements([
+                  v('Top', true, [['Width', 100]]), v('Front', true, [['Height', 400]])]).length,
+                // junk must not throw or produce a verdict
+                junk: G.crossViewDisagreements([
+                  v('Top', true, [['W', NaN], ['X', 0], ['Y', -5], ['', 100]]),
+                  v('Front', true, [['W', 100], ['', 400]])]).length,
+                empty: G.crossViewDisagreements([]).length,
+                nullish: G.crossViewDisagreements(null).length,
+                // worst first, so the most suspect pair is the one the user reads
+                order: G.crossViewDisagreements([
+                  v('A', true, [['small', 100], ['huge', 100]]),
+                  v('B', true, [['small', 115], ['huge', 300]])]).map(h => h.label),
+              };
+              console.log(JSON.stringify(out));
+            """
+            r = subprocess.run([node, "-e", script, str(ROOT / "assets" / "calib.geometry.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            ok = (o["agree"] is None
+                  and o["atWarn"] and o["atWarn"]["level"] == "warn"
+                  and o["atBad"] and o["atBad"]["level"] == "bad"
+                  # names BOTH readings and which view each came from, or it isn't actionable
+                  and o["real"] and o["real"]["level"] == "bad"
+                  and o["real"]["low"] == "Detail" and o["real"]["high"] == "Top"
+                  and o["uncal"] == 0 and o["lone"] == 0 and o["dupe"] == 0
+                  and o["looseLabel"] and o["looseLabel"]["label"] == "over all"
+                  and o["distinct"] == 0 and o["junk"] == 0
+                  and o["empty"] == 0 and o["nullish"] == 0
+                  and o["order"] == ["huge", "small"])
+            check("disagreeing scales across views are caught and ranked", ok,
+                  "11%={}, 30%={}, 396-vs-60mm={} ({} low / {} high), uncalibrated ignored={}, "
+                  "same-label-twice ignored={}, ranked={}".format(
+                      (o["atWarn"] or {}).get("level"), (o["atBad"] or {}).get("level"),
+                      (o["real"] or {}).get("level"), (o["real"] or {}).get("low"),
+                      (o["real"] or {}).get("high"), o["uncal"] == 0, o["dupe"] == 0, o["order"]))
+    except Exception as e:
+        check("disagreeing scales across views are caught and ranked", False, repr(e))
+
+    # 8o3) The rule above is only useful if the stored job actually reaches it. This drives the
+    #      real calib.job.js against the real saved format, so a renamed field (scale.calibrated,
+    #      m.mm, v.label) fails here instead of silently never warning. It also opens the panel,
+    #      which is where the warning is rendered — if that path threw, the whole panel would be
+    #      lost, so "opens" is the thing worth asserting with the DOM stub we have.
+    try:
+        if node is None:
+            check("stored job reaches the disagreement rule (needs node)", True, "skipped — no node")
+        else:
+            script = r"""
+              require(process.argv[1]);                          // DOM stub
+              require(process.argv[2]);                          // the rule
+              localStorage.setItem('camscan.job.v1', JSON.stringify({ id:'j', brief:{}, views:[
+                {label:'Top',    sourceId:'a', scale:{calibrated:true},
+                 measurements:[{label:'Board', text:'396 mm', mm:396}]},
+                {label:'Front',  sourceId:'b', scale:{calibrated:false},
+                 measurements:[{label:'Board', text:'9 mm', mm:9}]},
+                {label:'Detail', sourceId:'c', scale:{calibrated:true},
+                 measurements:[{label:'Board', text:'60 mm', mm:60}]}]}));
+              require(process.argv[3]);                          // calib.job.js
+              const w = window.CalibJob.scaleWarnings();
+              let opened = true;
+              try{ window.CalibJob.open(); }catch(e){ opened = String(e); }
+              console.log(JSON.stringify({w: w.map(h => ({label:h.label, level:h.level,
+                            low:h.low.view, lowMm:h.low.mm, high:h.high.view})), opened}));
+            """
+            r = subprocess.run([node, "-e", script,
+                                str(ROOT / "tests" / "support" / "dom_stub.js"),
+                                str(ROOT / "assets" / "calib.geometry.js"),
+                                str(ROOT / "assets" / "calib.job.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            w = o["w"]
+            ok = (o["opened"] is True and len(w) == 1 and w[0]["level"] == "bad"
+                  and w[0]["label"] == "board"
+                  # the uncalibrated view's 9 mm must not become the low reading
+                  and w[0]["low"] == "Detail" and abs(w[0]["lowMm"] - 60) < 1e-9
+                  and w[0]["high"] == "Top")
+            check("stored job reaches the disagreement rule; panel still opens", ok,
+                  "warnings={}, panel opens={}".format(w, o["opened"]))
+    except Exception as e:
+        check("stored job reaches the disagreement rule; panel still opens", False, repr(e))
+
+    # 8o4) The capture guide states numbers ("a fifth as long", "more than 10%") that came from
+    #      constants elsewhere in the code. Tuning a constant without touching the prose turns
+    #      the guidance into a confident lie, which is worse than no guidance — so pin the two
+    #      that are written out in words to the values they describe.
+    try:
+        if node is None:
+            check("capture guide matches its constants (needs node)", True, "skipped — no node")
+        else:
+            r = subprocess.run([node, "-e",
+                                "global.window={};require(process.argv[1]);"
+                                "const G=window.CalibGeom;"
+                                "console.log(JSON.stringify({span:G.REF_SPAN_RATIO_WARN,"
+                                "cross:G.CROSS_VIEW_WARN}));",
+                                str(ROOT / "assets" / "calib.geometry.js")],
+                               capture_output=True, text=True, timeout=60)
+            c = _json.loads(r.stdout.strip())
+            readme = (ROOT / "README.txt").read_text(encoding="utf-8")
+            job_js = (ROOT / "assets" / "calib.job.js").read_text(encoding="utf-8")
+            # "at least a fifth as long" <- REF_SPAN_RATIO_WARN = 5
+            span_ok = (abs(c["span"] - 5) < 1e-9
+                       and "fifth as long" in readme.lower()
+                       and "fifth as long" in job_js.lower())
+            # "disagree ... by more than 10%" <- CROSS_VIEW_WARN = 0.10
+            cross_ok = (abs(c["cross"] - 0.10) < 1e-9
+                        and "more than 10%" in readme)
+            # the depth figures the guide quotes are the ones the geometry test measures
+            depth_ok = all(s in readme and s in job_js for s in ("+2.6%", "+5.3%", "+11.1%"))
+            check("capture guide matches the constants it quotes",
+                  span_ok and cross_ok and depth_ok,
+                  "span 1/{:g} consistent={}, cross-view {:.0%} consistent={}, "
+                  "depth figures present={}".format(c["span"], span_ok, c["cross"],
+                                                    cross_ok, depth_ok))
+    except Exception as e:
+        check("capture guide matches the constants it quotes", False, repr(e))
+
+    # 8p) An extruded profile must survive the whole export path. depth_mm rides on a closed
+    #     polyline so a consumer can build the solid instead of guessing; the DXF writer must
+    #     ignore the key it does not know rather than dropping the profile.
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            p_dxf = os.path.join(d, "extrusion.dxf")
+            with _quiet():
+                ok_dxf = export_to_dxf(
+                    [{"type": "polyline", "points": [[0, 0], [100, 0], [100, 40], [0, 40]],
+                      "closed": True, "mm_per_px": 1, "depth_mm": 1500.0},
+                     {"type": "circle", "center_x": 10, "center_y": 10, "radius_px": 5}],
+                    p_dxf, 1.0, image_height_px=200.0)
+            wrote = ok_dxf and os.path.exists(p_dxf) and os.path.getsize(p_dxf) > 0
+            body = open(p_dxf, errors="replace").read() if wrote else ""
+        # the profile itself must still be in the file (a closed LWPOLYLINE)
+        kept = "LWPOLYLINE" in body.upper()
+        check("extruded profile exports; unknown depth_mm key is harmless", bool(wrote and kept),
+              f"wrote={bool(wrote)}, profile kept={kept}")
+    except Exception as e:
+        check("extruded profile exports; unknown depth_mm key is harmless", False, repr(e))
+
+    # 8q) The 3D solid. Every other export is flat, so for an extruded part this is the one
+    #     that finishes the job. A slicer needs a CLOSED surface: a mesh with a gap or a
+    #     flipped face either fails to load or silently prints wrong, so both properties are
+    #     asserted rather than assumed — every undirected edge shared by exactly two
+    #     triangles, and a positive signed volume equal to profile area x depth.
+    try:
+        from solid_export import build_extrusion, mesh_report, write_binary_stl
+
+        def _area(r):
+            a = np.asarray(r, float)
+            return abs(float(np.sum(a[:, 0] * np.roll(a[:, 1], -1)
+                                    - np.roll(a[:, 0], -1) * a[:, 1]))) / 2.0
+
+        def _circ(R, n, cx=0.0, cy=0.0):
+            return [[cx + R * np.cos(t), cy + R * np.sin(t)]
+                    for t in np.linspace(0, 2 * np.pi, n, endpoint=False)]
+
+        depth = 1500.0
+        cases = {
+            # a plain block, and the same block with a hole through it
+            "square": ([[0, 0], [100, 0], [100, 100], [0, 100]], []),
+            "square+hole": ([[0, 0], [100, 0], [100, 100], [0, 100]],
+                            [[[40, 40], [60, 40], [60, 60], [40, 60]]]),
+            # concavity: unconstrained Delaunay wants to cut across these
+            "L-shape": ([[0, 0], [100, 0], [100, 40], [40, 40], [40, 100], [0, 100]], []),
+            "U-channel": ([[0, 0], [100, 0], [100, 80], [75, 80],
+                           [75, 25], [25, 25], [25, 80], [0, 80]], []),
+            # irrational coordinates: these caught cv2.Subdiv2D's float32 round-trip, which
+            # left cap vertices a micro-millimetre off their walls and shredded the mesh
+            "circle": (_circ(50, 64), []),
+            "circle+4 bores": (_circ(50, 96), [_circ(6, 24, 25, 0), _circ(6, 24, -25, 0),
+                                               _circ(6, 24, 0, 25), _circ(6, 24, 0, -25)]),
+            # the real shape of this: a 1.5 m running board with a row of clip slots. Sizing
+            # the boundary spacing off the slots blew the point budget and truncated the
+            # outline, which cannot close.
+            "running board+8 clips": ([[0, 0], [1500, 0], [1500, 180], [0, 180]],
+                                      [[[100 + 170 * i, 70], [150 + 170 * i, 70],
+                                        [150 + 170 * i, 110], [100 + 170 * i, 110]]
+                                       for i in range(8)]),
+            # a reversed outline must still come out solid, not inside out
+            "CW input": ([[0, 100], [100, 100], [100, 0], [0, 0]], []),
+        }
+        rows, bad = [], []
+        for name, (o, h) in cases.items():
+            t = build_extrusion(o, h, depth)
+            if t is None:
+                bad.append(f"{name}: refused")
+                continue
+            rep = mesh_report(t)
+            want = (_area(o) - sum(_area(x) for x in h)) * depth
+            err = abs(rep["volume_mm3"] - want) / want * 100.0
+            rows.append(f"{name} {rep['triangles']}t")
+            if not rep["watertight"]:
+                bad.append(f"{name}: {rep['open_edges']} open edges")
+            if err > 0.6:
+                bad.append(f"{name}: volume off {err:.2f}%")
+            if rep["volume_mm3"] <= 0:
+                bad.append(f"{name}: normals inverted")
+
+        # A hole must actually remove material, not just draw a line on the cap.
+        soo = mesh_report(build_extrusion(cases["square"][0], [], depth))["volume_mm3"]
+        swh = mesh_report(build_extrusion(*cases["square+hole"], depth))["volume_mm3"]
+        if not (swh < soo * 0.97):
+            bad.append("hole removed no material")
+
+        # Degenerate input is refused rather than silently producing a broken solid.
+        for nm, args in (("collinear", ([[0, 0], [10, 0], [20, 0]], [], depth)),
+                         ("two points", ([[0, 0], [10, 0]], [], depth)),
+                         ("zero depth", ([[0, 0], [10, 0], [10, 10]], [], 0.0)),
+                         ("nan point", ([[0, 0], [float("nan"), 0], [10, 10]], [], depth))):
+            if build_extrusion(*args) is not None:
+                bad.append(f"accepted degenerate input: {nm}")
+
+        # And the bytes are a real binary STL: 80-byte header, count, 50 bytes per triangle.
+        with tempfile.TemporaryDirectory() as d:
+            sp = os.path.join(d, "p.stl")
+            tt = build_extrusion(cases["square"][0], [], depth)
+            wrote = write_binary_stl(tt, sp)
+            blob = open(sp, "rb").read() if wrote else b""
+        import struct as _struct
+        ntri = _struct.unpack("<I", blob[80:84])[0] if len(blob) >= 84 else -1
+        if not (wrote and len(blob) == 84 + 50 * ntri and ntri == len(tt)):
+            bad.append(f"STL malformed: {len(blob)} bytes for {ntri} triangles")
+
+        check("extruded solids are watertight, correctly sized, and valid STL",
+              not bad, "; ".join(bad) if bad else f"{len(rows)} profiles, all closed")
+    except Exception as e:
+        check("extruded solids are watertight, correctly sized, and valid STL", False, repr(e))
+
+    # 8r) /api/export/stl takes untrusted JSON and must answer cleanly for every malformed
+    #     shape, and must refuse rather than return a leaky mesh a slicer would mis-print.
+    try:
+        import app as _app6
+        cli = _app6.server.test_client()
+        prof = {"type": "polyline", "closed": True, "depth_mm": 1500.0,
+                "points": [[0, 0], [300, 0], [300, 60], [0, 60]]}
+        hole = {"type": "polyline", "closed": True,
+                "points": [[40, 20], [70, 20], [70, 40], [40, 40]]}
+        with _quiet():
+            good = cli.post("/api/export/stl", json={"geometry": [prof, hole],
+                                                     "mm_per_px": 1.0, "image_height": 200})
+        import struct as _s2
+        n = _s2.unpack("<I", good.data[80:84])[0] if len(good.data) >= 84 else -1
+        happy = (good.status_code == 200 and len(good.data) == 84 + 50 * n and n > 0
+                 and "part.stl" in (good.headers.get("Content-Disposition") or ""))
+
+        bad_bodies = {
+            "empty": {},
+            "no_geometry": {"geometry": []},
+            "junk_entries": {"geometry": ["junk", 7]},
+            "no_depth": {"geometry": [{"type": "polyline", "closed": True,
+                                        "points": [[0, 0], [10, 0], [10, 10]]}]},
+            "open_path": {"geometry": [{"type": "polyline", "closed": False, "depth_mm": 10,
+                                         "points": [[0, 0], [10, 0], [10, 10]]}]},
+            "two_points": {"geometry": [{"type": "polyline", "closed": True, "depth_mm": 10,
+                                          "points": [[0, 0], [10, 0]]}]},
+            "nan_point": {"geometry": [{"type": "polyline", "closed": True, "depth_mm": 10,
+                                         "points": [[0, 0], [float("nan"), 0], [10, 10]]}]},
+            "inf_scale": {"geometry": [prof], "mm_per_px": float("inf")},
+            "zero_scale": {"geometry": [prof], "mm_per_px": 0},
+            "collinear": {"geometry": [{"type": "polyline", "closed": True, "depth_mm": 10,
+                                         "points": [[0, 0], [10, 0], [20, 0]]}]},
+        }
+        codes = {}
+        with _quiet():
+            for k, b in bad_bodies.items():
+                codes[k] = cli.post("/api/export/stl", json=b).status_code
+        # 400 for malformed input, 422 for well-formed input that cannot make a solid.
+        validated = all(v in (400, 422) for v in codes.values())
+        check("/api/export/stl returns a valid STL and refuses everything else",
+              happy and validated,
+              f"{n} triangles; bad-input codes={sorted(set(codes.values()))}")
+    except Exception as e:
+        check("/api/export/stl returns a valid STL and refuses everything else", False, repr(e))
+
+    # 8s) The same physical part appears in every photo of a job, so a length measured in a
+    #     view that HAD a usable reference is a valid reference in a view that had none. That
+    #     is what rescues a real set like this customer's: a ruler lying in the part's plane
+    #     in one shot, and no reference at all in the shot of the part laid out on the ground
+    #     — which is the most useful one for modelling. Without it that photo cannot be
+    #     measured at all. Guard the selection rules, because laundering a bad scale from one
+    #     view into another would make a wrong number look authoritative.
+    try:
+        import subprocess, json as _json
+        node = None
+        for cand in ("/opt/node22/bin/node", "node"):
+            try:
+                subprocess.run([cand, "-e", "0"], capture_output=True, check=True)
+                node = cand
+                break
+            except Exception:
+                continue
+        if node is None:
+            check("cross-view reference dimensions (needs node)", True, "skipped — no node runtime")
+        else:
+            script = r"""
+              require(process.argv[1]);
+              // the module reads the stored job at load time, so seed it first
+              localStorage.setItem('camscan.job.v1', JSON.stringify({ id:'j', views:[
+                {label:'Top', sourceId:'a', scale:{calibrated:true}, measurements:[
+                   {label:'Width', text:'142 mm', mm:142.3},
+                   {label:'Rib',   text:'38 mm',  mm:38.1},
+                   {label:'Outline', text:'peri 900'}]},
+                {label:'Front', sourceId:'b', scale:{calibrated:false}, measurements:[
+                   {label:'Bogus', text:'?', mm:999}]},
+                {label:'Detail', sourceId:'c', scale:{calibrated:true}, measurements:[
+                   {label:'Slot', text:'51 mm', mm:51.0}]},
+              ]}));
+              require(process.argv[2]);
+              const d = window.CalibJob.referenceDimensions();
+              console.log(JSON.stringify({
+                dims: d,
+                leakedUncalibrated: d.some(x => x.mm === 999),
+                keptNonLength: d.some(x => x.label === 'Outline'),
+                sorted: d.every((x, i) => i === 0 || d[i - 1].mm >= x.mm),
+              }));
+            """
+            r = subprocess.run([node, "-e", script,
+                                str(ROOT / "tests" / "support" / "dom_stub.js"),
+                                str(ROOT / "assets" / "calib.job.js")],
+                               capture_output=True, text=True, timeout=60)
+            o = _json.loads(r.stdout.strip())
+            ok = (len(o["dims"]) == 3
+                  # a view whose own scale is not calibrated must never become a reference
+                  and not o["leakedUncalibrated"]
+                  # only single-length measurements carry a reusable mm
+                  and not o["keptNonLength"]
+                  # longest first: a bigger reference extrapolates far better
+                  and o["sorted"] and abs(o["dims"][0]["mm"] - 142.3) < 1e-9)
+            offered = ", ".join("{}={:.1f}mm".format(x["label"], x["mm"]) for x in o["dims"])
+            check("a dimension from a scaled view can scale a view with no reference", ok,
+                  "offered [{}]; uncalibrated leaked={}".format(offered, o["leakedUncalibrated"]))
+    except Exception as e:
+        check("a dimension from a scaled view can scale a view with no reference", False, repr(e))
+
+    # 8t) A dark part lying next to its own shadow cannot be separated by ANY threshold: on
+    #     a real customer photo the part averaged 71 grey and its shadow 57, while bare
+    #     concrete was 169 — the part and the shadow differ by 15 levels, the shadow and the
+    #     ground by 113. The colour-distance trace swallowed the shadow whole (100% of the
+    #     frame). Two taps — "this is the part", "this is not" — switch to GrabCut, which
+    #     models both sides instead of drawing one line. Reproduce that scene synthetically.
+    try:
+        from auto_outline import auto_outline_full
+        H2, W2 = 520, 760
+        scene = np.full((H2, W2, 3), 170, np.uint8)                 # light ground
+        part = np.array([[150, 120], [470, 120], [470, 300], [150, 300]], np.int32)
+        shadow = np.array([[180, 300], [500, 300], [530, 430], [210, 430]], np.int32)
+        cv2.fillPoly(scene, [shadow], (58, 58, 58))                 # its shadow: 58 grey
+        cv2.fillPoly(scene, [part], (72, 72, 72))                   # the part:   72 grey
+        scene = cv2.GaussianBlur(scene, (5, 5), 0)
+        part_area = float(cv2.contourArea(part))
+
+        def _traced_area(**kw):
+            with _quiet():
+                r = auto_outline_full(scene, seed=[310, 210], **kw)
+            if not r or not r.get("outer"):
+                return None
+            return float(cv2.contourArea(np.array(r["outer"], np.int32)))
+
+        plain = _traced_area()
+        hinted = _traced_area(fg_points=[[310, 210]], bg_points=[[350, 380], [60, 60]])
+        # The plain trace should swallow the shadow; the hinted one should not.
+        plain_ratio = (plain / part_area) if plain else 0.0
+        hint_ratio = (hinted / part_area) if hinted else 0.0
+        # Hinted must be much closer to the true part than the plain trace, and must not
+        # collapse to nothing either.
+        ok = (hinted is not None and 0.75 <= hint_ratio <= 1.35
+              and (plain is None or hint_ratio < plain_ratio - 0.15))
+        check("two taps separate a part from a same-coloured shadow",
+              ok, f"plain={plain_ratio:.2f}x the part, two-tap={hint_ratio:.2f}x")
+    except Exception as e:
+        check("two taps separate a part from a same-coloured shadow", False, repr(e))
+
+    # 8u) The hints are untrusted JSON on a public endpoint, and a malformed one must simply
+    #     be ignored — this endpoint's contract is to degrade, never to error.
+    try:
+        import app as _app7
+        _sc = np.full((300, 400, 3), 190, np.uint8)
+        cv2.rectangle(_sc, (120, 90), (280, 210), (40, 40, 40), -1)
+        _o7, _e7 = cv2.imencode(".jpg", _sc)
+        _d7 = "data:image/jpeg;base64," + base64.b64encode(_e7.tobytes()).decode()
+        cli = _app7.server.test_client()
+        base_body = {"image": _d7, "seed": [200, 150]}
+        codes = {}
+        with _quiet():
+            for name, extra in (("none", {}),
+                                ("good hints", {"fg": [[200, 150]], "bg": [[20, 20]]}),
+                                ("fg not a list", {"fg": "nope"}),
+                                ("nan tap", {"bg": [[float("nan"), 5]]}),
+                                ("ragged tap", {"bg": [[1]]}),
+                                ("5000 taps", {"bg": [[1, 1]] * 5000})):
+                r7 = cli.post("/api/trace", json=dict(base_body, **extra))
+                codes[name] = (r7.status_code, bool((r7.get_json() or {}).get("ok")))
+        ok = all(c == 200 for c, _k in codes.values())
+        check("/api/trace tolerates any shape of hint", ok, str(codes))
+    except Exception as e:
+        check("/api/trace tolerates any shape of hint", False, repr(e))
+
+    # 8v) Tapping a featureless patch returns the IMAGE RECTANGLE, which the app would then
+    #     present as the part's outline, ready to measure and export. The guard must fire on
+    #     every such frame and on NOTHING legitimate — a false alarm blocks a real trace. The
+    #     thresholds were set from measured separation (coverage 98.9-99.2% / border 88-99%
+    #     for a dead frame, against 93.2% / 0.0% for the tightest legitimate close-up and
+    #     19.3% border for the worst real photo), so pin both sides here.
+    #
+    #     Every case goes through a JPEG round-trip because that is the path the client uses,
+    #     and compression moves these numbers: one dead frame reads 82% border as a raw array
+    #     and 64% after JPEG, so a test on raw arrays would pass while production missed it.
+    try:
+        from auto_outline import auto_outline_full as _aof
+        rng8 = np.random.default_rng(7)
+
+        def _jpeg(img):
+            _ok, _enc = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return cv2.imdecode(_enc, cv2.IMREAD_COLOR)
+
+        def _verdict(img, **kw):
+            with _quiet():
+                r = _aof(_jpeg(img), **kw)
+            return None if not r else bool(r.get("runaway"))
+
+        def _flat(tone):
+            f = np.full((600, 800, 3), tone, np.uint8)
+            return np.clip(f.astype(np.int16) + rng8.integers(-3, 4, f.shape), 0, 255).astype(np.uint8)
+
+        must_fire = {}
+        for tone in (40, 90, 128, 170, 210):
+            must_fire[f"flat {tone}"] = _verdict(_flat(tone), seed=[400, 300])
+        _blur = cv2.GaussianBlur(np.full((600, 800, 3), 150, np.uint8), (0, 0), 30)
+        _blur = np.clip(_blur.astype(np.int16) + rng8.integers(-6, 7, _blur.shape), 0, 255).astype(np.uint8)
+        must_fire["out-of-focus"] = _verdict(_blur, seed=[400, 300])
+
+        _p = np.full((600, 800, 3), 200, np.uint8)
+        cv2.rectangle(_p, (250, 180), (560, 420), (60, 60, 60), -1)
+        _big = np.full((600, 800, 3), 200, np.uint8)
+        cv2.rectangle(_big, (40, 30), (760, 570), (60, 60, 60), -1)      # fills 81% of frame
+        _tight = np.full((600, 800, 3), 200, np.uint8)
+        cv2.rectangle(_tight, (14, 10), (786, 590), (60, 60, 60), -1)    # fills 93%, 10px gap
+        must_not = {
+            "part 15% of frame": _verdict(_p, seed=[400, 300]),
+            "close-up fills 81%": _verdict(_big, seed=[400, 300]),
+            # The closest legitimate case to the guard: 93% of the frame, edge-to-edge but
+            # for a 10px gap. Only its border (0%) keeps it from tripping.
+            "close-up fills 93%": _verdict(_tight, seed=[400, 300]),
+            "generous Area box": _verdict(_p, roi=[220, 150, 370, 300], seed=[400, 300]),
+            "tight Area box": _verdict(_p, roi=[245, 175, 320, 250], seed=[400, 300]),
+            "box inside the part": _verdict(_p, roi=[250, 180, 90, 120], seed=[290, 230]),
+        }
+        fired = [k for k, v in must_fire.items() if v is not True]
+        false_alarm = [k for k, v in must_not.items() if v is True]
+        # And the endpoint must say so rather than handing the frame back as an outline.
+        import app as _app8
+        _of, _ef = cv2.imencode(".jpg", _flat(128))
+        with _quiet():
+            _r8 = _app8.server.test_client().post("/api/trace", json={
+                "image": "data:image/jpeg;base64," + base64.b64encode(_ef.tobytes()).decode(),
+                "seed": [400, 300]})
+        _j8 = _r8.get_json() or {}
+        api_ok = (_r8.status_code == 200 and _j8.get("ok") is False
+                  and _j8.get("error") == "runaway" and bool(_j8.get("hint")))
+        check("a trace that is just the frame is refused, real outlines are not",
+              not fired and not false_alarm and api_ok,
+              "missed={}, false alarms={}, endpoint refuses with a hint={}".format(
+                  fired or "none", false_alarm or "none", api_ok))
+    except Exception as e:
+        check("a trace that is just the frame is refused, real outlines are not", False, repr(e))
 
     # 9) Reload downscale preserves REAL measurements. calibrationOverlay.getRestoreState
     #    scales calibration + annotations by the SAME factor as the raw image (homography

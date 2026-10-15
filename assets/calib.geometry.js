@@ -71,5 +71,113 @@ window.CalibGeom = (function(){
     return [[h[0],h[1],h[2]], [h[3],h[4],h[5]], [h[6],h[7],1]];
   }
 
-  return { distPtLine, solveHomography, orderQuad, quadAreaPx };
+  // --- How far past the scale reference are we measuring? -------------------------------
+  // A homography is only pinned where the points that fixed it are. Extrapolate well beyond
+  // them and the error explodes: measured on synthetic renders at 30 deg tilt with 1 px
+  // corner noise, a true 300 mm feature came back with an RMS error of ~6 mm at 5x the
+  // reference size, ~23 mm at 13x, and metres at 25x. A 40 mm calibration card against a
+  // 1.5 m running board is 38x — it reads plausibly and means nothing.
+  // Pure functions so they can be unit-tested without a DOM.
+  const REF_SPAN_RATIO_WARN = 5, REF_SPAN_RATIO_BAD = 12;
+
+  // Largest pixel distance spanned by a set of annotations.
+  function measuredExtentPx(items){
+    const pts = [];
+    for(const a of (items || [])){
+      if(!a) continue;
+      if(a.type === 'segment'){ pts.push(a.a, a.b); }
+      else if(a.type === 'polyline'){ for(const p of (a.pts || [])) pts.push(p); }
+      else if(a.type === 'rectangle' && a.rect){
+        const [x1, y1, x2, y2] = a.rect; pts.push([x1, y1], [x2, y2]);
+      }
+      else if(a.type === 'angle'){ pts.push(a.a, a.v, a.b); }
+      else if(a.type === 'circle' && a.center){
+        const [cx, cy] = a.center, r = a.radius || 0;
+        pts.push([cx - r, cy - r], [cx + r, cy + r]);
+      }
+    }
+    const ok = pts.filter(p => p && isFinite(p[0]) && isFinite(p[1]));
+    if(ok.length < 2) return 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for(const [x, y] of ok){
+      if(x < minX) minX = x; if(x > maxX) maxX = x;
+      if(y < minY) minY = y; if(y > maxY) maxY = y;
+    }
+    return Math.hypot(maxX - minX, maxY - minY);
+  }
+
+  // null when there is nothing worth saying, else {level:'warn'|'bad', ratio}.
+  function referenceSpanVerdict(refExtentPx, measuredPx){
+    if(!(refExtentPx > 0) || !(measuredPx > 0)) return null;
+    const ratio = measuredPx / refExtentPx;
+    if(!isFinite(ratio) || ratio <= REF_SPAN_RATIO_WARN) return null;
+    return { level: ratio >= REF_SPAN_RATIO_BAD ? 'bad' : 'warn', ratio };
+  }
+
+  // --- Cross-view scale agreement -------------------------------------------------------
+  // Each view carries its own scale, so comparing mm-per-pixel across views says nothing — a
+  // close-up legitimately has a different one from a wide shot. What IS comparable is the
+  // same dimension measured twice: if the user labelled something "Width" in two views, both
+  // readings describe one piece of metal and must agree.
+  //
+  // This matters because a wrong scale is invisible on its own. Across the six customer
+  // photos that prompted it, scales derived from the wrong edge disagreed by 6.6x — 60 mm
+  // against 396 mm for the same feature — and nothing in the app said so; the part would
+  // have been modelled from whichever view happened to be open.
+  //
+  // The bands allow for the error that honest measuring carries: out-of-plane magnification
+  // reaches about 11% on a thick part (see README), tilt about 1%, plus a few percent of
+  // tracing imprecision. So a 10% spread is not worth a word, and 25% is past anything those
+  // explain.
+  const CROSS_VIEW_WARN = 0.10;
+  const CROSS_VIEW_BAD = 0.25;
+
+  function _normLabel(s){
+    return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  // views: [{ label, calibrated, measurements:[{label, mm}] }]
+  // Returns [{label, level:'warn'|'bad', spread, low:{view,mm}, high:{view,mm}}], worst first.
+  function crossViewDisagreements(views){
+    const byLabel = new Map();
+    (views || []).forEach(function(v, i){
+      // An uncalibrated view's millimetres are not millimetres; comparing them would invent
+      // a disagreement (or hide a real one) out of a number that was never a measurement.
+      if(!v || !v.calibrated) return;
+      const viewName = v.label || ('View ' + (i + 1));
+      const seen = new Map();
+      (v.measurements || []).forEach(function(m){
+        if(!m || typeof m.mm !== 'number' || !isFinite(m.mm) || m.mm <= 0) return;
+        const key = _normLabel(m.label);
+        if(!key) return;
+        seen.set(key, seen.has(key) ? null : { view: viewName, mm: m.mm });
+      });
+      // A label used twice WITHIN one view (two slots both called "Slot") gives no way to
+      // say which reading pairs with the other view's, so it is left out rather than guessed.
+      seen.forEach(function(entry, key){
+        if(!entry) return;
+        if(!byLabel.has(key)) byLabel.set(key, []);
+        byLabel.get(key).push(entry);
+      });
+    });
+
+    const out = [];
+    byLabel.forEach(function(entries, key){
+      if(entries.length < 2) return;
+      let low = entries[0], high = entries[0];
+      entries.forEach(function(e){ if(e.mm < low.mm) low = e; if(e.mm > high.mm) high = e; });
+      const spread = (high.mm - low.mm) / low.mm;      // "the larger reading is X% bigger"
+      if(!isFinite(spread) || spread <= CROSS_VIEW_WARN) return;
+      out.push({ label: key, level: spread >= CROSS_VIEW_BAD ? 'bad' : 'warn',
+                 spread: spread, low: low, high: high });
+    });
+    out.sort(function(a, b){ return b.spread - a.spread; });
+    return out;
+  }
+
+  return { distPtLine, solveHomography, orderQuad, quadAreaPx,
+           measuredExtentPx, referenceSpanVerdict,
+           crossViewDisagreements,
+           REF_SPAN_RATIO_WARN, REF_SPAN_RATIO_BAD,
+           CROSS_VIEW_WARN, CROSS_VIEW_BAD };
 })();
