@@ -1538,7 +1538,6 @@ def main():
         L = np.array([[0, 0], [120, 0], [120, 30], [30, 30], [30, 90], [0, 90]], float)
         D = 20.0
         tris, _inf = _bs(L.tolist(), [], D, 3)
-        ys = tris[:, :, 1]
 
         def _turn_back(t):
             u = np.array(t, copy=True)

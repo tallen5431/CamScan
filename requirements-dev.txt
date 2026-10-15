@@ -6,4 +6,4 @@
 # Without these, tests/smoke_test.py still runs in full; the browser suites
 # (tests/test_*_e2e.py) report SKIP — set CAMSCAN_E2E_REQUIRE=1 to make a skip fail.
 playwright>=1.44
-pyflakes>=3.0
+flake8>=7.0          # CI runs: flake8 --select=F  (pyflakes checks; honours # noqa)

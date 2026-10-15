@@ -343,7 +343,7 @@ def calibrate_image(img_bgr: np.ndarray,
     if use_robust_detection:
         # Strategy 1: IMPROVED calibration pattern detection
         # Uses enhanced detect_squares.py with CLAHE, adaptive thresholds, relaxed matching
-        print(f"[Calibration] Strategy 1: IMPROVED 4-pad pattern detection")
+        print("[Calibration] Strategy 1: IMPROVED 4-pad pattern detection")
         dets = detect_dark_squares_robust(
             img_bgr,
             edge_mm=edge_len_mm,
@@ -425,7 +425,7 @@ def calibrate_image(img_bgr: np.ndarray,
 
         # Strategy 4: Last resort - general square detection without pattern enforcement
         if len(rects) == 0:
-            print(f"[Calibration] Strategy 4: General square detection (no pattern enforcement)")
+            print("[Calibration] Strategy 4: General square detection (no pattern enforcement)")
             dets = detect_dark_squares_robust(
                 img_bgr,
                 edge_mm=edge_len_mm,
@@ -452,7 +452,7 @@ def calibrate_image(img_bgr: np.ndarray,
     rects = sorted(rects, key=lambda r: r[2]*r[3], reverse=True)
 
     # Enhanced debug logging
-    print(f"[Calibration] Detection summary:")
+    print("[Calibration] Detection summary:")
     print(f"  - Image size: {W}x{H} ({W*H:,} pixels)")
     print(f"  - Min area threshold: {MIN_AREA_DEFAULT} px² ({MIN_AREA_DEFAULT/(W*H)*100:.3f}%)")
     print(f"  - Candidates before dedup: {pre_dedup_count}")
@@ -461,7 +461,7 @@ def calibrate_image(img_bgr: np.ndarray,
         for i, (x, y, w, h) in enumerate(rects[:5], 1):
             print(f"  - Candidate #{i}: pos=({x},{y}) size={w}x{h} area={w*h:,}px² ({w*h/(W*H)*100:.2f}%)")
     else:
-        print(f"  ⚠️  No candidates found - try lowering min_area or adjusting lighting")
+        print("  ⚠️  No candidates found - try lowering min_area or adjusting lighting")
 
 
     markers: List[Dict[str, Any]] = []
@@ -476,17 +476,17 @@ def calibrate_image(img_bgr: np.ndarray,
     outer_rect = rects[0] if len(rects) > 0 else None
     inner_rects = rects[1:] if len(rects) > 1 else []
 
-    print(f"[Calibration] Square separation:")
+    print("[Calibration] Square separation:")
     print(f"  - Total rects: {len(rects)}")
     print(f"  - Outer square: {'Found' if outer_rect else 'Not found'}")
     print(f"  - Inner squares: {len(inner_rects)} detected")
 
     if len(rects) == 5:
-        print(f"  ✅ Full calibration pattern detected (1 outer + 4 inner)")
+        print("  ✅ Full calibration pattern detected (1 outer + 4 inner)")
     elif len(rects) > 0:
         print(f"  ⚠️  Incomplete pattern (expected 5, got {len(rects)}) - pattern matching may have failed")
     else:
-        print(f"  ❌ No squares detected")
+        print("  ❌ No squares detected")
 
     # Save debug image showing detected rectangles BEFORE edge refinement.
     # Written OUTSIDE the web-served uploads/ dir, under a unique name, so enabling debug
@@ -505,7 +505,7 @@ def calibrate_image(img_bgr: np.ndarray,
         print(f"  💾 Debug image saved: {debug_path}")
 
     # Process outer black square for calibration measurement
-    print(f"\n[Calibration] Processing squares for overlay:")
+    print("\n[Calibration] Processing squares for overlay:")
     if outer_rect is not None:
         x, y, w, h = outer_rect
         print(f"  📦 Outer square: pos=({x},{y}) size={w}x{h} area={w*h:,}px²")
@@ -539,7 +539,7 @@ def calibrate_image(img_bgr: np.ndarray,
             corners_local = _fallback_square_corners(crop_ds, rect_local, polarity="dark")
             corner_source = "bbox"
             if corners_local:
-                print(f"     ↩︎ Using minAreaRect fallback for outer square corners")
+                print("     ↩︎ Using minAreaRect fallback for outer square corners")
 
         if corners_local:
             # Map corners back to full image coords
@@ -606,7 +606,7 @@ def calibrate_image(img_bgr: np.ndarray,
                 print(f"  ✅ Outer square calibrated ({corner_source}): {marker['edge_px']:.1f}px = {edge_len_mm}mm → {marker['mm_per_px']:.4f} mm/px")
         else:
             refinement_failures += 1
-            print(f"  ⚠️  Outer square failed corner refinement (no fallback contour)")
+            print("  ⚠️  Outer square failed corner refinement (no fallback contour)")
 
     # Process inner white squares for visualization only (no calibration measurement)
     print(f"\n  🔲 Processing {len(inner_rects)} inner white squares:")
@@ -655,7 +655,7 @@ def calibrate_image(img_bgr: np.ndarray,
     # matches the documented target ("a solid black square, optionally with 4 white
     # inner pads") so calibration still works when the pads are absent or unreadable.
     if len(markers) == 0:
-        print(f"\n[Calibration] Fallback: plain dark-square detection on full frame")
+        print("\n[Calibration] Fallback: plain dark-square detection on full frame")
         plain_metrics: Dict[str, Any] = {}
         _v, _n, _w, corners_plain = find_main_edges(
             img_bgr, MAX_EDGES, warp=True, polarity="dark", metrics=plain_metrics,
@@ -676,17 +676,17 @@ def calibrate_image(img_bgr: np.ndarray,
                 markers.append(marker)
                 print(f"  ✅ Plain square calibrated: {marker['edge_px']:.1f}px = {edge_len_mm}mm → {marker['mm_per_px']:.4f} mm/px (verify)")
         else:
-            print(f"  ⚠️  No plain square found either — image will be uncalibrated")
+            print("  ⚠️  No plain square found either — image will be uncalibrated")
 
     elapsed = time.time() - start_time
-    print(f"[Calibration] Processing complete:")
+    print("[Calibration] Processing complete:")
     print(f"  - Successfully calibrated: {len(markers)} marker(s)")
     print(f"  - Failed corner refinement: {refinement_failures}")
     print(f"  - Total processing time: {elapsed:.3f}s")
     if len(markers) > 0:
         print(f"  - Time per marker: {elapsed/len(markers):.3f}s")
     if len(markers) == 0 and len(rects) > 0:
-        print(f"  ⚠️  All candidates failed corner refinement - check image quality and marker clarity")
+        print("  ⚠️  All candidates failed corner refinement - check image quality and marker clarity")
     # Global averages. Only VERIFIED markers set the usable scale: averaging in a shadow the
     # detector mistook for a marker is how a photo with no reference at all ends up quoting
     # millimetres.
