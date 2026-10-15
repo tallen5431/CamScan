@@ -182,6 +182,11 @@ def _find_4pad_pattern(
         layout_pen = (aspect_cluster - 1.0) ** 2
 
         dsub  = dist_all[np.ix_(idxs, idxs)]
+        # Four pads are four separate squares: no two centres can sit within half a pad of
+        # each other. Without this a pair of near-identical detections of ONE pad passed as
+        # two (their ~1 px separation slipped past the zero-distance filter just below).
+        if dsub[np.triu_indices(4, 1)].min() < mean_side * 0.5:
+            continue
         dists = dsub[dsub > 1e-6]
         mean_d = dists.mean()
         if mean_d < mean_side * 0.5:
@@ -415,6 +420,23 @@ def detect_dark_squares(
 
     # Sort by score
     candidates.sort(key=lambda t: t[0], reverse=True)
+
+    # One object, one candidate. With polarity="both" every pad is found TWICE — as a bright
+    # blob, and as the hole in the dark ring round it — and the pattern search below only
+    # looks at the top few candidates by score. Undeduplicated, the twins of three pads could
+    # crowd the fourth out of that list, and the search would then accept the same pad twice
+    # as two of its "four". Whether the fourth pad made the cut hinged on tiny score
+    # differences, so a real marker was rejected at scattered angles and distances (measured
+    # on renders of the printed marker: 20/25/30 deg at 400 mm, every angle from 20 deg at
+    # 300 mm, 40 deg at 600 mm even with blur). The fallback below always deduplicated; it
+    # just did so after the pattern search had already run.
+    _distinct: List[Detection] = []
+    for cand in candidates:
+        box = (cand[1], cand[2], cand[3], cand[4])
+        if any(_iou_xywh(box, (e[1], e[2], e[3], e[4])) > 0.6 for e in _distinct):
+            continue
+        _distinct.append(cand)
+    candidates = _distinct
 
     # Pattern mode: try outer + 4 pads first
     if enforce_calibration_pattern and candidates:

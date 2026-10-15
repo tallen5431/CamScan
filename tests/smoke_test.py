@@ -950,6 +950,28 @@ def main():
     except Exception as e:
         check("tilt is already handled; EXIF focal + camera block are sound", False, repr(e))
 
+    # 8l2) A REAL marker must be accepted at every ordinary angle. With polarity "both" each
+    #      pad is found twice (bright blob, and hole in the dark ring), and the 4-pad search
+    #      only looked at the top few candidates by score — so the twins of three pads could
+    #      crowd out the fourth, and the search accepted one pad twice. A genuine marker was
+    #      then rejected as "not a calibration target" at scattered angles: 13 of these 40
+    #      renders of the printed marker before the fix, 0 after. Found because CI rendered
+    #      the test images a pixel differently (see synthetic_camera._poly) and one tilt flipped.
+    try:
+        from synthetic_camera import render as _r8
+        rejected = []
+        for dist, blur in ((250.0, 0.0), (300.0, 0.0), (400.0, 0.0), (400.0, 0.8)):
+            for tilt in range(0, 46, 5):
+                im8 = _r8(40.0, 1500.0, 1600, 1200, tilt, dist, blur=blur)[0]
+                with _quiet():
+                    c8, _o8 = calibrate_image(im8, edge_mm=40.0, focal_px=1500.0)
+                if not c8.get("calibration_usable"):
+                    rejected.append(f"{int(dist)}mm/{tilt}deg" + (f"/blur{blur}" if blur else ""))
+        check("a real marker is accepted at every ordinary angle and distance", not rejected,
+              "40 renders, 0-45 deg at 250-400 mm; rejected: {}".format(rejected or "none"))
+    except Exception as e:
+        check("a real marker is accepted at every ordinary angle and distance", False, repr(e))
+
     # 8m) /api/plane is a public endpoint taking untrusted JSON — it must answer cleanly
     #     for every malformed shape rather than 500, and must actually reduce the error.
     try:
