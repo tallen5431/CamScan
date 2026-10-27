@@ -337,7 +337,41 @@ window.CalibUI = (function(){
   // per session when localStorage is unavailable (private mode / storage disabled).
   let coachSeenMem = false;
 
+  // The "no scale yet" notice sits over the top of the photo — right where the Set-scale bar
+  // opens — and used to stay there while the user did exactly what it asked. It now steps
+  // aside once a scale is being set or has been set, and any banner can be dismissed with a
+  // tap. A new photo brings it back (build() runs once per photo); a changed message does too.
+  function noticeBanner(){ return document.getElementById('upload-error'); }
+  function hideScaleNotice(){
+    const b = noticeBanner();
+    if (b && b.querySelector('.cal-scale-notice')) b.classList.add('cal-dismissed');
+  }
+  function armNoticeBanner(){
+    const b = noticeBanner();
+    if (!b) return;
+    b.classList.remove('cal-dismissed');
+    if (b.__calArmed) return;
+    b.__calArmed = true;
+    if (!document.getElementById('cal-notice-style')) {
+      const st = document.createElement('style'); st.id = 'cal-notice-style';
+      // Other layers that already say "no scale yet" — the first-run coach, the simple-mode
+      // card — mark the body while they show, and the banner yields to them instead of
+      // stacking a third copy of the same message over the photo. State, not an event:
+      // the banner's content can arrive after either of them has rendered.
+      st.textContent = '#upload-error.cal-dismissed{display:none!important}' +
+        'body.cal-scale-carried #upload-error:has(.cal-scale-notice),' +
+        'body.cal-coach-up #upload-error:has(.cal-scale-notice){display:none!important}' +
+        '#upload-error{cursor:pointer}#upload-error::after{content:"  ✕";opacity:.6;font-weight:700}';
+      document.head.appendChild(st);
+    }
+    b.title = 'Tap to dismiss';
+    b.addEventListener('click', () => b.classList.add('cal-dismissed'));
+    new MutationObserver(() => b.classList.remove('cal-dismissed'))
+      .observe(b, { childList: true, characterData: true, subtree: true });
+  }
+
   function build(rootEl, overlay){
+    armNoticeBanner();
     // Remove any chrome from a previous build on this view (defensive — one build per
     // upload in practice). The <canvas> is a direct grid child and is left in place.
     rootEl.querySelectorAll('.cal-topbar, .cal-rail, .cal-sheet, .cal-zoom, .cal-context, .cal-coach, .cal-fab')
@@ -358,6 +392,7 @@ window.CalibUI = (function(){
     function closeScalePanel(){ if (scalePanel && scalePanel.parentNode) scalePanel.remove(); scalePanel = null; }
     function openScalePanel(){
       dismissCoach();
+      hideScaleNotice();
       if (scalePanel) return;                 // already open — don't stack
       scalePanel = document.createElement('div');
       scalePanel.className = 'cal-coach';     // reuse the dimmed-backdrop + card styling
@@ -718,7 +753,7 @@ window.CalibUI = (function(){
 
     // Calibration chip — the reference size drives every measurement, so surface it up top.
     const calChip = document.createElement('button');
-    calChip.type = 'button'; calChip.className = 'cal-icon';
+    calChip.type = 'button'; calChip.className = 'cal-icon'; calChip.id = 'cal-tb-scale';
     calChip.innerHTML = '<span class="cal-icon-emoji">📐</span><span class="cal-icon-text"></span>';
     calChip.onclick = () => openScalePanel();
 
@@ -730,6 +765,9 @@ window.CalibUI = (function(){
       let text, label;
       if (paper)       { text = 'paper';    label = 'Scale: from a sheet of paper (tilt-corrected) — tap to change'; }
       else if (manual) { text = 'manual';   label = 'Scale: manual (from a known line) — tap to change'; }
+      // "40 mm" on a photo with no scale read as if a scale were set (it is only the size a
+      // printed square WOULD be): say what is actually true, and what the chip does.
+      else if (uncal)  { text = 'Set scale'; label = 'No scale yet — tap to set one'; }
       else if (mm)     { text = `${mm} mm`;  label = `Calibration square: ${mm} mm — tap to change`; }
       else             { text = 'Set size';  label = 'Not calibrated — tap to set your square size'; }
       const t = calChip.querySelector('.cal-icon-text');
@@ -740,7 +778,27 @@ window.CalibUI = (function(){
     }
     reflectCalChip();
 
-    left.append(newImage, calChip);
+    // The 3D part is assembled across photos, so its way in has to be visible on every photo
+    // once it has begun — not only in the export menu, where nobody looked for it.
+    const partChip = document.createElement('button');
+    partChip.type = 'button'; partChip.className = 'cal-icon'; partChip.id = 'cal-tb-part';
+    partChip.innerHTML = '<span class="cal-icon-emoji">🧩</span><span class="cal-icon-text"></span>';
+    partChip.onclick = () => window.CalibPart3D && window.CalibPart3D.open();
+    let partSig = null;
+    function reflectPartChip(){
+      const roles = (window.CalibPart3D && window.CalibPart3D.assigned) ? window.CalibPart3D.assigned() : [];
+      const sig = roles.join(',');
+      if (sig === partSig) return;
+      partSig = sig;
+      partChip.style.display = roles.length ? '' : 'none';
+      partChip.querySelector('.cal-icon-text').textContent = `Build 3D part (${roles.length})`;
+      const label = 'Build the 3D part from its views: ' + roles.join(', ');
+      partChip.setAttribute('data-tooltip', label); partChip.setAttribute('aria-label', label);
+    }
+    reflectPartChip();
+    document.addEventListener('camscan-job-changed', reflectPartChip);
+
+    left.append(newImage, calChip, partChip);
 
     // Export button + menu (single entry point; PNG is the first, most-common option).
     const exportWrap = document.createElement('div'); exportWrap.className = 'cal-export';
@@ -955,7 +1013,7 @@ window.CalibUI = (function(){
     // in whichever photo shows it best — see calib.part3d.js.
     const ctx3d = document.createElement('button'); ctx3d.type = 'button'; ctx3d.className = 'cal-ctx-finish';
     ctx3d.id = 'cal-ctx-3d';
-    ctx3d.innerHTML = '▣ 3D view';
+    ctx3d.innerHTML = '🧩 Use in 3D part';
     ctx3d.setAttribute('aria-label', 'Use this outline as a view of the 3D part');
     ctx3d.title = 'Use this outline as the Top, Side, End or Cavity of a 3D part';
     ctx3d.onclick = () => { if (window.CalibPart3D) window.CalibPart3D.pick(ctx3d); };
@@ -980,6 +1038,7 @@ window.CalibUI = (function(){
       const hadFocus = coach && coach.contains(document.activeElement);
       if (coach && coach.parentNode) coach.remove();
       coach = null;
+      document.body.classList.remove('cal-coach-up');
       if (wasShown) {
         coachSeenMem = true;
         try { localStorage.setItem('calib.coachSeen', '1'); } catch (e) {}
@@ -994,6 +1053,7 @@ window.CalibUI = (function(){
       let seen = false; try { seen = localStorage.getItem('calib.coachSeen') === '1'; } catch (e) {}
       if (seen) return;
       coach = document.createElement('div'); coach.className = 'cal-coach';
+      document.body.classList.add('cal-coach-up');   // its step 1 says what the banner does
       // Tapping the dimmed backdrop dismisses (so a user who follows "tap the photo" isn't
       // blocked by an inert overlay); taps on the card itself do not.
       coach.addEventListener('click', (e) => { if (e.target === coach) dismissCoach(); });
@@ -1023,6 +1083,7 @@ window.CalibUI = (function(){
     // ---- Keep the UI in sync with engine state ----
     function reflect(){
       const mode = overlay.opts && overlay.opts.mode;
+      if (mode === 'setscale' || mode === 'setscalerect' || (overlay.isCalibrated && overlay.isCalibrated())) hideScaleNotice();
       modeBtns.forEach((b, i) => b.setAttribute('aria-pressed', String(mode === modes[i][0])));
       ctxDelete.classList.toggle('show', !!(overlay.ann && overlay.ann.selectedId != null));
       const pathN = overlay.selectedPoints ? overlay.selectedPoints.length : 0;

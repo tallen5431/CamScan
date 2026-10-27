@@ -407,7 +407,10 @@ def _upload_notice(status, viewer):
     left:-9999px. Writing the one message the user has to act on into an element that is
     being hidden in the same breath left only a small KPI chip to carry it.
     """
-    return status, viewer, _UPLOADER_TUCKED, None, status, _BANNER_NOTICE
+    # The class lets the client tell this notice from an upload failure: the notice goes
+    # away by itself once a scale is set; a failure stays until dismissed or replaced.
+    return (status, viewer, _UPLOADER_TUCKED, None,
+            html.Span(status, className="cal-scale-notice"), _BANNER_NOTICE)
 
 
 def _upload_failed(msg):
@@ -552,16 +555,16 @@ def on_upload(contents, filename):
     usable = cal.get("calibration_usable", n_markers > 0)
     if n_markers == 0 or confidence == "none" or not usable:
         found_something = n_markers > 0 and not usable
-        lead = (f"⚠️ Loaded '{filename}'. I found a square-ish shape but can't confirm it is a "
-                "calibration target, so I haven't used it for scale"
+        # Kept short: it sits over the photo while the user does the very thing it asks for,
+        # and the client hides it as soon as a scale is being set (calib.ui.enhanced.js).
+        lead = ("⚠️ No scale yet — I saw a square-ish shape but can't confirm it's a "
+                "calibration target, so it isn't used"
                 if found_something else
-                f"⚠️ Loaded '{filename}', but no calibration target was found")
+                "⚠️ No scale yet — no calibration target in this photo")
         status = (
-            f"{lead} — measurements are in PIXELS until you set a scale. "
-            "Open Set scale (📐) and either draw along something of known length — a ruler, "
-            "a credit card, a coin — or, for a big part, tap the 4 corners of a rectangle "
-            "you know the size of (a sheet of paper, or a square laid out with a ruler), "
-            "which also corrects for camera angle."
+            f"{lead}. Measurements are in pixels until you tap 📐 and draw along a ruler or "
+            "anything of known length (or tap the 4 corners of a known rectangle — that also "
+            "corrects camera angle)."
         )
         return _upload_notice(status, viewer)
 

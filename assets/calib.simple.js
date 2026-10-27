@@ -88,12 +88,15 @@
     }
     // Assuming the customer HAS a printed card is wrong for most of them — the common case
     // is a tape measure or a ruler already in the shot. Lead with what they are holding.
-    return { ok:false, text:'⚠️ No scale yet — measurements are in pixels. Tap “Mark up”, then '
-           + 'Set scale (📐): draw along a ruler or anything of known length. For a big part, '
-           + 'tap the 4 corners of a known rectangle instead — that also corrects camera angle.' };
+    return { ok:false, text:'⚠️ No scale yet — measurements are in pixels. Set one from a ruler, tape or '
+           + 'anything of known length in the photo (or the 4 corners of a known rectangle — that also '
+           + 'corrects camera angle).' };
   }
 
   function renderCard(){
+    // While this card says "no scale yet" (with its button), the top banner yields to it.
+    var o0=overlay();
+    document.body.classList.toggle('cal-scale-carried', !!(isSimple() && o0 && o0.img && !statusOf(o0).ok));
     if(!isSimple()){ if(card){ card.remove(); card=null; _sig=null; } return; }
     var o=overlay();
     if(!o || !o.img){ if(card){ card.remove(); card=null; _sig=null; } return; }   // landing / no photo
@@ -105,6 +108,15 @@
     if(!card){ card=document.createElement('div'); card.id='cal-simple'; document.body.appendChild(card); }
     card.textContent='';
     var s=document.createElement('div'); s.className='st'; s.style.color = st.ok?'#8fe6b6':'#e6b970'; s.textContent=st.text; card.appendChild(s);
+    if(!st.ok){
+      // The card says what to do, so it offers the button for it — rather than "tap Mark up,
+      // then find 📐" — and the top banner, saying the same, steps aside for it.
+      var sc=document.createElement('button'); sc.className='prim'; sc.id='cal-simple-scale'; sc.textContent='📐 Set scale';
+      sc.style.margin='-2px 0 10px';
+      sc.onclick=function(){ setSimple(false); applyMode(true);
+        setTimeout(function(){ var c=document.getElementById('cal-tb-scale'); if(c) c.click(); }, 0); };
+      card.appendChild(sc);
+    }
     if(hint){ var h=document.createElement('div'); h.style.cssText='color:#8fe6b6;font-size:12.5px;margin:-4px 0 9px;'; h.textContent=hint; card.appendChild(h); }
     var r1=document.createElement('div'); r1.className='row';
     var lab=document.createElement('span'); lab.textContent='Add view:'; lab.style.cssText='color:#9fb2bb;font-size:12.5px;'; r1.appendChild(lab);

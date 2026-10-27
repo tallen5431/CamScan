@@ -20,9 +20,15 @@
     if(base.charAt(base.length - 1) !== '/') base += '/';
     return base + path;
   }
-  function toast(msg, ms){
+  function toast(msg, ms, action){
     var o = overlay();
-    if(o && o._toast) o._toast(msg, { autoMs: ms || 4000 });
+    if(o && o._toast) o._toast(msg, { autoMs: ms || 4000, action: action });
+  }
+  // Roles that already hold an outline, in order.
+  function assigned(){
+    var job = J(); if(!job || !job.part) return [];
+    var p = job.part();
+    return ['top', 'side', 'end', 'cavity'].filter(function(r){ return p.views[r]; });
   }
 
   var ROLES = [
@@ -46,8 +52,8 @@
     job.savePart();
     var w = prof.size_mm ? prof.size_mm[0].toFixed(1) : '?', h = prof.size_mm ? prof.size_mm[1].toFixed(1) : '?';
     var have = ['top', 'side', 'end', 'cavity'].filter(function(r){ return p.views[r]; }).map(function(r){ return LABEL[r]; });
-    toast('Saved as the ' + LABEL[role] + ' view (' + w + ' × ' + h + ' mm). Views so far: ' + have.join(', ') +
-          '. Build it from Download → Build 3D part.', 6000);
+    toast('Saved as the ' + LABEL[role] + ' view (' + w + ' × ' + h + ' mm). 3D part views: ' + have.join(', ') + '.',
+          8000, { label: '🧩 Build 3D part', fn: open });
     var panel = document.getElementById('cal-part-panel');
     if(panel) render();
     return true;
@@ -62,9 +68,20 @@
     var h = document.createElement('div'); h.textContent = 'This outline is the part’s…';
     h.style.cssText = 'font-weight:700;margin-bottom:8px;';
     box.appendChild(h);
+    // Say which roles are already filled, and from where: the views live in the job, so ones
+    // assigned on another photo — or in an earlier session — are easy to forget, and picking
+    // that role again silently replaces them.
+    var p = J() && J().part ? J().part() : { views: {} };
+    var here = J() && J().photoId ? J().photoId() : null;
     ROLES.forEach(function(r){
       var b = document.createElement('button'); b.type = 'button'; b.setAttribute('data-role', r[0]);
-      b.innerHTML = '<b>' + esc(r[1]) + '</b> <span style="color:#9aa;font-size:12px;">— ' + esc(r[2]) + '</span>';
+      var cur = p.views[r[0]], note = '';
+      if(cur){
+        var sz = cur.size_mm ? cur.size_mm[0].toFixed(0) + ' × ' + cur.size_mm[1].toFixed(0) + ' mm' : 'set';
+        note = '<br><span style="color:#f3c969;font-size:12px;">✓ already set (' + esc(sz) + ', ' +
+          (here && cur.source === here ? 'this photo' : 'another photo') + ') — choosing it replaces that</span>';
+      }
+      b.innerHTML = '<b>' + esc(r[1]) + '</b> <span style="color:#9aa;font-size:12px;">— ' + esc(r[2]) + '</span>' + note;
       b.style.cssText = 'display:block;width:100%;text-align:left;min-height:42px;margin:4px 0;padding:8px 10px;' +
         'border-radius:8px;background:#151515;color:#eee;border:1px solid #2a3540;cursor:pointer;';
       b.onclick = function(){ box.remove(); assign(r[0]); };
@@ -346,5 +363,5 @@
       .catch(function(e){ setStatus(esc(e.message), true); });
   }
 
-  window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body };
+  window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body, assigned: assigned };
 })();

@@ -91,15 +91,20 @@ PARTS THAT CHANGE SHAPE (several views). A part whose shape is not the same all 
 along — a chamfered or rounded toe, a tapered end, an inside that has to fit over something —
 is built from several outlines instead of one, each traced on whichever photo shows it best:
 
-  1) Trace an outline, select it, press "▣ 3D view" and say what it is:
+  1) Trace an outline, select it, press "🧩 Use in 3D part" and say what it is:
        Top     outline from above            (length x width)
        Side    profile from the side         (length x height)  — gives the toe/taper
        End     cross-section from the end    (width x height)   — gives the rounded edges
        Cavity  the inside: what the part fits over, traced in any of the views
-     Do this across as many photos as you need; the views are kept with the job.
-  2) Download menu → "Build 3D part from views…". The preview draws Top, Side and End like an
+     Do this across as many photos as you need; the views are kept with the job. The
+     picker marks a view that is already set (and from which photo) — choosing it replaces it.
+  2) Press "🧩 Build 3D part" — in the top bar once any view is set, or on the message that
+     confirms each view (also in the 💾 menu). The preview draws Top, Side and End like an
      engineering drawing: blue lines are your outlines, the filled shape is the part. If a
      view is turned or reversed, use ⟲ / ⇋ / ⇵ on its row until they line up.
+     Starting a different part? The first page shows "Part in progress" with its photos and
+     views — press "Start a new part" there (or "💾 Save job" first to keep a copy), or the
+     new photos join the old part.
   3) Set the fit clearance for the cavity (0.4 mm default), where it runs (all the way
      through, or in from one end by a depth), and download the STL.
 
