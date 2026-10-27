@@ -1670,6 +1670,177 @@ def main():
     except Exception as e:
         check("/api/export/stl builds a cover from wall_mm and refuses a bad wall", False, repr(e))
 
+    # 8r6) A part that is not the same shape all the way along — the step pad's chamfered toe,
+    #      its rounded end — comes from intersecting the views: each traced outline pushed
+    #      through the part, keeping only what every view agrees is material. Pin the volume
+    #      against closed forms for every way views combine, the registration rules, and the
+    #      refusals, because a wrong part here is plastic and hours on the printer.
+    try:
+        from part_builder import build_part, PartError
+        from solid_export import mesh_report as _mr6
+        L6, W6, H6 = 400.0, 180.0, 50.0
+        top6 = [[0, 0], [L6, 0], [L6, W6], [0, W6]]
+        side6 = [[0, 0], [L6, 0], [L6, 30], [L6 - 40, H6], [0, H6]]      # toe drops 20 over 40
+        flat_side = [[0, 0], [L6, 0], [L6, H6], [0, H6]]
+        end6 = [[0, 0], [W6, 0], [W6, H6 - 10], [W6 - 10, H6], [10, H6], [0, H6 - 10]]
+        bad6 = []
+
+        def _vol(**kw):
+            r = build_part(**kw)
+            rep = _mr6(r["tris"])
+            if not (rep["watertight"] and rep["oriented"]):
+                bad6.append(f"not closed/wound: {sorted(kw.get('views', {}))}")
+            return rep["volume_mm3"], r["info"]
+
+        def _expect(name, got, want, tol=1e-6):
+            if abs(got - want) > tol * want:
+                bad6.append(f"{name}: {got:.1f} vs {want:.1f}")
+
+        v, _i = _vol(views={"top": {"points": top6}}, depth_mm=25)
+        _expect("top + depth", v, L6 * W6 * 25)
+        v, _i = _vol(views={"top": {"points": top6}, "side": {"points": side6}})
+        _expect("top + side (toe)", v, W6 * (L6 * H6 - 0.5 * 40 * 20))
+        v, _i = _vol(views={"top": {"points": top6}, "side": {"points": flat_side},
+                            "end": {"points": end6}})
+        _expect("top + side + end (chamfers)", v, (W6 * H6 - 2 * 50.0) * L6)
+        # A side photo taken in portrait arrives standing up; it is laid along X.
+        v, _i = _vol(views={"top": {"points": top6},
+                            "side": {"points": [[-y, x] for x, y in side6]}})
+        _expect("side traced in portrait", v, W6 * (L6 * H6 - 400))
+        # Views that disagree a little are fitted and SAID so; a lot is a wrong scale.
+        v, i6 = _vol(views={"top": {"points": top6},
+                            "side": {"points": [[x * 1.05, y] for x, y in side6]}})
+        if not any(f["view"] == "side" and abs(f["pct"] - 5.0) < 1e-6 for f in i6["fits"]):
+            bad6.append(f"5% fit not reported: {i6['fits']}")
+        try:
+            build_part(views={"top": {"points": top6},
+                              "side": {"points": [[x * 1.12, y] for x, y in side6]}})
+            bad6.append("12% disagreement was accepted")
+        except PartError as e:
+            if "12%" not in str(e) or "side" not in str(e):
+                bad6.append(f"12% refusal unclear: {e}")
+        # A cavity traced on the SAME photo as its view keeps its exact place.
+        v, i6 = _vol(views={"top": {"points": top6},
+                            "end": {"points": [[x + 500, y + 70] for x, y in end6]}},
+                     cavity={"points": [[510, 70], [670, 70], [670, 100], [510, 100]],
+                             "view": "end", "same_photo": True, "open": "through"})
+        _expect("same-photo cavity", v, (W6 * H6 - 100.0 - 160 * 30) * L6)
+        # Clearance grows the cavity with rounded corners; the removed volume is that area.
+        base, _i = _vol(views={"top": {"points": top6}, "side": {"points": flat_side},
+                               "end": {"points": end6}})
+        v, i6 = _vol(views={"top": {"points": top6}, "side": {"points": flat_side},
+                            "end": {"points": end6}},
+                     cavity={"points": [[0, 0], [160, 0], [160, 30], [0, 30]], "view": "end",
+                             "open": "min", "depth_mm": 300}, clearance_mm=0.4)
+        removed = 300.0 * (160 * 30 + 2 * 0.4 * 30 + 160 * 0.4 + math.pi * 0.4 ** 2 / 2)
+        _expect("cavity with clearance", base - v, removed, tol=2e-3)
+        if i6["warnings"]:
+            bad6.append(f"10 mm walls flagged thin: {i6['warnings']}")
+        _v, i6 = _vol(views={"top": {"points": top6}, "side": {"points": flat_side}},
+                      cavity={"points": [[0, 0], [179, 0], [179, 30], [0, 30]], "view": "end"})
+        if not i6["warnings"]:
+            bad6.append("0.5 mm walls were not flagged as too thin to print")
+        for nm, kw in (("cavity splits the part",
+                        dict(views={"top": {"points": top6}}, depth_mm=25,
+                             cavity={"points": [[0, 0], [410, 0], [410, 20], [0, 20]],
+                                     "view": "top", "align": "center"})),
+                       ("no views", dict(views={})),
+                       ("top without depth", dict(views={"top": {"points": top6}})),
+                       ("wall with a side view", dict(views={"top": {"points": top6},
+                                                             "side": {"points": side6}},
+                                                      wall_mm=3))):
+            try:
+                build_part(**kw)
+                bad6.append(f"accepted: {nm}")
+            except PartError:
+                pass
+        check("parts from several views: exact volumes, fitted views, cavity, refusals",
+              not bad6, "; ".join(bad6) if bad6 else
+              "top+depth, top+side, three views, portrait side, same-photo and clearance "
+              "cavities all exact; 5% fitted, 12% refused; thin wall flagged")
+    except Exception as e:
+        check("parts from several views: exact volumes, fitted views, cavity, refusals",
+              False, repr(e))
+
+    # 8r7) Mirroring is how the intact cover from one side of the truck becomes the missing
+    #      one from the other, so it must truly change the part's hand — and turning a part
+    #      upside down for printing must NOT. Check both against an L, which has a hand, and
+    #      prove each check bites on the opposite transform.
+    try:
+        from part_builder import build_part as _bp7
+        Lp = np.array([[0, 0], [120, 0], [120, 30], [30, 30], [30, 90], [0, 90]], float)
+        Lm = Lp * [-1, 1] + [120, 0]                                  # the true mirror image
+
+        def _outside(tris, poly):
+            pts = tris.reshape(-1, 3)[:, :2].astype(np.float32)
+            pf = poly.astype(np.float32)
+            return sum(1 for p in pts
+                       if cv2.pointPolygonTest(pf, (float(p[0]), float(p[1])), True) < -1e-3)
+
+        plain = _bp7(views={"top": {"points": Lp.tolist()}}, depth_mm=10)["tris"]
+        mirr = _bp7(views={"top": {"points": Lp.tolist()}}, depth_mm=10, mirror=True)["tris"]
+        mirror_ok = (_outside(plain, Lp) == 0 and _outside(mirr, Lm) == 0
+                     and _outside(mirr, Lp) > 0)               # it really is the other hand
+        side7 = [[0, 0], [120, 0], [120, 6], [100, 10], [0, 10]]
+        up = _bp7(views={"top": {"points": Lp.tolist()}, "side": {"points": side7}})["tris"]
+        down = _bp7(views={"top": {"points": Lp.tolist()}, "side": {"points": side7}},
+                    upside_down=True)["tris"]
+
+        def _back(t, flip_y=True):
+            u = np.array(t, copy=True)
+            if flip_y:
+                u[:, :, 1] = 90.0 - u[:, :, 1]
+            u[:, :, 2] = 10.0 - u[:, :, 2]
+            return u
+
+        def _same(a, b):
+            ka = np.unique(np.round(a.reshape(-1, 3), 3), axis=0)
+            kb = np.unique(np.round(b.reshape(-1, 3), 3), axis=0)
+            return ka.shape == kb.shape and np.allclose(ka, kb, atol=1e-3)
+
+        turn_ok = _same(_back(down), up) and not _same(_back(down, flip_y=False), up)
+        check("mirror changes the part's hand; turning it over for print does not",
+              mirror_ok and turn_ok,
+              f"mirror is the other hand={mirror_ok}, upside-down is a rotation={turn_ok}")
+    except Exception as e:
+        check("mirror changes the part's hand; turning it over for print does not", False, repr(e))
+
+    # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
+    #      422 — never a 500 — for everything else.
+    try:
+        import app as _app8
+        cli8 = _app8.server.test_client()
+        t8 = {"points": [[0, 0], [400, 0], [400, 180], [0, 180]], "mm_per_px": 1, "image_height": 0}
+        s8 = {"points": [[0, 0], [400, 0], [400, 30], [360, 50], [0, 50]], "mm_per_px": 1,
+              "image_height": 0}
+        with _quiet():
+            ok8 = cli8.post("/api/export/part", json={"views": {"top": t8, "side": s8},
+                                                      "mirror": True})
+            pv8 = cli8.post("/api/export/part", json={"views": {"top": t8, "side": s8},
+                                                      "preview": True})
+            codes8 = {nm: cli8.post("/api/export/part", json=b).status_code for nm, b in {
+                "empty": {}, "views list": {"views": [1]},
+                "nan point": {"views": {"top": dict(t8, points=[[0, 0], [float("nan"), 0], [1, 1]])}},
+                "negative scale": {"views": {"top": dict(t8, mm_per_px=-1)}},
+                "junk rotation": {"views": {"top": dict(t8, rot="x")}},
+                "inf clearance": {"views": {"top": t8}, "depth_mm": 5, "clearance_mm": float("inf")},
+                "no depth": {"views": {"top": t8}},
+                "cavity view junk": {"views": {"top": t8, "cavity": dict(t8, view="nope")}, "depth_mm": 5},
+            }.items()}
+        import struct as _s8
+        n8 = _s8.unpack("<I", ok8.data[80:84])[0] if len(ok8.data) >= 84 else -1
+        pj = pv8.get_json() or {}
+        good8 = (ok8.status_code == 200 and len(ok8.data) == 84 + 50 * n8 and n8 > 0
+                 and "mirrored" in (ok8.headers.get("Content-Disposition") or "")
+                 and pv8.status_code == 200
+                 and all(pj.get("preview", {}).get("views", {}).get(r, {}).get("result")
+                         for r in ("top", "side", "end")))
+        clean8 = all(c in (400, 422) for c in codes8.values())
+        check("/api/export/part builds, previews, and refuses junk cleanly", good8 and clean8,
+              f"{n8} triangles, preview silhouettes={good8}; bad-input codes={codes8}")
+    except Exception as e:
+        check("/api/export/part builds, previews, and refuses junk cleanly", False, repr(e))
+
     # 8s) The same physical part appears in every photo of a job, so a length measured in a
     #     view that HAD a usable reference is a valid reference in a view that had none. That
     #     is what rescues a real set like this customer's: a ruler lying in the part's plane

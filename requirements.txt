@@ -12,6 +12,9 @@ numpy>=1.24
 # CAD export (optional but recommended for DXF export)
 ezdxf>=1.3
 
+# 3D parts from several views (booleans: intersect the views, cut the cavity)
+manifold3d>=3.0
+
 # Note: Dash will automatically install:
 # - plotly
 # - dash-html-components

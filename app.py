@@ -664,6 +664,30 @@ def export_dxf():
     )
 
 
+def _points_mm(pts, mm_per_px, image_height):
+    """Exported outline points in millimetres, Y flipped to CAD's up, or None.
+
+    Mirrors export_to_dxf's conventions so the STL, the DXF and the 3D part all describe the
+    same part rather than mirror images of it. A tilt-corrected ("plane") export arrives
+    already in millimetres with Y up, mm_per_px 1 and image_height 0 — which reads as "no
+    flip" here — so each axis is flipped exactly once either way.
+    """
+    if not isinstance(pts, (list, tuple)) or len(pts) < 3:
+        return None
+    out = []
+    for p in pts:
+        try:
+            x, y = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        if image_height is not None:
+            y = image_height - y
+        out.append([x * mm_per_px, y * mm_per_px])
+    return out
+
+
 @server.route("/api/export/stl", methods=["POST"])
 def export_stl():
     """A watertight 3D solid, ready to slice and print.
@@ -717,26 +741,7 @@ def export_stl():
         image_height = None
 
     def _ring(item):
-        """A geometry item's points in millimetres, Y flipped to CAD's up, or None.
-
-        Mirrors export_to_dxf's conventions so the STL and the DXF describe the same part
-        rather than two mirror images of it.
-        """
-        pts = item.get("points")
-        if not isinstance(pts, (list, tuple)) or len(pts) < 3:
-            return None
-        out = []
-        for p in pts:
-            try:
-                x, y = float(p[0]), float(p[1])
-            except (TypeError, ValueError, IndexError):
-                return None
-            if not (math.isfinite(x) and math.isfinite(y)):
-                return None
-            if image_height is not None:
-                y = image_height - y
-            out.append([x * mm_per_px, y * mm_per_px])
-        return out
+        return _points_mm(item.get("points"), mm_per_px, image_height)
 
     closed = [g for g in geometry if g.get("type") == "polyline" and g.get("closed")]
     outer_item = next((g for g in closed
@@ -819,6 +824,130 @@ def export_stl():
         # over a dash.
         headers["X-CamScan-Note"] = str(info["note"]).encode("ascii", "replace").decode()
     return Response(payload, mimetype="model/stl", headers=headers)
+
+
+def _num(value, default=None):
+    """A finite float from untrusted JSON, or `default` when absent/blank. Raises ValueError
+    for something that is present but not a finite number."""
+    if value is None or value == "":
+        return default
+    v = float(value)
+    if not math.isfinite(v):
+        raise ValueError("not finite")
+    return v
+
+
+@server.route("/api/export/part", methods=["POST"])
+def export_part():
+    """A part built from several traced views — see part_builder.
+
+    Body: { views: { top|side|end: {points, mm_per_px, image_height, rot, flip_h, flip_v,
+                                    source},
+                     cavity: {..same.., view, align, open, depth_mm} },
+            depth_mm, clearance_mm, wall_mm, mirror, upside_down, preview }
+
+    Each outline arrives exactly as the DXF/STL exports send it and goes through the same
+    pixel->mm rule (_points_mm). `source` identifies the photo an outline was traced on: a
+    cavity traced on the same photo as its view keeps its exact place in that view.
+
+    preview=true returns JSON (normalised outlines, the result's silhouette in all three
+    views, fits and warnings) so the user can check the views line up before building.
+    Otherwise returns the STL. 400 for malformed input, 422 with a reason for a part that
+    cannot be built.
+    """
+    from flask import Response, jsonify
+    try:
+        from part_builder import build_part, PartError, available
+    except Exception:
+        return "3D part building unavailable", 500
+    if not available():
+        return "3D part building needs the manifold3d package on the server.", 500
+
+    data = _json_body()
+    raw_views = data.get("views")
+    if not isinstance(raw_views, dict):
+        return "No views provided", 400
+
+    def _spec(entry, what):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{what} is not an object")
+        mpp = _num(entry.get("mm_per_px"), 1.0)
+        if not (mpp and mpp > 0):
+            raise ValueError(f"{what} has no usable scale")
+        ih = _num(entry.get("image_height"), 0.0) or None
+        pts = _points_mm(entry.get("points"), mpp, ih)
+        if pts is None:
+            raise ValueError(f"{what} points are not usable")
+        try:
+            rot = int(entry.get("rot") or 0) % 4
+        except (TypeError, ValueError):
+            raise ValueError(f"{what} rotation is not a number")
+        return {"points": pts, "rot": rot, "flip_h": bool(entry.get("flip_h")),
+                "flip_v": bool(entry.get("flip_v")),
+                "source": str(entry.get("source") or "")[:500]}
+
+    try:
+        views = {}
+        for role in ("top", "side", "end"):
+            if raw_views.get(role):
+                views[role] = _spec(raw_views[role], role)
+        cavity = None
+        if raw_views.get("cavity"):
+            c = raw_views["cavity"]
+            cavity = _spec(c, "cavity")
+            cavity["view"] = c.get("view")
+            cavity["align"] = c.get("align") or "bottom"
+            cavity["open"] = c.get("open") or "through"
+            cavity["depth_mm"] = _num(c.get("depth_mm"))
+            host = views.get(cavity["view"]) if isinstance(cavity["view"], str) else None
+            cavity["same_photo"] = bool(host and cavity["source"] and host["source"] == cavity["source"])
+        depth_mm = _num(data.get("depth_mm"))
+        clearance_mm = _num(data.get("clearance_mm"), 0.0)
+        wall_mm = _num(data.get("wall_mm"))
+    except (TypeError, ValueError) as e:
+        return f"Invalid input: {e}", 400
+
+    preview = bool(data.get("preview"))
+    try:
+        res = build_part(views, depth_mm=depth_mm, cavity=cavity, clearance_mm=clearance_mm,
+                         wall_mm=wall_mm, mirror=bool(data.get("mirror")),
+                         upside_down=bool(data.get("upside_down")), preview=preview)
+    except PartError as e:
+        if preview:
+            return jsonify(ok=False, error=str(e)), 422
+        return str(e), 422
+    except Exception as e:
+        print(f"[Part] error: {e}")
+        return "3D part build failed", 500
+
+    info = res["info"]
+    if preview:
+        return jsonify(ok=True, preview=res["preview"], info=info)
+
+    fd, path = tempfile.mkstemp(suffix=".stl")
+    os.close(fd)
+    try:
+        from solid_export import write_binary_stl
+        header = "CamScan part" + (" (mirrored)" if info.get("mirrored") else "")
+        if not write_binary_stl(res["tris"], path, header):
+            return "Could not write the STL", 500
+        with open(path, "rb") as f:
+            payload = f.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    import json as _json
+    name = "part-mirrored.stl" if info.get("mirrored") else "part.stl"
+    return Response(payload, mimetype="model/stl", headers={
+        "Content-Disposition": f"attachment; filename={name}",
+        "X-CamScan-Kind": str(info.get("kind") or "solid"),
+        "X-CamScan-Volume-MM3": f"{info.get('volume_mm3', 0):.1f}",
+        # Everything the UI reports (fits, warnings, size), ASCII-safe for a header.
+        "X-CamScan-Info": _json.dumps({k: info[k] for k in ("kind", "size_mm", "fits", "warnings",
+                                                            "mirrored", "note") if k in info},
+                                      ensure_ascii=True)})
 
 
 @server.route("/api/plane", methods=["POST"])
