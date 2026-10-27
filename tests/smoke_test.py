@@ -305,6 +305,41 @@ def main():
     except Exception as e:
         check("auto_outline ROI handling", False, repr(e))
 
+    # 2g2) A part half in shadow, inside an Area box. The colour-distance trace splits the part
+    #      where the shadow crosses it — the shadowed end reads as background — which is what a
+    #      customer's step-pad photo showed. With a box, everything outside it is background and
+    #      GrabCut keeps the whole part, shadowed end included.
+    try:
+        import auto_outline as _aom
+        rng_s = np.random.default_rng(7)
+        simg = np.empty((700, 500, 3), np.uint8); simg[:] = (150, 165, 180)       # sunlit concrete
+        simg = np.clip(simg.astype(int) + rng_s.normal(0, 14, simg.shape), 0, 255).astype(np.uint8)
+        cv2.rectangle(simg, (400, 0), (499, 699), (215, 215, 212), -1)            # white truck
+        spart = np.zeros(simg.shape[:2], np.uint8); cv2.rectangle(spart, (180, 80), (330, 620), 255, -1)
+        simg[spart > 0] = (78, 80, 82)
+        shad = np.zeros(simg.shape[:2], np.uint8); cv2.ellipse(shad, (150, 560), (230, 170), 0, 0, 360, 255, -1)
+        simg = np.clip(simg * np.where(shad[..., None] > 0, 0.42, 1.0), 0, 255).astype(np.uint8)
+        simg = cv2.GaussianBlur(simg, (3, 3), 0)
+        sroi, sseed = [160, 60, 190, 580], [255, 200]
+
+        def _siou(r):
+            if not r or not r.get("outer"):
+                return 0.0
+            m = np.zeros(spart.shape, np.uint8); cv2.fillPoly(m, [np.array(r["outer"], np.int32)], 255)
+            return np.count_nonzero(m & spart) / np.count_nonzero(m | spart)
+        with _quiet():
+            s_new = _siou(_aom.auto_outline_full(simg, seed=sseed, roi=sroi))
+            _keep = _aom._box_in_crop
+            _aom._box_in_crop = lambda *a: None          # the same box, used only as a crop
+            try:
+                s_old = _siou(_aom.auto_outline_full(simg, seed=sseed, roi=sroi))
+            finally:
+                _aom._box_in_crop = _keep
+        check("an Area box keeps the part's shadowed end in the trace", s_new > 0.95 and s_old < 0.8,
+              f"box as crop only IoU={s_old:.3f} -> box as 'outside is not the part' IoU={s_new:.3f}")
+    except Exception as e:
+        check("an Area box keeps the part's shadowed end in the trace", False, repr(e))
+
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
     #     must not drift when snapping is on. (Its benefit is on soft real-photo fringes; here we

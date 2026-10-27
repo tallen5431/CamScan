@@ -65,7 +65,7 @@ def auto_outline(
                     of a soft-fringe boundary; a no-op on a boundary already on a crisp edge).
     """
     crop, seed2, excl2, ox, oy = _crop_to_roi(img_bgr, seed, exclude_boxes, roi)
-    seg = _segment(crop, seed2, excl2, downscale_to)
+    seg = _segment(crop, seed2, excl2, downscale_to, box=_box_in_crop(roi, ox, oy, crop, img_bgr))
     if seg is None:
         return None
     mask, scale, sh, sw, grad = seg
@@ -121,7 +121,8 @@ def auto_outline_full(
             except (TypeError, ValueError, IndexError):
                 continue
         return out
-    seg = _segment(crop, seed2, excl2, downscale_to, _shift(fg_points), _shift(bg_points))
+    seg = _segment(crop, seed2, excl2, downscale_to, _shift(fg_points), _shift(bg_points),
+                   box=_box_in_crop(roi, ox, oy, crop, img_bgr))
     if seg is None:
         return None
     mask, scale, sh, sw, grad = seg
@@ -262,6 +263,23 @@ def _crop_to_roi(img_bgr, seed, exclude_boxes, roi, margin_frac=0.08, min_margin
     return crop, seed2, tuple(excl2), x0, y0
 
 
+def _box_in_crop(roi, ox, oy, crop, img_bgr):
+    """The user's Area box in the crop's frame, or None when no box applies (no ROI, or one
+    _crop_to_roi ignored and passed the whole image through)."""
+    if roi is None or crop is img_bgr:
+        return None
+    try:
+        rx, ry, rw, rh = (float(v) for v in roi)
+    except (TypeError, ValueError):
+        return None
+    ch, cw = crop.shape[:2]
+    x0, y0 = max(0.0, rx - ox), max(0.0, ry - oy)
+    x1, y1 = min(float(cw), rx - ox + rw), min(float(ch), ry - oy + rh)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
 def _offset_hole(h, ox, oy):
     """Translate a typed hole (circle or polygon) from crop coords back to image coords."""
     if isinstance(h, dict) and h.get("shape") == "circle":
@@ -272,7 +290,7 @@ def _offset_hole(h, ox, oy):
 
 
 def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg=False,
-                  work_max=None):
+                  work_max=None, box=None):
     """Foreground binary from user hints, via GrabCut.
 
     The Otsu split below separates the part from the BACKGROUND by colour distance. That
@@ -287,6 +305,8 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
     GrabCut then models both as colour distributions rather than a single cut.
 
     border_bg : also take the photo's edge as certain background — see _segment for when.
+    box       : (x, y, w, h) the user's Area box, unscaled: everything outside it is certain
+                background, everything inside it may be the part — see _segment.
     work_max  : run on a copy no larger than this on its long side, for speed; the mask is
                 scaled back up and the outline is snapped to image edges afterwards anyway.
     """
@@ -298,6 +318,11 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
     h2, w2 = img.shape[:2]
     gc = np.full((h2, w2), cv2.GC_PR_BGD, np.uint8)
     r = max(3 if f < 1.0 else 6, int(round(0.022 * min(h2, w2))))   # brush, resolution-independent
+    if box is not None:
+        bx0, by0 = int(box[0] * scale * f), int(box[1] * scale * f)
+        bx1, by1 = int((box[0] + box[2]) * scale * f), int((box[1] + box[3]) * scale * f)
+        gc[:] = cv2.GC_BGD
+        gc[max(0, by0):min(h2, by1), max(0, bx0):min(w2, bx1)] = cv2.GC_PR_FGD
 
     def _paint(pts, value, rad):
         n = 0
@@ -315,9 +340,10 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
 
     # A generous probable-foreground halo round the taps keeps GrabCut from starving: seeded
     # with nothing but certain-FG discs in a sea of probable-background it tends to collapse.
-    _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_PR_FGD, r * 4)
+    if box is None:
+        _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_PR_FGD, r * 4)
     n_fg = _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_FGD, r)
-    n_bg = _paint(bg_pts, cv2.GC_BGD, r)
+    n_bg = _paint(bg_pts, cv2.GC_BGD, r) + (1 if box is not None else 0)
     if border_bg:
         b = max(2, int(0.03 * min(h2, w2)))
         gc[:b, :] = gc[-b:, :] = cv2.GC_BGD
@@ -357,7 +383,8 @@ def _seed_in(fg, seed, scale, sw, sh) -> bool:
     return bool((win > 0).mean() >= 0.5)
 
 
-def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_points=None):
+def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_points=None,
+             box=None):
     """Segment the tapped part. Returns (mask, scale, sh, sw, grad) at the downscaled
     resolution, or None. `mask` is the filled part (255) with interior holes preserved as 0, so
     callers can read both its outer boundary and its holes; `grad` is the image gradient
@@ -390,7 +417,23 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_poin
     # When the user has pointed at the background, trust that over the colour-distance split:
     # it is the only thing that can separate a part from something the same colour as it.
     used_grabcut = False
-    if bg_points:
+    if box is not None and seed is not None:
+        # An Area box drawn round the part says more than any colour model can: everything
+        # outside it is NOT the part. GrabCut takes that literally — outside is certain
+        # background, inside is "maybe the part", the tap is certainly the part — and learns
+        # both sides' colours from the photo itself. A part half in sun and half in shadow is
+        # still one object to it, and the trace cannot leave the box. Measured on the
+        # customer's top-down step-pad photo, the bottom third in the photographer's shadow:
+        # the colour-distance trace in the same box missed the shadowed end and a strip down
+        # one side (IoU 0.60); this kept the whole cover (IoU 0.91 with a loose box, 0.92 with
+        # a tight one), in 3-5 s.
+        gc_fg = _grabcut_mask(small, seed, fg_points, bg_points, scale, sw, sh, iters=5, box=box)
+        if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:
+            fg = gc_fg
+            used_grabcut = True
+    if used_grabcut:
+        pass
+    elif bg_points:
         gc_fg = _grabcut_mask(small, seed, fg_points, bg_points, scale, sw, sh)
         if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:
             fg = gc_fg
