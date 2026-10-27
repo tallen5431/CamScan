@@ -87,7 +87,40 @@ Those are checked, not assumed — if a closed
 solid cannot be built the export refuses and says why, because a slicer either
 rejects a leaky mesh or, worse, prints it wrong without telling you.
 
-What this does NOT do: it sweeps one profile along a straight line. A part that
+PARTS THAT CHANGE SHAPE (several views). A part whose shape is not the same all the way
+along — a chamfered or rounded toe, a tapered end, an inside that has to fit over something —
+is built from several outlines instead of one, each traced on whichever photo shows it best:
+
+  1) Trace an outline, select it, press "▣ 3D view" and say what it is:
+       Top     outline from above            (length x width)
+       Side    profile from the side         (length x height)  — gives the toe/taper
+       End     cross-section from the end    (width x height)   — gives the rounded edges
+       Cavity  the inside: what the part fits over, traced in any of the views
+     Do this across as many photos as you need; the views are kept with the job.
+  2) Download menu → "Build 3D part from views…". The preview draws Top, Side and End like an
+     engineering drawing: blue lines are your outlines, the filled shape is the part. If a
+     view is turned or reversed, use ⟲ / ⇋ / ⇵ on its row until they line up.
+  3) Set the fit clearance for the cavity (0.4 mm default), where it runs (all the way
+     through, or in from one end by a depth), and download the STL.
+
+How it works: each outline is pushed straight through the part and only what every view
+agrees is material is kept, then the cavity — grown by the clearance — is cut out. Things to
+know:
+  * The Top view sets length and width; the Side (else End) view sets height. If another view
+    disagrees by up to 8% it is stretched to fit, and the dialog says by how much. More than
+    that is refused, naming both views — that size of disagreement is a wrong scale.
+  * A cavity traced on the SAME photo as its view keeps exactly where it was drawn. One from
+    another photo (say, the bare board end) is centred and sat at the bottom, centre or top.
+  * Walls under 0.8 mm are flagged as too thin to print reliably.
+  * MIRROR makes the opposite-hand part: measure the intact cover from one side of the
+    vehicle and download the missing one from the other. Mirroring is the only thing that
+    changes a part's hand — "Upside down for printing" is a rotation.
+  * Needs the manifold3d package (in requirements.txt).
+
+What this does NOT do: lettering, textures and raised ribs are left to CAD, and a part whose
+cross-section varies in ways no single view shows (a twist, say) needs more than outlines.
+
+What the single-outline STL does NOT do: it sweeps one profile along a straight line. A part that
 tapers, twists, or has a different shape at each end (end caps, for instance) needs
 those modelled separately. Measure them from a second view and add them in CAD.
 

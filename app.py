@@ -946,7 +946,7 @@ def export_part():
         "X-CamScan-Volume-MM3": f"{info.get('volume_mm3', 0):.1f}",
         # Everything the UI reports (fits, warnings, size), ASCII-safe for a header.
         "X-CamScan-Info": _json.dumps({k: info[k] for k in ("kind", "size_mm", "fits", "warnings",
-                                                            "mirrored", "note") if k in info},
+                                                            "mirrored", "upside_down", "note") if k in info},
                                       ensure_ascii=True)})
 
 

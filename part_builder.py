@@ -40,7 +40,7 @@ try:
 except ImportError:  # pragma: no cover - reported to the caller as "unavailable"
     mf = None
 
-from solid_export import build_shell, mesh_report, signed_area
+from solid_export import _print_orientation, build_shell, mesh_report, signed_area
 
 ROLES = ("top", "side", "end")
 # (u axis, v axis, normal axis) of each view in X=0, Y=1, Z=2.
@@ -258,15 +258,17 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         if tris is None:
             raise PartError(sinfo.get("reason") or "Could not build the cover.")
         info.update(kind="shell", note=sinfo.get("note"), wall_mm=float(wall_mm))
+        out = {"info": info}
+        if preview:
+            # build_shell delivers it plate-down; that turn is its own inverse, so undo it to
+            # draw the cover as traced, on top of its outline.
+            out["preview"] = _preview_from_tris(_print_orientation(tris, Z), vs, None)
         if mirror:
             tris = _mirror_tris(tris)
         info["mirrored"] = bool(mirror)
         rep = mesh_report(tris)
         info["volume_mm3"] = rep["volume_mm3"]
-        out = {"info": info}
-        if preview:
-            out["preview"] = _preview_from_tris(tris, vs, None)
-        else:
+        if not preview:
             out["tris"] = tris
         return out
 
@@ -362,6 +364,10 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                     f"Some of the wall is thinner than {THIN_WALL_MM} mm — too thin to print "
                     f"reliably. Reduce the clearance or check the cavity's size.")
 
+    # The preview draws the part as traced — before mirroring or turning — so its silhouettes
+    # sit on the outlines they came from, which is what the preview is for: checking that
+    # the views line up. The dialog says separately that the download is mirrored/turned.
+    shape = solid
     if upside_down:
         # A rotation, never a flip: turning a part over must not change its hand.
         solid = solid.rotate([180.0, 0.0, 0.0]).translate([0.0, Y, Z])
@@ -381,13 +387,13 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     if preview:
         out["preview"] = {
             "views": {role: {"outline": np.round(v.pts, 3).tolist(),
-                             "result": _silhouette(solid, role)} for role, v in vs.items()},
+                             "result": _silhouette(shape, role)} for role, v in vs.items()},
             "cavity": {"view": cavity.get("view"), "outline": cav_poly} if cav_poly else None,
             "size_mm": info["size_mm"],
         }
         for role in ROLES:                       # silhouettes of views nobody traced, too
             if role not in out["preview"]["views"]:
-                out["preview"]["views"][role] = {"outline": None, "result": _silhouette(solid, role)}
+                out["preview"]["views"][role] = {"outline": None, "result": _silhouette(shape, role)}
     else:
         out["tris"] = tris
     return out

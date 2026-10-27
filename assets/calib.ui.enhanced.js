@@ -765,6 +765,9 @@ window.CalibUI = (function(){
       // The only export that is not flat. For an extruded part this is the finished thing a
       // slicer can open, instead of a drawing somebody has to extrude again by hand.
       mkSave('🧊', 'Save STL (3D print)', () => overlay.saveSTL && overlay.saveSTL()),
+      // A part that changes shape along its length (a tapered toe, a rounded end, a cavity
+      // that fits over something) is built from several views, across photos.
+      mkSave('🧩', 'Build 3D part from views…', () => window.CalibPart3D && window.CalibPart3D.open()),
       mkSave('📦', 'Save both (PNG + JSON)', () => { if (overlay.savePNG) overlay.savePNG(); if (overlay.saveJSON) setTimeout(() => overlay.saveJSON(), 500); }),
     );
     function closeSaveMenu(returnFocus){
@@ -945,7 +948,17 @@ window.CalibUI = (function(){
     ctxNotPart.title = 'Tap a shadow or background the outline swallowed, and it re-traces';
     ctxNotPart.onclick = () => { if (overlay.armBackgroundTap) overlay.armBackgroundTap(); };
 
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxDepth, ctxFinish);
+    // Assign the selected outline to a view of the 3D part (Top / Side / End / Cavity). A part
+    // that is not the same shape all the way along is built from several views, each traced
+    // in whichever photo shows it best — see calib.part3d.js.
+    const ctx3d = document.createElement('button'); ctx3d.type = 'button'; ctx3d.className = 'cal-ctx-finish';
+    ctx3d.id = 'cal-ctx-3d';
+    ctx3d.innerHTML = '▣ 3D view';
+    ctx3d.setAttribute('aria-label', 'Use this outline as a view of the 3D part');
+    ctx3d.title = 'Use this outline as the Top, Side, End or Cavity of a 3D part';
+    ctx3d.onclick = () => { if (window.CalibPart3D) window.CalibPart3D.pick(ctx3d); };
+
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxDepth, ctx3d, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1023,6 +1036,7 @@ window.CalibUI = (function(){
       }
       const prof = overlay.selectedProfile && overlay.selectedProfile();
       ctxDepth.classList.toggle('show', !!prof);
+      ctx3d.classList.toggle('show', !!prof);
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
         ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
         : '⇥ Depth';

@@ -71,11 +71,13 @@
     var openIdx=currentOpenIndex();
     if(openIdx!=null && job.views[openIdx]){
       rec.sourceId=job.views[openIdx].sourceId||null;   // keep the original photo's identity
+      if(job.views[openIdx].photoKey) rec.photoKey=job.views[openIdx].photoKey;   // ...and its 3D-part key
       job.views[openIdx]=rec;
     }else{
       rec.sourceId=currentSourceId();
       var idx = rec.sourceId ? job.views.findIndex(function(v){ return v.sourceId===rec.sourceId; }) : -1;
-      if(idx>=0) job.views[idx]=rec; else job.views.push(rec);
+      if(idx>=0){ if(job.views[idx].photoKey) rec.photoKey=job.views[idx].photoKey; job.views[idx]=rec; }
+      else job.views.push(rec);
     }
     var ok=save(); changed();
     // Only claim success if it actually persisted; on quota failure save() already showed the
@@ -450,6 +452,9 @@
     try{
       var rec=o.getViewRecord(cur.label||'');
       rec.sourceId=cur.sourceId; rec.capturedAt=cur.capturedAt||new Date().toISOString();
+      // The photo's 3D-part identity must outlive re-capture: a cavity assigned after the user
+      // switches away and back is still on the SAME photo as the outline assigned before.
+      if(cur.photoKey) rec.photoKey=cur.photoKey;
       job.views[idx]=rec; save();
     }catch(e){ /* best-effort — a failed capture just keeps the previous snapshot */ }
   }
@@ -686,6 +691,47 @@
     return wrap;
   }
 
+  // ---- 3D part: outlines assigned to views (Top / Side / End / Cavity), across photos ----
+  // Kept in the job so it survives the page reload between photos, and is cleared with it.
+  // Each entry carries the photo it came from: a cavity traced on the SAME photo as its view
+  // keeps its exact position relative to that view's outline when the part is built.
+  function part(){
+    if(!job.part3d || typeof job.part3d !== 'object') job.part3d = { views:{}, opts:{} };
+    if(!job.part3d.views) job.part3d.views = {};
+    if(!job.part3d.opts) job.part3d.opts = {};
+    return job.part3d;
+  }
+  function photoId(){
+    // A REOPENED side is identified by its job entry. Its rebuilt .cal-view carries an inline
+    // data: URL of its calibration rather than an upload id, and that is identical for any two
+    // photos of the same size and calibration — two ruler-scaled photos from one phone, say —
+    // which made a cavity from one photo look "traced on the same photo" as an outline from
+    // another (caught by tests/test_part3d_e2e.py). The key is stored on the entry, because
+    // positions shift when a view is removed.
+    var oi = currentOpenIndex();
+    if(oi != null && job.views[oi]){
+      var v = job.views[oi];
+      if(v.sourceId && String(v.sourceId).indexOf('data:') !== 0) return v.sourceId;
+      if(!v.photoKey){ v.photoKey = 'photo-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); save(); }
+      return v.photoKey;
+    }
+    var sid = currentSourceId();
+    if(sid && sid.indexOf('data:') !== 0) return sid;     // a fresh upload: its unique upload id
+    var o = overlay(), src = o && o.img && String(o.img.src || '');
+    return src ? 'img-' + src.length + '-' + src.slice(-48) : 'unknown';
+  }
+  function setPartView(role, prof){
+    if(!prof || !Array.isArray(prof.points)) return false;
+    var p = part();
+    // A fresh outline starts with no rotate/flip: those belonged to the outline it replaces.
+    p.views[role] = { points: prof.points, mm_per_px: prof.mm_per_px, image_height: prof.image_height,
+                      size_mm: prof.size_mm, source: photoId(), at: new Date().toISOString(),
+                      rot: 0, flip_h: false, flip_v: false };
+    save(); changed();
+    return true;
+  }
+  function clearPartView(role){ delete part().views[role]; save(); changed(); }
+
   // Views reduced to what the agreement check needs: did this view get a real scale, and
   // what did it measure? Kept separate from the DOM so the rule itself stays testable.
   function viewsForAgreement(){
@@ -751,6 +797,10 @@
   window.CalibJob = {
     referenceDimensions: referenceDimensions,
     scaleWarnings: scaleWarnings,   // dimensions that two views disagree about, worst first
+    part: part,                     // the 3D part being assembled from views (see calib.part3d.js)
+    setPartView: setPartView,
+    clearPartView: clearPartView,
+    savePart: function(){ saveSoon(); },
     addView: addView,
     open: openPanel,
     submit: submit,          // send/hand-off the collected set (used by simple mode + tests)
