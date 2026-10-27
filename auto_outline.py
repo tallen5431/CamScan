@@ -271,7 +271,8 @@ def _offset_hole(h, ox, oy):
     return h
 
 
-def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4):
+def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg=False,
+                  work_max=None):
     """Foreground binary from user hints, via GrabCut.
 
     The Otsu split below separates the part from the BACKGROUND by colour distance. That
@@ -284,20 +285,30 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4):
 
     Two taps fix what no threshold can: the user says "this is the part" and "this is not".
     GrabCut then models both as colour distributions rather than a single cut.
+
+    border_bg : also take the photo's edge as certain background — see _segment for when.
+    work_max  : run on a copy no larger than this on its long side, for speed; the mask is
+                scaled back up and the outline is snapped to image edges afterwards anyway.
     """
-    gc = np.full((sh, sw), cv2.GC_PR_BGD, np.uint8)
-    r = max(6, int(round(0.022 * min(sh, sw))))          # brush radius, resolution-independent
+    f = 1.0
+    img = small
+    if work_max and max(sh, sw) > work_max:
+        f = float(work_max) / max(sh, sw)
+        img = cv2.resize(small, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    h2, w2 = img.shape[:2]
+    gc = np.full((h2, w2), cv2.GC_PR_BGD, np.uint8)
+    r = max(3 if f < 1.0 else 6, int(round(0.022 * min(h2, w2))))   # brush, resolution-independent
 
     def _paint(pts, value, rad):
         n = 0
         for p in (pts or ()):
             try:
-                x, y = float(p[0]) * scale, float(p[1]) * scale
+                x, y = float(p[0]) * scale * f, float(p[1]) * scale * f
             except (TypeError, ValueError, IndexError):
                 continue
             if not (math.isfinite(x) and math.isfinite(y)):
                 continue
-            if 0 <= x < sw and 0 <= y < sh:
+            if 0 <= x < w2 and 0 <= y < h2:
                 cv2.circle(gc, (int(x), int(y)), rad, value, -1)
                 n += 1
         return n
@@ -307,22 +318,43 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4):
     _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_PR_FGD, r * 4)
     n_fg = _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_FGD, r)
     n_bg = _paint(bg_pts, cv2.GC_BGD, r)
+    if border_bg:
+        b = max(2, int(0.03 * min(h2, w2)))
+        gc[:b, :] = gc[-b:, :] = cv2.GC_BGD
+        gc[:, :b] = gc[:, -b:] = cv2.GC_BGD
+        n_bg += 1
     if n_fg == 0 or n_bg == 0:
         return None                                       # needs both sides to be worth running
 
     try:
         bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
-        cv2.grabCut(small, gc, None, bgd, fgd, int(iters), cv2.GC_INIT_WITH_MASK)
+        cv2.grabCut(img, gc, None, bgd, fgd, int(iters), cv2.GC_INIT_WITH_MASK)
     except cv2.error:
         return None
     fg = np.where((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
     if not fg.any():
         return None
+    if f < 1.0:
+        fg = cv2.resize(fg, (sw, sh), interpolation=cv2.INTER_LINEAR)
+        fg = np.where(fg >= 128, 255, 0).astype(np.uint8)
     # Same tidy-up the threshold path gets, so downstream sees a comparable mask.
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k)
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k)
     return fg
+
+
+def _seed_in(fg, seed, scale, sw, sh) -> bool:
+    """Is the tapped point on the foreground side of a binary split? Majority of a 3x3
+    neighbourhood, so a single noisy pixel under the tap cannot decide it."""
+    try:
+        sx = int(round(float(seed[0]) * scale)); sy = int(round(float(seed[1]) * scale))
+    except (TypeError, ValueError, IndexError):
+        return True                       # no usable seed: nothing to contradict
+    if not (0 <= sx < sw and 0 <= sy < sh):
+        return True
+    win = fg[max(0, sy - 1):sy + 2, max(0, sx - 1):sx + 2]
+    return bool((win > 0).mean() >= 0.5)
 
 
 def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_points=None):
@@ -360,6 +392,25 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_poin
     used_grabcut = False
     if bg_points:
         gc_fg = _grabcut_mask(small, seed, fg_points, bg_points, scale, sw, sh)
+        if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:
+            fg = gc_fg
+            used_grabcut = True
+    elif seed is not None and not _seed_in(fg, seed, scale, sw, sh):
+        # The colour model calls the pixel the user TAPPED background — so the model is wrong
+        # for this photo, and the plain trace can only return nothing. It assumes the photo's
+        # border is one background colour; a real photo's border is often several. Measured
+        # on the customer's step-pad photo: the border is concrete, white truck and shadow,
+        # their median lands between the concrete and the dark cover, and the cover (distance
+        # 95) and the concrete (103) both fall on the background side of the split, so a tap
+        # squarely on the cover traced nothing at all.
+        #
+        # What IS known is enough for GrabCut: the tap is the part, and the photo's edge is
+        # not. Full resolution, five iterations: about 6-7 s on that photo, and it finds the
+        # cover's edges. Every faster setting tried lost a narrow dark lip along one side —
+        # 5 to 16 mm of the part — so this path, which only runs when the plain trace would
+        # otherwise return nothing, takes the time.
+        gc_fg = _grabcut_mask(small, seed, fg_points, None, scale, sw, sh, iters=5,
+                              border_bg=True)
         if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:
             fg = gc_fg
             used_grabcut = True

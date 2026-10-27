@@ -710,7 +710,9 @@ window.CalibUI = (function(){
     const newImage = iconBtn('⬅️', 'New', 'Upload a new image', () => {
       if (!overlay.ann || overlay.ann.items.length === 0 ||
           confirm('Start over with a new image? Current annotations will be lost.')) {
-        window.location.reload();
+        // The job (other photos, 3D views) must be saved before the page goes: its store
+        // writes complete asynchronously, and a write merely started during unload may not.
+        (window.CalibJob && window.CalibJob.beforeReload ? window.CalibJob.beforeReload() : Promise.resolve()).then(() => window.location.reload());
       }
     });
 
