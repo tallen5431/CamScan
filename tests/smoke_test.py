@@ -1939,6 +1939,49 @@ def main():
     except Exception as e:
         check("two taps separate a part from a same-coloured shadow", False, repr(e))
 
+    # 8t2) A tap on the part must not trace NOTHING. The plain trace models "background" as the
+    #      median colour of the photo's border, and on the customer's top-down step-pad photo
+    #      that border is concrete, white truck and shadow: the median lands between the
+    #      concrete and the dark cover, both fall on the background side of the split, and a
+    #      tap squarely on the cover returned no outline (as on 7 of 12 real photos tried).
+    #      When the model calls the tapped pixel background, the tracer now falls back to
+    #      GrabCut seeded with what is known — the tap is the part, the photo's edge is not.
+    #      Reproduced synthetically (a large white truck and deep shadow drag the split above
+    #      the part); both halves asserted, so the test cannot pass vacuously.
+    try:
+        import auto_outline as _ao9
+        sc = np.full((600, 800, 3), (135, 150, 160), np.uint8)       # tan ground
+        sc[:, 420:] = (228, 230, 232)                                 # white truck
+        sc[380:, :420] = (22, 22, 24)                                 # deep shadow
+        sc = np.clip(sc.astype(np.int16) + np.random.default_rng(4).integers(-12, 13, sc.shape),
+                     0, 255).astype(np.uint8)
+        cv2.rectangle(sc, (180, 100), (360, 360), (100, 100, 98), -1)   # the dark part
+        sc = cv2.GaussianBlur(sc, (3, 3), 0)
+        truth9 = np.zeros((600, 800), np.uint8)
+        cv2.rectangle(truth9, (180, 100), (360, 360), 255, -1)
+
+        def _iou9(r):
+            if not r or not r.get("outer"):
+                return None
+            m = np.zeros_like(truth9)
+            cv2.fillPoly(m, [np.array(r["outer"], np.int32)], 255)
+            return float(((m > 0) & (truth9 > 0)).sum()) / float(((m > 0) | (truth9 > 0)).sum())
+
+        with _quiet():
+            new9 = _iou9(_ao9.auto_outline_full(sc, seed=[270, 230]))
+            _saved = _ao9._seed_in
+            _ao9._seed_in = lambda *a, **k: True                      # the old behaviour
+            try:
+                old9 = _iou9(_ao9.auto_outline_full(sc, seed=[270, 230]))
+            finally:
+                _ao9._seed_in = _saved
+        ok9 = (old9 is None or old9 < 0.5) and new9 is not None and new9 > 0.9
+        check("a tap on the part traces it even when the border colours mislead the model", ok9,
+              f"plain model: {'no outline' if old9 is None else f'IoU {old9:.2f}'} -> "
+              f"seeded fallback IoU {new9 if new9 is None else round(new9, 3)}")
+    except Exception as e:
+        check("a tap on the part traces it even when the border colours mislead the model", False, repr(e))
+
     # 8u) The hints are untrusted JSON on a public endpoint, and a malformed one must simply
     #     be ignored — this endpoint's contract is to degrade, never to error.
     try:

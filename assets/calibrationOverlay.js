@@ -1423,10 +1423,14 @@
         }
 
         const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
+        // A photo whose colours mislead the quick trace falls back to a careful one that takes
+        // several seconds (6-10 s measured on real customer photos). Say so, so it never
+        // looks hung.
+        const slowNote=setTimeout(()=>{ try{ toast.update('Still tracing — this photo needs the slower, careful method (about 10 s)…'); }catch(e){} }, 3500);
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent,
                                   fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) }) })
-          .then(r=>r.json())
+          .then(r=>{ clearTimeout(slowNote); return r.json(); })
           .then(function(j){
             if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){
               const mm=self.getScale() || (self.data && self.data.mm_per_px) || 0;
@@ -1474,7 +1478,7 @@
               setTimeout(toast.dismiss, (j && j.hint) ? 6000 : 3400);
             }
           })
-          .catch(function(){ toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
+          .catch(function(){ clearTimeout(slowNote); toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
       }
 
       // A floating "Detail" slider shown after an auto-trace: drag to re-trace the SAME spot
