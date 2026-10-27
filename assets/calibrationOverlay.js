@@ -606,7 +606,12 @@
 
         c.drawImage(this.img,0,0);
         if(this.opts.showGrid) Draw.drawGrid(c, this.img.width, this.img.height);
-        if(this.opts.showMarkers) Draw.drawMarkers(c, this.canvas, this.data, this.opts.linePx);
+        // An unconfirmed "square-ish shape" stops being worth drawing once the user has set a
+        // scale of their own: it was only ever a candidate, and outlined in the reference
+        // colour it reads as if it were still the scale.
+        const ownScale = this.opts.manualMmPerPx || this.opts.manualHomography;
+        const unconfirmed = this.data && this.data.calibration_usable===false && !this._markerConfirmed;
+        if(this.opts.showMarkers && !(ownScale && unconfirmed)) Draw.drawMarkers(c, this.canvas, this.data, this.opts.linePx);
         if(Draw.resetLabels) Draw.resetLabels();   // start a fresh label-placement frame
         this._drawAnnotations();
         this._drawPreview();
@@ -1293,10 +1298,21 @@
         el.style.cssText='position:fixed;left:50%;bottom:88px;transform:translateX(-50%);z-index:70;'+
           'background:#12171c;color:#e8eef2;border:1px solid #2a3a44;border-radius:10px;padding:10px 14px;'+
           'font:600 13px Segoe UI,system-ui,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:90vw;text-align:center;';
-        el.textContent=msg; document.body.appendChild(el);
+        const text=document.createElement('span'); text.textContent=msg; el.appendChild(text);
         let timer=null;
+        // Optional action button ({label, fn}): a message that says "now do X" should let
+        // you do X from where you are reading it, not send you hunting through menus.
+        if(opts.action){
+          const b=document.createElement('button'); b.type='button'; b.className='cal-toast-action';
+          b.textContent=opts.action.label;
+          b.style.cssText='margin-left:10px;min-height:34px;padding:5px 12px;border-radius:8px;border:none;'+
+            'background:#00d4ff;color:#04222b;font:700 13px Segoe UI,system-ui,sans-serif;cursor:pointer;';
+          b.onclick=()=>{ api.dismiss(); opts.action.fn(); };
+          el.appendChild(b);
+        }
+        document.body.appendChild(el);
         const api={
-          update(m, kind){ el.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
+          update(m, kind){ text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
           dismiss(){ if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
         };
         if(opts.autoMs) timer=setTimeout(api.dismiss, opts.autoMs);

@@ -714,7 +714,48 @@
     wrap.appendChild(b); wrap.appendChild(hint); host.appendChild(wrap);
   }
 
-  function render(){ reflectButton(); ensureLandingLoad(); renderSideSwitcher(); }
+  // The job outlives a reload on purpose (one photo per page load), so it also outlives the
+  // part it was for: start a different part next week and its 3D views were still Top, Side
+  // and Cavity from the last one, with nothing on screen saying why. Say so on the landing
+  // card, and offer the way out there — before a photo of the new part joins the old job.
+  var _landingSig=null;
+  function ensureLandingJob(){
+    var host=document.querySelector('.landing-card');
+    if(!host) return;
+    var roles=['top','side','end','cavity'].filter(function(r){ return job.part3d && job.part3d.views && job.part3d.views[r]; });
+    var n=job.views.length, sig=n+'|'+roles.join(',')+'|'+(job.brief.part||'');
+    var el=host.querySelector('#cal-landing-job');
+    // Above the photo drop zone, so it is read before a photo joins the part. (#uploader can
+    // sit a wrapper below the card, so climb to the card's own child.) Dash re-renders the
+    // card's own children and can leave this after them, so the place is re-checked each time.
+    var up=document.getElementById('uploader');
+    while(up && up.parentNode!==host) up=up.parentNode;
+    if(el && up && el.nextElementSibling!==up) host.insertBefore(el, up);
+    if(sig===_landingSig && (el || (!n && !roles.length))) return;
+    _landingSig=sig;
+    if(el) el.remove();
+    if(!n && !roles.length) return;
+    var LBL={top:'Top',side:'Side',end:'End',cavity:'Cavity'};
+    el=document.createElement('div'); el.id='cal-landing-job';
+    el.style.cssText='margin:12px 0 0;padding:10px 12px;border-radius:10px;background:#16202a;border:1px solid #29414c;'+
+      'font:13px/1.45 Segoe UI,system-ui,sans-serif;color:#cfe6ee;display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+    var t=document.createElement('div'); t.style.cssText='flex:1 1 220px;';
+    t.innerHTML='<b>Part in progress'+(job.brief.part?': '+esc(job.brief.part):'')+'</b><br>'+
+      (n ? n+' photo'+(n===1?'':'s') : 'no photos saved')+
+      (roles.length ? ' · 3D views: '+roles.map(function(r){ return LBL[r]; }).join(', ') : '')+
+      '<br><span style="color:#8aa0aa;font-size:12px;">A new photo is added to this part.</span>';
+    var b=chip('Start a new part', function(){
+      if(!window.confirm('Start a new part? The '+(n ? n+' saved photo'+(n===1?'':'s') : 'saved views')+
+        ' of the current part will be cleared from this device. (Tap “💾 Save job” first to keep a copy.)')) return;
+      reset(); changed(); render();
+    }, false);
+    b.id='cal-landing-newpart';
+    var sv=chip('💾 Save job', saveJobToFile, false);
+    el.appendChild(t); el.appendChild(sv); el.appendChild(b);
+    if(up) host.insertBefore(el, up); else host.appendChild(el);
+  }
+
+  function render(){ reflectButton(); ensureLandingLoad(); ensureLandingJob(); renderSideSwitcher(); }
   // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
   function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
 
@@ -895,7 +936,7 @@
     referenceDimensions: referenceDimensions,
     scaleWarnings: scaleWarnings,   // dimensions that two views disagree about, worst first
     part: part,                     // the 3D part being assembled from views (see calib.part3d.js)
-    setPartView: setPartView,
+    setPartView: setPartView, photoId: photoId,
     clearPartView: clearPartView,
     savePart: function(){ saveSoon(); },
     addView: addView,
