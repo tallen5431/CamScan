@@ -142,7 +142,11 @@ def main():
             with pg.expect_file_chooser() as fc:
                 pg.locator("#cal-job-panel").get_by_role("button", name="Load job").first.click()
             fc.value.set_files(b)
-            pg.wait_for_selector("#cal-job-panel", timeout=8000)
+            # The panel was already open, so its presence says nothing: wait until it lists
+            # job B's view (the file is read asynchronously). Waiting on the panel alone let
+            # the assert below run before the load on a slow CI machine.
+            pg.wait_for_function("(()=>{var p=document.getElementById('cal-job-panel');"
+                                 "return p&&p.innerText.includes('Alpha');})()", timeout=15000)
             tag = pg.evaluate("(()=>{var v=document.querySelector('.cal-view');return v?v.getAttribute('data-view-index'):'none';})()")
             assert tag in (None, "none"), f"stale data-view-index survived job load: {tag!r}"
 

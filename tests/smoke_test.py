@@ -305,6 +305,41 @@ def main():
     except Exception as e:
         check("auto_outline ROI handling", False, repr(e))
 
+    # 2g2) A part half in shadow, inside an Area box. The colour-distance trace splits the part
+    #      where the shadow crosses it — the shadowed end reads as background — which is what a
+    #      customer's step-pad photo showed. With a box, everything outside it is background and
+    #      GrabCut keeps the whole part, shadowed end included.
+    try:
+        import auto_outline as _aom
+        rng_s = np.random.default_rng(7)
+        simg = np.empty((700, 500, 3), np.uint8); simg[:] = (150, 165, 180)       # sunlit concrete
+        simg = np.clip(simg.astype(int) + rng_s.normal(0, 14, simg.shape), 0, 255).astype(np.uint8)
+        cv2.rectangle(simg, (400, 0), (499, 699), (215, 215, 212), -1)            # white truck
+        spart = np.zeros(simg.shape[:2], np.uint8); cv2.rectangle(spart, (180, 80), (330, 620), 255, -1)
+        simg[spart > 0] = (78, 80, 82)
+        shad = np.zeros(simg.shape[:2], np.uint8); cv2.ellipse(shad, (150, 560), (230, 170), 0, 0, 360, 255, -1)
+        simg = np.clip(simg * np.where(shad[..., None] > 0, 0.42, 1.0), 0, 255).astype(np.uint8)
+        simg = cv2.GaussianBlur(simg, (3, 3), 0)
+        sroi, sseed = [160, 60, 190, 580], [255, 200]
+
+        def _siou(r):
+            if not r or not r.get("outer"):
+                return 0.0
+            m = np.zeros(spart.shape, np.uint8); cv2.fillPoly(m, [np.array(r["outer"], np.int32)], 255)
+            return np.count_nonzero(m & spart) / np.count_nonzero(m | spart)
+        with _quiet():
+            s_new = _siou(_aom.auto_outline_full(simg, seed=sseed, roi=sroi))
+            _keep = _aom._box_in_crop
+            _aom._box_in_crop = lambda *a: None          # the same box, used only as a crop
+            try:
+                s_old = _siou(_aom.auto_outline_full(simg, seed=sseed, roi=sroi))
+            finally:
+                _aom._box_in_crop = _keep
+        check("an Area box keeps the part's shadowed end in the trace", s_new > 0.95 and s_old < 0.8,
+              f"box as crop only IoU={s_old:.3f} -> box as 'outside is not the part' IoU={s_new:.3f}")
+    except Exception as e:
+        check("an Area box keeps the part's shadowed end in the trace", False, repr(e))
+
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
     #     must not drift when snapping is on. (Its benefit is on soft real-photo fringes; here we
@@ -1804,6 +1839,40 @@ def main():
               f"mirror is the other hand={mirror_ok}, upside-down is a rotation={turn_ok}")
     except Exception as e:
         check("mirror changes the part's hand; turning it over for print does not", False, repr(e))
+
+    # 8r7b) Outlines as a customer actually traced them. A real cover outline (16 points, a few
+    #       nearly on top of one another at a corner) failed "the part's mesh did not close"
+    #       on 291 of 400 small variations: manifold left zero-area slivers that an STL, joined
+    #       by position, reads as holes. The cover (wall) builder failed about 2% of them too.
+    #       Every one must now build, through every path, closed and at the expected volume.
+    try:
+        from part_builder import build_part as _bp9, PartError as _PE9
+        import solid_export as _se9
+        _scr = [(772, 182), (800, 179), (873, 196), (930, 201), (925, 506), (926, 760), (917, 831),
+                (915, 938), (912, 946), (897, 945), (868, 927), (849, 897), (797, 851), (760, 808),
+                (738, 805), (750, 209)]
+        _rng9 = np.random.default_rng(0)
+        fails9 = {"part": 0, "cover": 0, "extrusion": 0, "volume": 0}
+        n9 = 60
+        for _t in range(n9):
+            k = _rng9.uniform(0.9, 2.2)
+            pts = (np.array(_scr, float) + _rng9.normal(0, _rng9.uniform(0, 1.5), (len(_scr), 2))) * k
+            mm = [[x * 0.523, (1600 - y) * 0.523] for x, y in pts]
+            area = abs(_se9.signed_area(np.array(mm)))
+            try:
+                r = _bp9({"top": {"points": mm}}, depth_mm=2.9)
+                if abs(r["info"]["volume_mm3"] - area * 2.9) > 0.01 * area * 2.9:
+                    fails9["volume"] += 1
+            except _PE9:
+                fails9["part"] += 1
+            tris, _info = _se9.build_shell(mm, [], 25.0, 2.0)
+            fails9["cover"] += tris is None or not _se9._closed(tris)
+            t2 = _se9.build_extrusion(mm, [], 25.0)
+            fails9["extrusion"] += t2 is None or not _se9._closed(t2)
+        check("outlines as traced on a real photo build closed, through every path",
+              not any(fails9.values()), f"failures of {n9}: {fails9}")
+    except Exception as e:
+        check("outlines as traced on a real photo build closed, through every path", False, repr(e))
 
     # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
     #      422 — never a 500 — for everything else.

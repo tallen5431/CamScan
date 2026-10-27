@@ -1481,8 +1481,14 @@
               });
               self.setMode('select'); self.requestDraw();
               const tail = nHoles ? (' + '+nHoles+' hole'+(nHoles>1?'s':'')) : '';
-              toast.update('Outline'+tail+' traced — drag any dot to fix it, or use the Detail slider.', 'ok');
-              setTimeout(toast.dismiss, isRetrace ? 1400 : 2800);
+              // A shadow across the part is what the plain trace misses most, and the fix is one
+              // the user would not guess: an Area box round the part makes everything outside it
+              // "not the part", and the shadowed end comes back (see auto_outline._segment).
+              const boxed = !!self._lastAutoRoi;
+              toast.update('Outline'+tail+' traced'+(boxed ? ' inside your Area box' : '')+' — drag any dot to fix it'+
+                (boxed || isRetrace ? ', or use the Detail slider.'
+                                    : '. Missed a part in shadow? Draw an Area box round the part, then tap it again.'), 'ok');
+              setTimeout(toast.dismiss, isRetrace ? 1400 : (boxed ? 2800 : 6000));
               self._showTraceDetail(nPts, nHoles);
             }else{
               // The server says WHY when it can be specific (a trace covering the whole frame

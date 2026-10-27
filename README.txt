@@ -195,6 +195,12 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
     its own colour — a dark part lying on its own shadow — needs the "✖ Not the part"
     tap to separate the two; no brightness threshold can (measured on a real photo: part
     71 grey, its shadow 57, the concrete 169).
+    A shadow falling ACROSS the part (yours, holding the phone) is the other common miss:
+    the shadowed end reads as background. Draw an Area box snugly round the part, then
+    tap the part: everything outside the box is taken as "not the part", and the shadowed
+    end comes back (a real step-pad photo: 60% of the cover traced without the box, 92%
+    with it). Keep the box snug — a box reaching into a dark gap beside the part lets the
+    trace reach into it too.
 
  6. SHOOT THE SAME PART FROM MORE THAN ONE SIDE.
     One photo gives an outline; thickness and profile come from the second and third.
