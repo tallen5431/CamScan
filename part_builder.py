@@ -40,7 +40,7 @@ try:
 except ImportError:  # pragma: no cover - reported to the caller as "unavailable"
     mf = None
 
-from solid_export import _print_orientation, build_shell, mesh_report, signed_area
+from solid_export import _print_orientation, build_shell, manifold_tris, mesh_report, signed_area
 
 ROLES = ("top", "side", "end")
 # (u axis, v axis, normal axis) of each view in X=0, Y=1, Z=2.
@@ -134,8 +134,14 @@ def _ccw(p: np.ndarray) -> np.ndarray:
     return p if signed_area(p) > 0 else p[::-1]
 
 
+# Points closer than this are one point. A traced outline often has two dots almost on top of
+# each other at a corner; kept apart, they leave the solid with slivers a few nanometres wide.
+# 0.01 mm is far below anything a photo measures or a printer prints.
+_WELD_MM = 0.01
+
+
 def _cross_section(p: np.ndarray):
-    return mf.CrossSection([_ccw(np.asarray(p, float))])
+    return mf.CrossSection([_ccw(np.asarray(p, float))]).simplify(_WELD_MM)
 
 
 def _prism(cs, role: str, lo: float, hi: float):
@@ -161,10 +167,7 @@ def _silhouette(man, role: str) -> List[List[List[float]]]:
 
 
 def _tris(man) -> np.ndarray:
-    mesh = man.to_mesh()
-    v = np.asarray(mesh.vert_properties, dtype=np.float64)[:, :3]
-    t = np.asarray(mesh.tri_verts, dtype=np.int64)
-    return v[t]
+    return manifold_tris(man)
 
 
 # ---------------------------------------------------------------------------------------

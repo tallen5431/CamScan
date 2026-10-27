@@ -1805,6 +1805,40 @@ def main():
     except Exception as e:
         check("mirror changes the part's hand; turning it over for print does not", False, repr(e))
 
+    # 8r7b) Outlines as a customer actually traced them. A real cover outline (16 points, a few
+    #       nearly on top of one another at a corner) failed "the part's mesh did not close"
+    #       on 291 of 400 small variations: manifold left zero-area slivers that an STL, joined
+    #       by position, reads as holes. The cover (wall) builder failed about 2% of them too.
+    #       Every one must now build, through every path, closed and at the expected volume.
+    try:
+        from part_builder import build_part as _bp9, PartError as _PE9
+        import solid_export as _se9
+        _scr = [(772, 182), (800, 179), (873, 196), (930, 201), (925, 506), (926, 760), (917, 831),
+                (915, 938), (912, 946), (897, 945), (868, 927), (849, 897), (797, 851), (760, 808),
+                (738, 805), (750, 209)]
+        _rng9 = np.random.default_rng(0)
+        fails9 = {"part": 0, "cover": 0, "extrusion": 0, "volume": 0}
+        n9 = 60
+        for _t in range(n9):
+            k = _rng9.uniform(0.9, 2.2)
+            pts = (np.array(_scr, float) + _rng9.normal(0, _rng9.uniform(0, 1.5), (len(_scr), 2))) * k
+            mm = [[x * 0.523, (1600 - y) * 0.523] for x, y in pts]
+            area = abs(_se9.signed_area(np.array(mm)))
+            try:
+                r = _bp9({"top": {"points": mm}}, depth_mm=2.9)
+                if abs(r["info"]["volume_mm3"] - area * 2.9) > 0.01 * area * 2.9:
+                    fails9["volume"] += 1
+            except _PE9:
+                fails9["part"] += 1
+            tris, _info = _se9.build_shell(mm, [], 25.0, 2.0)
+            fails9["cover"] += tris is None or not _se9._closed(tris)
+            t2 = _se9.build_extrusion(mm, [], 25.0)
+            fails9["extrusion"] += t2 is None or not _se9._closed(t2)
+        check("outlines as traced on a real photo build closed, through every path",
+              not any(fails9.values()), f"failures of {n9}: {fails9}")
+    except Exception as e:
+        check("outlines as traced on a real photo build closed, through every path", False, repr(e))
+
     # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
     #      422 — never a 500 — for everything else.
     try:

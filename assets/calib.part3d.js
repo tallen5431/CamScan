@@ -173,7 +173,7 @@
     hd.append(t, x); card.appendChild(hd);
     var sub = document.createElement('div');
     sub.style.cssText = 'font-size:12.5px;color:#9fb2bb;margin-bottom:10px;line-height:1.45;';
-    sub.textContent = 'Each view is a traced outline, from whichever photo shows it best (select an outline, then ▣ 3D view). ' +
+    sub.textContent = 'Each view is a traced outline, from whichever photo shows it best (select an outline, then 🧩 Use in 3D part). ' +
       'The part keeps only what every view agrees is material. Use ⟲ / ⇋ / ⇵ until the outlines below line up.';
     card.appendChild(sub);
 

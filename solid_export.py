@@ -312,6 +312,13 @@ def build_extrusion(outer: Sequence[Sequence[float]],
             tris = candidate
             break
         scale /= 2.0                      # refine every ring together and try again
+    if tris is None:
+        # The same prism as a boolean — notably for an outline that crosses itself where a
+        # dot was dragged over an edge, which the capping above cannot fill. A lobe wound
+        # against the rest (the small loop such a drag leaves) is dropped, as a slicer would.
+        tris = _manifold_shell(o, [], [], hs, depth, depth)
+        if tris is not None and not _closed(tris):
+            tris = None
     return tris
 
 
@@ -674,8 +681,69 @@ def build_shell(outer: Sequence[Sequence[float]],
         if tris is not None and _closed(tris):
             return _print_orientation(tris, depth), info
         scale /= 2.0
+    # The cup above is built by hand, matching caps to walls by position, and on about 2% of
+    # outlines traced on a customer's photo it still would not close. The same cup as a
+    # boolean of prisms cannot fail that way; it is only a fallback so every cup that already
+    # built keeps exactly the mesh it had.
+    tris = _manifold_shell(o, cav_rings, plate, through, depth, wall)
+    if tris is not None and _closed(tris):
+        exp = info["expected_volume_mm3"]
+        if abs(mesh_report(tris)["volume_mm3"] - exp) <= 0.01 * exp:
+            return _print_orientation(tris, depth), info
     info["reason"] = "Could not close the shell's mesh for this profile."
     return None, info
+
+
+def manifold_tris(man) -> np.ndarray:
+    """A manifold3d solid as triangles, the way an STL holds it: by position, not by index.
+
+    Manifold's mesh is closed by vertex INDEX, and may keep two distinct vertices at the same
+    position with zero-area triangles between them (measured: 3 of 4 outlines traced on a
+    customer's photo, from near-coincident points at a corner). An STL has no indices — a
+    slicer, like mesh_report, joins vertices by position — so those slivers read as holes.
+    Welding by position and dropping the triangles that collapse is exactly what the slicer
+    would see, minus the slivers; the volume is unchanged.
+    """
+    mesh = man.to_mesh()
+    v = np.asarray(mesh.vert_properties, dtype=np.float64)[:, :3]
+    t = np.asarray(mesh.tri_verts, dtype=np.int64)
+    key = np.round(v * 1e6).astype(np.int64)            # the same quantum mesh_report pairs by
+    _u, weld = np.unique(key, axis=0, return_inverse=True)
+    w = weld.reshape(-1)[t]
+    keep = (w[:, 0] != w[:, 1]) & (w[:, 1] != w[:, 2]) & (w[:, 2] != w[:, 0])
+    return v[t[keep]]
+
+
+def _manifold_shell(o, cavs, plate, through, depth, wall) -> Optional[np.ndarray]:
+    """The cup of _assemble_shell as booleans: the outer prism, less each cavity over
+    [0, depth-wall], each plate hole over [depth-wall, depth], each through-hole over the
+    full depth (with wall == depth and no cavities, that is a plain extrusion with holes).
+    None when manifold3d is unavailable or the result is empty."""
+    try:
+        import manifold3d as mf
+    except Exception:
+        return None
+    eps = 0.01                                        # cut tools overshoot the faces they open
+
+    def prism(ring, z0, z1):
+        r = np.asarray(ring, float)
+        cs = mf.CrossSection([r if signed_area(r) > 0 else r[::-1]])
+        return mf.Manifold.extrude(cs, z1 - z0).translate([0.0, 0.0, z0])
+
+    try:
+        floor = depth - wall
+        solid = prism(o, 0.0, depth)
+        for c in cavs:
+            solid = solid - prism(c, -eps, floor)
+        for h, _k in plate:
+            solid = solid - prism(h, floor - eps, depth + eps)
+        for h in through:
+            solid = solid - prism(h, -eps, depth + eps)
+        if solid.is_empty() or solid.volume() <= 0:
+            return None
+        return manifold_tris(solid)
+    except Exception:
+        return None
 
 
 def _print_orientation(tris: np.ndarray, depth: float) -> np.ndarray:
