@@ -5,8 +5,8 @@
 // and scaled with the existing tools, then submits the whole set — annotated images,
 // measurements, and a short part brief — to Datum Laboratories in one go.
 //
-// State lives in localStorage so it SURVIVES the page reload between photos (the "New
-// image" button reloads the page). This module is self-contained: it adds its own button
+// State lives in IndexedDB (localStorage where that is unavailable) so it SURVIVES the page
+// reload between photos (the "New image" button reloads the page) — see "job state" below. This module is self-contained: it adds its own button
 // and panel and reads the live overlay from `.cal-view`.__overlay — no coupling to the
 // rest of the UI. Nothing here sets a scale or measures; it only collects finished views.
 (function(){
@@ -31,17 +31,114 @@
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 
   // ---- job state ----
-  function load(){
-    try{ var j=JSON.parse(localStorage.getItem(LS_KEY)); if(j && j.views) return j; }catch(e){}
+  //
+  // WHERE IT LIVES. The job used to live in localStorage, which browsers cap at about 5 MB.
+  // Each view stores two images (annotated + raw, ~0.5 MB each at 1600 px — measured on the
+  // customer's own photos), so a job filled up at about FIVE photos — fewer than the six that
+  // customer sent, and fewer than a 3D part needs (top, side, end, board, underside). It now
+  // lives in IndexedDB, whose quota is a share of the disk, not a few megabytes.
+  //
+  // localStorage remains the fallback where IndexedDB is unavailable or broken (some private
+  // modes), and the source a job saved by an older version is migrated from: its first save
+  // here writes IndexedDB and then drops the old key, so a stale copy can never shadow it.
+  //
+  // The catch is timing: an IndexedDB write finishes later, where a localStorage write was
+  // done before the call returned. Nothing may rely on a write started while the page is
+  // unloading, so the reload buttons wait for the write (beforeReload) and a reopened side's
+  // edits are saved shortly after they happen (autosave), not only at unload.
+  function blankJob(){
     return { id:'job-'+Date.now().toString(36), createdAt:new Date().toISOString(),
              brief:{ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, views:[] };
   }
-  var job = load();
-  function save(){
+  function load(){
+    try{ var j=JSON.parse(localStorage.getItem(LS_KEY)); if(j && j.views) return j; }catch(e){}
+    return null;
+  }
+  var _localJob = load();
+  var job = _localJob || blankJob();
+
+  var IDB_NAME = 'camscan', IDB_STORE = 'kv';
+  var _db = null;                 // Promise<IDBDatabase|null>
+  var _idbOK = false;             // decided once hydration finishes
+  var _hydrated = false, _pendingSave = false;
+  function idb(){
+    if(_db) return _db;
+    _db = new Promise(function(res){
+      try{
+        if(!window.indexedDB) return res(null);
+        var rq = window.indexedDB.open(IDB_NAME, 1);
+        rq.onupgradeneeded = function(){ try{ rq.result.createObjectStore(IDB_STORE); }catch(e){} };
+        rq.onsuccess = function(){ res(rq.result); };
+        rq.onerror = function(){ res(null); };
+        rq.onblocked = function(){ res(null); };
+      }catch(e){ res(null); }
+    });
+    return _db;
+  }
+  function idbReq(mode, fn){
+    return idb().then(function(db){
+      if(!db) return { ok:false };
+      return new Promise(function(res){
+        try{
+          var tx = db.transaction(IDB_STORE, mode), store = tx.objectStore(IDB_STORE), rq = fn(store);
+          var out = { ok:true };
+          rq.onsuccess = function(){ out.value = rq.result; };
+          tx.oncomplete = function(){ res(out); };              // durable only once committed
+          tx.onerror = tx.onabort = function(){ res({ ok:false }); };
+        }catch(e){ res({ ok:false }); }
+      });
+    });
+  }
+  function idbGet(){ return idbReq('readonly', function(s){ return s.get(LS_KEY); }); }
+  function idbDel(){ return idbReq('readwrite', function(s){ return s.delete(LS_KEY); }); }
+
+  // One write in flight at a time; anything saved meanwhile is folded into the next write,
+  // which stores the job as it is THEN. Resolves true once the latest state is committed.
+  var _writing = null, _dirty = false;
+  function idbWrite(){
+    if(_writing){ _dirty = true; return _writing; }
+    _dirty = false;
+    _writing = idbReq('readwrite', function(s){ return s.put(job, LS_KEY); }).then(function(r){
+      _writing = null;
+      if(!r.ok){ storageFull(); return false; }
+      try{ localStorage.removeItem(LS_KEY); }catch(e){}       // migrated: no stale shadow copy
+      if(_dirty) return idbWrite();
+      return true;
+    });
+    return _writing;
+  }
+  function storageFull(){
+    setStatus('⚠️ Storage is full — send or download this submission, then start a new one.', true);
+  }
+  function writeLocal(){
     try{ localStorage.setItem(LS_KEY, JSON.stringify(job)); return true; }
-    catch(e){ // quota — the downscaled images add up. Tell the user to submit/download now.
-      setStatus('⚠️ Storage is full — send or download this submission, then start a new one.', true);
-      return false; }
+    catch(e){ storageFull(); return false; }      // quota — tell the user to submit/download now
+  }
+  function save(){
+    job.savedAt = Date.now();
+    if(!_hydrated){ _pendingSave = true; return true; }
+    if(_idbOK){ idbWrite(); return true; }
+    return writeLocal();
+  }
+  // Resolves once everything saved so far is durable.
+  function persist(){
+    flushSave();
+    if(_idbOK) return _writing || Promise.resolve(true);
+    return Promise.resolve(true);
+  }
+  // Load the stored job before anything renders. A stuck database must never stop the app,
+  // so after a short wait it falls back to localStorage for this session.
+  function hydrate(){
+    var timeout = new Promise(function(res){ setTimeout(function(){ res({ timeout:true }); }, 2500); });
+    return Promise.race([idbGet(), timeout]).then(function(r){
+      if(r && r.ok){
+        _idbOK = true;
+        var stored = r.value;
+        if(stored && stored.views && (!_localJob || (stored.savedAt || 0) >= (_localJob.savedAt || 0))) job = stored;
+      }
+      _hydrated = true;
+      if(_pendingSave || (_idbOK && _localJob)){ _pendingSave = false; save(); }   // migrate a legacy job now
+    });
   }
   // Debounced persist: save() re-serializes the whole job (every view's base64 image), so
   // calling it on every brief keystroke re-stringifies megabytes per character. Coalesce those
@@ -49,9 +146,9 @@
   var _saveTimer=null;
   function saveSoon(){ if(_saveTimer) clearTimeout(_saveTimer); _saveTimer=setTimeout(function(){ _saveTimer=null; save(); }, 400); }
   function flushSave(){ if(_saveTimer){ clearTimeout(_saveTimer); _saveTimer=null; } return save(); }
-  function reset(){ job = { id:'job-'+Date.now().toString(36), createdAt:new Date().toISOString(),
-             brief:{ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, views:[] };
-    try{ localStorage.removeItem(LS_KEY); }catch(e){} }
+  function reset(){ job = blankJob();
+    try{ localStorage.removeItem(LS_KEY); }catch(e){}
+    if(_idbOK) idbDel(); }
 
   // Per-photo identity: the cal-view's data-json URL carries a unique upload id, so we can
   // update-in-place instead of duplicating when the same photo is (re)captured.
@@ -811,17 +908,61 @@
     // Distinct from hasCurrent, which keys on a fresh upload's sourceId.
     isCurrentStored: function(){ return currentOpenIndex() != null; },
     syncOpen: syncOpenView,  // persist the reopened side's edits in place (no relabel)
-    isEmbedded: function(){ return EMBED; }
+    isEmbedded: function(){ return EMBED; },
+    // Call before reloading the page: captures the open side and waits (briefly) until the
+    // job is durable. A write merely STARTED during unload is not guaranteed to land.
+    beforeReload: beforeReload,
+    flush: persist,          // resolves once everything saved so far is committed
+    ready: null,             // set below: resolves once the stored job is loaded
+    // What is actually stored (not what is in memory) — for checks that something persisted.
+    persisted: function(){
+      if(_idbOK) return idbGet().then(function(r){ return (r && r.ok) ? (r.value || null) : null; });
+      try{ return Promise.resolve(JSON.parse(localStorage.getItem(LS_KEY))); }catch(e){ return Promise.resolve(null); }
+    },
+    clearStored: function(){
+      try{ localStorage.removeItem(LS_KEY); }catch(e){}
+      return idbDel().then(function(){ return true; });
+    },
+    storage: function(){ return _idbOK ? 'indexeddb' : 'localstorage'; }
   };
+
+  function beforeReload(){
+    try{ syncOpenView(); }catch(e){}
+    var limit = new Promise(function(res){ setTimeout(res, 2000); });   // never block a reload forever
+    return Promise.race([persist(), limit]);
+  }
+
+  // Autosave a REOPENED side shortly after each edit, so its record is current long before
+  // any unload. Hooked on the overlay's undo-history push, which every edit goes through.
+  var _autoTimer = null;
+  function hookAutosave(){
+    var o = overlay();
+    if(!o || o.__jobAutosave || typeof o._pushHistory !== 'function') return;
+    var orig = o._pushHistory.bind(o);
+    o._pushHistory = function(){
+      var r = orig.apply(null, arguments);
+      if(currentOpenIndex() != null){
+        if(_autoTimer) clearTimeout(_autoTimer);
+        _autoTimer = setTimeout(function(){ _autoTimer = null; try{ syncOpenView(); }catch(e){} }, 1200);
+      }
+      return r;
+    };
+    o.__jobAutosave = true;
+  }
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.
   function boot(){
     render();   // reflectButton + ensureLandingLoad + renderSideSwitcher (all signature-guarded)
-    new MutationObserver(function(){ render(); }).observe(document.documentElement, {childList:true, subtree:true});
+    hookAutosave();
+    new MutationObserver(function(){ render(); hookAutosave(); }).observe(document.documentElement, {childList:true, subtree:true});
     // The top-bar 'New' button reloads the page; syncOpenView otherwise runs only on
     // switch/save/submit, so flush the open reopened side back into the job here too — else a
     // reload rehydrates it from its pre-edit snapshot and the new marks are silently lost.
     window.addEventListener('pagehide', function(){ try{ syncOpenView(); }catch(e){} try{ flushSave(); }catch(e){} });
   }
-  if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded', boot);
+  // Load the stored job first, then build the UI from it.
+  var _ready = hydrate();
+  window.CalibJob.ready = _ready;
+  function start(){ _ready.then(boot, boot); }
+  if(document.readyState!=='loading') start(); else document.addEventListener('DOMContentLoaded', start);
 })();

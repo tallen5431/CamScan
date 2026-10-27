@@ -84,10 +84,10 @@ _OVERLAY_MEAN = """(async()=>{
   return {r:Math.round(r/n), b:Math.round(b/n)};
 })()"""
 
-# Decode the mean colour of each STORED view image (localStorage is the source of truth —
+# Decode the mean colour of each STORED view image (the stored job is the source of truth —
 # it holds every captured record and survives the reload between photos).
 _STORED_MEANS = """(async()=>{
-  var j={}; try{ j=JSON.parse(localStorage.getItem('camscan.job.v1'))||{}; }catch(e){}
+  await window.CalibJob.flush(); var j=(await window.CalibJob.persisted())||{};
   var views=(j&&j.views)||[];
   function meanOf(src){return new Promise(res=>{ if(!src){res(null);return;}
     var im=new Image();
@@ -126,7 +126,7 @@ def main():
             pg.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             pg.wait_for_function("window.CalibJob && document.querySelector('#uploader input[type=file]')", timeout=15000)
             # Start clean so a stale job from a prior run can't mask a regression.
-            pg.evaluate("try{localStorage.removeItem('camscan.job.v1');}catch(e){}")
+            pg.evaluate("window.CalibJob.clearStored()")
 
             # Upload photo A, wait for the overlay to mount it, capture it as a view.
             pg.set_input_files("#uploader input[type=file]", pa)

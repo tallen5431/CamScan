@@ -85,9 +85,9 @@ def _wait_server(timeout=40):
     return False
 
 
-# Mean (r,b) of view 0's stored image in localStorage — the source of truth that persists.
+# Mean (r,b) of view 0's stored image as STORED — the source of truth that persists.
 _VIEW0 = """(async()=>{
-  var j={}; try{ j=JSON.parse(localStorage.getItem('camscan.job.v1'))||{}; }catch(e){}
+  await window.CalibJob.flush(); var j=(await window.CalibJob.persisted())||{};
   var v=(j.views||[])[0]; if(!v) return null;
   function mean(src){return new Promise(res=>{var im=new Image();im.onload=function(){
     var c=document.createElement('canvas');c.width=8;c.height=8;c.getContext('2d').drawImage(im,0,0,8,8);
@@ -121,7 +121,7 @@ def main():
             pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             pg.wait_for_function("window.CalibJob && document.querySelector('.landing-card')", timeout=15000)
-            pg.evaluate("try{localStorage.removeItem('camscan.job.v1');}catch(e){}")
+            pg.evaluate("window.CalibJob.clearStored()")
 
             # Load job A via the landing card.
             with pg.expect_file_chooser() as fc:

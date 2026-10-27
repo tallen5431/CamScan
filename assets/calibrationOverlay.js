@@ -142,7 +142,7 @@
         p.style.cssText='color:#9aa;max-width:420px;';
         const btn=document.createElement('button'); btn.type='button'; btn.textContent='↻ Upload a new image';
         btn.style.cssText='padding:10px 16px;background:#00d4ff;color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer;';
-        btn.onclick=()=>{ try{ window.location.reload(); }catch(e){} };
+        btn.onclick=()=>{ try{ (window.CalibJob && window.CalibJob.beforeReload ? window.CalibJob.beforeReload() : Promise.resolve()).then(() => window.location.reload()); }catch(e){ window.location.reload(); } };
         box.append(h,p,btn); wrap.appendChild(box);
       }
 
@@ -1866,7 +1866,7 @@
           b.style.cssText='min-height:40px;padding:7px 13px;border-radius:8px;font-size:13px;cursor:pointer;'+(primary
             ?'background:#e0a24a;color:#1a1206;border:none;font-weight:600;'
             :'background:#241d10;color:#f0e6d0;border:1px solid #4a3d1f;'); b.onclick=fn; return b; };
-        row.appendChild(mk('Upload another', true, ()=>{ try{ window.location.reload(); }catch(e){} }));
+        row.appendChild(mk('Upload another', true, ()=>{ try{ (window.CalibJob && window.CalibJob.beforeReload ? window.CalibJob.beforeReload() : Promise.resolve()).then(() => window.location.reload()); }catch(e){ window.location.reload(); } }));
         row.appendChild(mk('Use it anyway', false, ()=>{ box.remove();
           const po=document.getElementById('cal-paper-offer'); if(po) po.style.top='12px'; }));
         box.append(t,row); document.body.appendChild(box);
