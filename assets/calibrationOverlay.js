@@ -981,6 +981,23 @@
         this.requestDraw();
         return true;
       }
+      // The selected closed outline as a 3D-part view: exactly the geometry the DXF/STL
+      // exports send (tilt-corrected millimetres when a perspective calibration exists), so a
+      // part built from several photos uses the same numbers every other export does.
+      // Returns {points, mm_per_px, image_height, size_mm:[w,h]} or null.
+      partProfile(){
+        const a = this.selectedProfile();
+        if(!a) return null;
+        const req = Xport._buildDXFRequest(this._dataForMeasure(), { items:[a] },
+                      { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0,
+                        allowHomography:this._allowHomography() });
+        const g = (req.geometry||[]).find(x => x && x.type==='polyline' && x.closed);
+        if(!g || !Array.isArray(g.points) || g.points.length < 3) return null;
+        const s = Number(g.mm_per_px) || 1;
+        const xs = g.points.map(p => p[0]*s), ys = g.points.map(p => p[1]*s);
+        return { points: g.points, mm_per_px: s, image_height: req.image_height || 0,
+                 size_mm: [Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys)] };
+      }
       // The selected item when it is a closed profile that can take a depth, else null.
       selectedProfile(){
         const a = this.ann.items.find(it => it.id === this.ann.selectedId);
