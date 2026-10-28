@@ -196,7 +196,12 @@
         scrollbar-width: none;
       }
       .cal-context::-webkit-scrollbar{ display: none; }
-      .cal-context button{ padding: 8px 12px; min-height: 40px; font-size: 13px; flex: 0 0 auto; white-space: nowrap; }
+      /* Shrink, never scroll off: with a wider system font (measured on the CI runner's) the
+         row outgrew the screen and pushed "⋯" out of reach. Labels truncate instead; More
+         keeps its size. */
+      .cal-context button{ padding: 8px 12px; min-height: 40px; font-size: 13px; flex: 0 1 auto; min-width: 0;
+                           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .cal-context button.cal-ctx-more{ flex: 0 0 auto; }
     }
     .cal-context button.show.cal-ctx-folded{ display: none; }
     .cal-context button.cal-ctx-more{ min-width: 44px; padding: 8px 10px; justify-content: center; font-size: 18px; background: var(--cal-bg-2); color: var(--cal-text); border: 1px solid var(--cal-border); }

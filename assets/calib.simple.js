@@ -50,6 +50,9 @@
     // The zoom buttons sat under the card (a tap on + landed on the card's row): lifted
     // clear of it, by the height syncInset() measures. transform, so the grid is not resized.
     'body.camscan-simple .cal-zoom{transform:translateY(calc(-1 * var(--cal-simple-zoom, 0px)));}'+
+    // ...and so are the selected outline's own buttons: with a taller card (a wider font)
+    // the card's row took the tap meant for "Use in 3D part".
+    'body.camscan-simple .cal-context{transform:translateY(calc(-1 * var(--cal-simple-zoom, 0px)));}'+
     '#cal-simple-toggle{position:fixed;top:66px;right:12px;z-index:39;min-height:38px;padding:6px 12px;border-radius:18px;'+
       'background:#12171c;color:#cfe6ee;border:1px solid #29414c;cursor:pointer;font:13px Segoe UI,system-ui,sans-serif;display:none;}';
   document.head.appendChild(css);
