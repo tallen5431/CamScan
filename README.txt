@@ -1,53 +1,40 @@
 
-CamScan — Calibration Exporter (Dash)
+CamScan — photos to a 3D part (STL / STEP / OBJ)
 
-Measure real-world objects in a photo using a printed calibration square as the
-size reference, then export the measurements for CAD / 3D modelling.
+Turn two or three phone photos of a part, each with a ruler lying on it, into a 3D model:
+STL to print, STEP to edit in Fusion 360 or any CAD program. It measures in real
+millimetres along the way, and exports 2D drawings (DXF / SVG) too.
 
 --------------------------------------------------------------------------------
-QUICK START
+QUICK START: PHOTOS TO 3D PART
+--------------------------------------------------------------------------------
+1) Per view (top, side, end): lay a ruler FLAT ON that face; shoot square-on, ~0.5 m back.
+2) Set scale (📐): a line down the ruler's middle between two numbered marks; type the length.
+3) Draw an Area box (▭) snugly round the part, then ✨ Trace outline and tap the part.
+4) ✨ Tidy: Straighten or Refine the sides; Square up if the photo was taken at an angle.
+5) 🧩 Use in 3D part → Top, Side or End. Repeat 1-5 for each photo.
+6) 🧩 Build 3D part: type the height (if no Side/End view) and wall; download STL or STEP.
+
+  * HOLLOW COVERS whose outline is the BOTTOM edge (a step-pad cover seen from above shows
+    its lower outer edge, not its top face): the scale holds only in the ruler's plane, so
+    put the ruler level with that bottom edge (on the ground or a block beside it). Already
+    shot with the ruler on the top face? 📐 → "Measuring a raised face?" and enter the part's
+    height as a NEGATIVE number (-45 for an edge 45 mm below the ruler). Worked through for
+    a customer's cover photo: 45 mm below the ruler reads every top-view size 7.4% small.
+  * Square up uses the ruler's own edges, found along your scale line — another reason to
+    draw that line down the ruler's middle, end to end. See SQUARE UP under REFERENCE.
+  * Downloads: STL comes out plate-down, ready to print; STEP and OBJ come as traced, the
+    way the part sits on the vehicle, for editing in CAD.
+
+--------------------------------------------------------------------------------
+RUNNING IT
 --------------------------------------------------------------------------------
 1) pip install -r requirements.txt
    - or run Start.sh (Linux/Mac) / Start.bat (Windows) to create a venv + launch
 2) python app.py
 3) Open http://127.0.0.1:8059  (also reachable on your LAN at http://<host-ip>:8059)
-4) Tap "snap a photo" (or drop an image) that contains your calibration square.
-
---------------------------------------------------------------------------------
-CALIBRATION SQUARE
---------------------------------------------------------------------------------
-The calibration target is a solid black square (optionally with 4 white inner
-pads for easier detection). CamScan detects the black square's outer edge and
-uses its known real edge length to convert pixels to millimetres.
-
-IMPORTANT — set your real square size:
-  Open "More Settings & Options" → Calibration → "Calibration square size (mm)"
-  and enter the printed edge length of YOUR square. Every measurement rescales
-  instantly (no re-processing). The default assumes a 40 mm square (the recommended marker).
-
-  You can also set the CALIB_EDGE_MM environment variable to change the default
-  used at upload time, e.g.  CALIB_EDGE_MM=47.5 python app.py
-
-Deployment / safety environment variables (all optional):
-  MAX_CONTENT_LENGTH_BYTES  max REQUEST BODY size in bytes (default 32 MiB). Larger than
-                            the 8 MB photo limit shown in the UI because uploads arrive
-                            base64-encoded (~1.37x) and a multi-view submission carries a
-                            reloadable snapshot per view.
-  MAX_IMAGE_PIXELS          reject images that DECODE larger than this (default
-                            50,000,000 px) — guards against decompression bombs
-  MAX_UPLOAD_FILES          cap on retained UPLOADS in uploads/ — a photo and its
-                            .calibration.json count as one (default 400; 0 = off)
-  MAX_UPLOAD_AGE_HOURS      drop uploads older than this (default 72)
-  MAX_SUBMISSIONS_BYTES     refuse NEW part submissions once submissions/ reaches this size
-                            (default 2 GiB; 0 = no cap). Submissions are business records
-                            and are never auto-deleted — the cap only stops an unbounded
-                            /api/submit from filling the volume. Archive submissions/ (or
-                            raise this) if customers start seeing "out of room".
-  CAMSCAN_DEBUG_IMAGES=1    write annotated detection debug images to ./debug_out
-                            (OFF by default; never writes into the served uploads dir)
-
-No square detected? Use the "Set Scale" tool (📐): draw a line across anything of
-known length and type in that length — CamScan calibrates from it.
+4) Tap "take a photo" (or drop an image) of the part with a ruler on it. A printed
+   calibration square works too and scales automatically (see REFERENCE).
 
 --------------------------------------------------------------------------------
 3D MODEL FOR PRINTING (STL)
@@ -76,27 +63,13 @@ re-draw in CAD.
      first re-traces it at full detail with the same Area box and taps, so gentle curves the
      first trace smoothed away come back (a few seconds). Use either; both undo in one step.
      Photo taken at an angle? With the scale set from a line along your ruler, select the
-     outline and press "⊞ Square up". A ruler is a rectangle: its two edges are parallel, so
-     how they narrow in the photo gives the camera's tilt, and every measurement and export
-     is corrected for it. CamScan finds the ruler's edges itself, along the scale line (draw
-     it down the middle of the ruler, lying flat on the part's face). The message then says:
-       - the tilt it corrected;
-       - how wide the ruler reads — compare it with your ruler: if they match, the
-         correction is right;
-       - whether the part's own long sides come out parallel. If not, it gives the width at
-         each end, ± how sure it is: the part tapers, or its side walls show at one end.
-         The outline keeps that taper.
-     No ruler edges along the line (a tape, a printed scale)? It uses the part's two long
-     sides instead — that assumes the part is a true rectangle — and the message offers to
-     switch between the two. Measured on a customer's step-pad photo, the cover's sides
-     narrowed about twice as much as the ruler lying on it: squaring up from the cover would
-     have over-corrected and hidden a ~3.6 mm taper.
-     Exact for tilt along the part; within ~1-2% with a few degrees sideways as well. It uses
-     the photo's focal length when the original photo carries it; a photo sent through a chat
-     app has lost it, and the upload message says so. A rectangle of known size on the face
-     (Set scale) is exact in every case.
-  2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
-     For a COVER, also fill in the wall thickness (see below).
+     outline and press "⊞ Square up". It corrects every measurement and export for the
+     camera's tilt, from how the ruler's two edges narrow in the photo. When it cannot find
+     them it says why, uses the part's sides instead, and offers "Redraw scale line". How it
+     works and what the message tells you: SQUARE UP under REFERENCE.
+  2) Select the outline and press "⇥ Depth". Enter how far the shape runs: for a top
+     outline that is the part's HEIGHT; for a cross-section (an end or side outline), the
+     part's length. For a COVER, also fill in the wall thickness (see below).
   3) 💾 menu → "Save STL (3D print)".
 
 COVERS (hollow parts). Most replacement covers — a running-board step pad, a trim cap,
@@ -150,6 +123,7 @@ is built from several outlines instead of one, each traced on whichever photo sh
                            triangle, which is hard to change.
        OBJ                 a mesh with one polygon per flat side, for programs that only take
                            meshes (in Fusion: Insert Mesh, then Convert Mesh).
+     STEP and OBJ come as traced (the way the part sits); STL comes plate-down for printing.
   HOLLOW: put a wall thickness in "Hollow — wall (mm)" and the part comes out as a cover of
   that wall, open underneath, turned plate-down for printing — with Top alone or with Side
   and End views too. Leave it empty for a solid part.
@@ -210,9 +184,15 @@ and the feature are in the same plane. For a part 20 mm thick, that is the diffe
 between a 5 mm error on a 100 mm dimension and no error at all.
 
 If the photo is already taken, open "Set Scale" (📐) → "Measuring a raised face?" and
-enter how far above the card the face sits. CamScan re-derives the calibration for
-that plane. This is a correction, not a measurement — it is most accurate when the
-photo carries lens data (EXIF), and is an estimate otherwise; the panel says which.
+enter how far above the card (or ruler) the face sits — NEGATIVE for a face below it,
+such as a cover's bottom edge traced from above with the ruler on its top face. CamScan
+re-derives the scale for that plane: from the square's own geometry, or, for a ruler
+line, from the working distance (focal length x mm per px). This is a correction, not a
+measurement — it is most accurate when the photo carries lens data (EXIF), and is an
+estimate otherwise; the message says which. It does not apply on top of Square up or a
+paper rectangle: set the scale from the ruler line, correct for the plane, and measure.
+(Square up over a corrected line drops the correction and says so; Undo brings it back.)
+The correction is kept with the photo, and drawing a new scale line clears it.
 
 Also worth doing: shoot from further back. The error scales as height/distance, so a
 20 mm-thick part reads +8.7% at 250 mm and +3.4% at 600 mm. Just keep the card large
@@ -229,6 +209,8 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
     The biggest error, and free to avoid. A face raised above the card is magnified:
     +2.6% at 10 mm up, +5.3% at 20 mm, +11.1% at 40 mm. It does NOT go away in a
     square-on photo. Rest the card on that face and the error is zero.
+    "The face you are measuring" is the one the OUTLINE follows. A hollow cover seen from
+    above traces along its bottom edge, so the ruler goes level with that edge, not on top.
 
  2. USE A REFERENCE AT LEAST A FIFTH AS LONG AS THE PART.
     Error multiplies by how far you extrapolate. A 40 mm card on a 1.5 m running board
@@ -267,12 +249,14 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
 MEASURING
 --------------------------------------------------------------------------------
 Tools (toolbar):
-  Pan / Select / Set Scale / Measure (distance) / Path (perimeter) /
-  Area (rectangle) / Angle / Circle (2-point) / 3-Point circle / Note
+  Pan / Select / Set Scale / Measure (distance) / Path (perimeter) / Outline (closed part
+  outline) / Area (rectangle) / Angle / Circle (2-point) / 3-Point circle / Note
   - Path: click points, then double-click or press Enter (or the ✓ button) to finish.
+  - Outline: tap round the part, then tap the first point (or double-tap) to close it — a
+    to-scale profile for the 3D part. "✨ Auto-trace" traces it from one tap on the part.
   - Circle: drag the centre to move, drag the ring to resize.
 Keyboard: 0 Pan · 1 Select · 2 Measure · 3 Path · 4 Area · 5 Angle · 6 Circle ·
-  7 3-Point · 8 Note · Enter finish path · Esc cancel · +/- zoom · Space to pan ·
+  7 3-Point · 8 Note · 9 Outline · Enter finish path · Esc cancel · +/- zoom · Space to pan ·
   Ctrl+Z undo · Ctrl+Shift+Z redo · Delete remove selected · C copy selected value.
 
 --------------------------------------------------------------------------------
@@ -308,6 +292,72 @@ JavaScript syntax, the smoke suite, every browser suite, and tests/check_line_en
 That last one exists because this repository mixes CRLF and LF files with no .gitattributes:
 a text-mode edit silently converts a CRLF file, and the real change disappears under
 thousands of lines of line-ending churn. It fails a change that flips a file's endings.
+
+--------------------------------------------------------------------------------
+REFERENCE
+--------------------------------------------------------------------------------
+
+SQUARE UP
+Photo taken at an angle? With the scale set from a line along your ruler, select the
+outline and press "⊞ Square up". A ruler is a rectangle: its two edges are parallel, so
+how they narrow in the photo gives the camera's tilt, and every measurement and export
+is corrected for it. CamScan finds the ruler's edges itself, along the scale line (draw
+it down the middle of the ruler, lying flat on the part's face). The message then says:
+  - the tilt it corrected;
+  - how wide the ruler reads — compare it with your ruler: if they match, the
+    correction is right;
+  - whether the part's own long sides come out parallel. If not, it gives the width at
+    each end, ± how sure it is: the part tapers, or its side walls show at one end.
+    The outline keeps that taper.
+Only ONE edge clear (the other runs beside a groove or a shadow)? It finds the other
+again from the clear one, a ruler's width away, keeping only what steps from ruler to
+background. If that still fails it assumes the second edge parallel and says so: that
+lines the photo up but cannot see a tilt along the ruler, so the part's taper is reported
+unchecked. No ruler edges along the line at all (a tape, a printed scale)? It uses the
+part's two long sides instead — that assumes the part is a true rectangle — and the
+message says why the ruler was not used, offers "Redraw scale line" (down the ruler's
+middle, end to end), and shows "Use the ruler" greyed out. When both work, it offers to
+switch between the two. Measured on a customer's step-pad photo, the cover's sides
+narrowed about twice as much as the ruler lying on it: squaring up from the cover would
+have over-corrected and hidden a ~3.6 mm taper.
+Exact for tilt along the part; within ~1-2% with a few degrees sideways as well. It uses
+the photo's focal length when the original photo carries it. A photo sent through a chat
+app has lost it: the upload message flags that, and Square up's message gives the tip.
+A rectangle of known size on the face (Set scale) is exact in every case.
+
+CALIBRATION SQUARE
+The calibration target is a solid black square (optionally with 4 white inner
+pads for easier detection). CamScan detects the black square's outer edge and
+uses its known real edge length to convert pixels to millimetres.
+
+IMPORTANT — set your real square size:
+  Open "More Settings & Options" → Calibration → "Calibration square size (mm)"
+  and enter the printed edge length of YOUR square. Every measurement rescales
+  instantly (no re-processing). The default assumes a 40 mm square (the recommended marker).
+
+  You can also set the CALIB_EDGE_MM environment variable to change the default
+  used at upload time, e.g.  CALIB_EDGE_MM=47.5 python app.py
+
+Deployment / safety environment variables (all optional):
+  MAX_CONTENT_LENGTH_BYTES  max REQUEST BODY size in bytes (default 32 MiB). Larger than
+                            the 8 MB photo limit shown in the UI because uploads arrive
+                            base64-encoded (~1.37x) and a multi-view submission carries a
+                            reloadable snapshot per view.
+  MAX_IMAGE_PIXELS          reject images that DECODE larger than this (default
+                            50,000,000 px) — guards against decompression bombs
+  MAX_UPLOAD_FILES          cap on retained UPLOADS in uploads/ — a photo and its
+                            .calibration.json count as one (default 400; 0 = off)
+  MAX_UPLOAD_AGE_HOURS      drop uploads older than this (default 72)
+  MAX_SUBMISSIONS_BYTES     refuse NEW part submissions once submissions/ reaches this size
+                            (default 2 GiB; 0 = no cap). Submissions are business records
+                            and are never auto-deleted — the cap only stops an unbounded
+                            /api/submit from filling the volume. Archive submissions/ (or
+                            raise this) if customers start seeing "out of room".
+  CAMSCAN_DEBUG_IMAGES=1    write annotated detection debug images to ./debug_out
+                            (OFF by default; never writes into the served uploads dir)
+
+No square detected? Use the "Set Scale" tool (📐): draw a line across anything of
+known length and type in that length — CamScan calibrates from it.
 
 --------------------------------------------------------------------------------
 ARTIFACTS in /uploads
