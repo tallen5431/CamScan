@@ -190,6 +190,8 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     perim = float(np.hypot(*(np.roll(p, -1, axis=0) - p).T).sum())
     diag = float(np.hypot(*np.ptp(p, axis=0)))
     r = max(4.0, 0.012 * diag)                            # how far across a side to look for its edge
+    if img_bgr is not None:
+        r = min(r, 4.0 + 0.02 * max(img_bgr.shape[:2]))   # never further than the photo allows
     min_run = max(20.0, min_run_frac * perim)
 
     # The trace's own wobble, measured from its dots: how far each sits off the line through

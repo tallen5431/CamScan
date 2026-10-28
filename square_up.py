@@ -74,7 +74,7 @@ def square_up(side1: Sequence, side2: Sequence, ruler: Sequence, ruler_mm: float
     except (TypeError, ValueError):
         f = 0.0
     if not (math.isfinite(f) and f > 0):
-        f, f_src = default_focal_px(W), "assumed"
+        f, f_src = default_focal_px(W, Hh), "assumed"
 
     d1_img = (b1 - a1)[:2] / np.hypot(*(b1 - a1)[:2])
     d2_img = (b2 - a2)[:2] / np.hypot(*(b2 - a2)[:2])

@@ -69,6 +69,10 @@ def find_ruler_edges(img_bgr, a: Sequence, b: Sequence, with_error: bool = False
     L = float(np.hypot(*(b - a)))
     if L < 60:
         return none
+    # A line longer than the photo's diagonal is not on it; and the sample grid below grows
+    # with the line, so an absurd one would be an absurd allocation.
+    if L > 1.5 * max(img_bgr.shape[:2]):
+        return none
     u = (b - a) / L
     n = np.array([-u[1], u[0]])
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)

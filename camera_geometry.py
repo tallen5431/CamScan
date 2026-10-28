@@ -145,27 +145,37 @@ def exif_focal_35mm(data: bytes) -> Optional[float]:
     return None
 
 
-def focal_px_from_jpeg_bytes(data: bytes, image_width_px: int) -> Optional[float]:
+def focal_px_from_jpeg_bytes(data: bytes, image_width_px: int,
+                             image_height_px: Optional[int] = None) -> Optional[float]:
     """Focal length in PIXELS from a JPEG's EXIF, or None when it carries none.
 
     FocalLengthIn35mmFilm is the focal length that would give this frame's horizontal
     angle of view on 35 mm film, whose frame is 36 mm wide. So the pixel focal length is
-    f_px = f35 / 36 * width_px, independent of the real sensor size — which is exactly
+    f_px = f35 / 36 * long_side_px, independent of the real sensor size — which is exactly
     why this tag is the reliable one to use.
+
+    The 36 mm is the film frame's LONG side, so it goes with the image's long side. A portrait
+    phone photo arrives already turned upright (the decoder applies its EXIF orientation), and
+    taking its width — the short side — made the focal length 25% too short, which skewed
+    every tilt correction made from it.
     """
     f35 = exif_focal_35mm(data)
     if not f35 or not image_width_px or image_width_px <= 0:
         return None
-    f_px = f35 / 36.0 * float(image_width_px)
-    # Sanity band: a plausible phone/DSLR frame is roughly 0.4x to 6x the frame width.
-    if not (0.4 * image_width_px <= f_px <= 6.0 * image_width_px):
+    long_px = float(max(image_width_px, image_height_px or 0))
+    f_px = f35 / 36.0 * long_px
+    # Sanity band: a plausible phone/DSLR frame is roughly 0.4x to 6x the frame's long side.
+    if not (0.4 * long_px <= f_px <= 6.0 * long_px):
         return None
     return float(f_px)
 
 
-def default_focal_px(image_width_px: int) -> float:
-    """Focal length in pixels implied by DEFAULT_HFOV_DEG. A fallback, not a measurement."""
-    return float(image_width_px) / (2.0 * math.tan(math.radians(DEFAULT_HFOV_DEG) / 2.0))
+def default_focal_px(image_width_px: int, image_height_px: Optional[int] = None) -> float:
+    """Focal length in pixels implied by DEFAULT_HFOV_DEG — the angle across the frame's long
+    side, so a portrait photo gets the same lens as a landscape one. A fallback, not a
+    measurement."""
+    long_px = float(max(image_width_px, image_height_px or 0))
+    return long_px / (2.0 * math.tan(math.radians(DEFAULT_HFOV_DEG) / 2.0))
 
 
 # ----------------------------------------------------------------------------------
