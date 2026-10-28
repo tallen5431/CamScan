@@ -149,18 +149,21 @@ def main():
                 o = pg.evaluate(OUTER)
                 return len(o["pts"]) if o else -1
 
-            # Coarse: slider to 0 (simplify 0.003). Re-trace replaces the outline (new id).
+            # Coarse: slider to 0 (simplify 0.003). Re-trace replaces the outline in place: new
+            # points, the SAME id (a 3D view follows its outline by id).
             oid = outer_id()
+            pts0 = pg.evaluate(f"JSON.stringify({OUTER}.pts)")
             with pg.expect_response(lambda r: "/api/trace" in r.url):
                 pg.eval_on_selector("#cal-trace-detail-rng", "el=>{el.value='0';el.dispatchEvent(new Event('change'));}")
-            pg.wait_for_function(f"(()=>{{var p=document.querySelector('.cal-view').__overlay.ann.items.filter(a=>a.type==='polyline');return p.length===1&&p[0].id!=={oid};}})()", timeout=20000)
+            pg.wait_for_function(f"(()=>{{var p=document.querySelector('.cal-view').__overlay.ann.items.filter(a=>a.type==='polyline');return p.length===1&&p[0].id==={oid}&&JSON.stringify(p[0].pts)!=={json.dumps(pts0)};}})()", timeout=20000)
             coarse = outer_len()
 
             # Fine: slider to 100 (simplify 0.0003). More outer vertices; still replaces.
             oid = outer_id()
+            pts0 = pg.evaluate(f"JSON.stringify({OUTER}.pts)")
             with pg.expect_response(lambda r: "/api/trace" in r.url):
                 pg.eval_on_selector("#cal-trace-detail-rng", "el=>{el.value='100';el.dispatchEvent(new Event('change'));}")
-            pg.wait_for_function(f"(()=>{{var p=document.querySelector('.cal-view').__overlay.ann.items.filter(a=>a.type==='polyline');return p.length===1&&p[0].id!=={oid};}})()", timeout=20000)
+            pg.wait_for_function(f"(()=>{{var p=document.querySelector('.cal-view').__overlay.ann.items.filter(a=>a.type==='polyline');return p.length===1&&p[0].id==={oid}&&JSON.stringify(p[0].pts)!=={json.dumps(pts0)};}})()", timeout=20000)
             fine = outer_len()
 
             final = pg.evaluate(
