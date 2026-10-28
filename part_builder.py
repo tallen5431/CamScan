@@ -497,6 +497,7 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                              "result": _silhouette(shape, role)} for role, v in vs.items()},
             "cavity": {"view": cavity.get("view"), "outline": cav_poly} if cav_poly else None,
             "size_mm": info["size_mm"],
+            "mesh": _mesh_json(manifold_tris(shape)),
         }
         for role in ROLES:                       # silhouettes of views nobody traced, too
             if role not in out["preview"]["views"]:
@@ -521,4 +522,19 @@ def _preview_from_tris(tris: np.ndarray, vs: Dict[str, View], cav) -> Dict[str, 
     man = mf.Manifold(mesh)
     return {"views": {role: {"outline": (np.round(vs[role].pts, 3).tolist() if role in vs else None),
                              "result": _silhouette(man, role)} for role in ROLES},
-            "cavity": cav, "size_mm": None}
+            "cavity": cav, "size_mm": None, "mesh": _mesh_json(tris)}
+
+
+MAX_PREVIEW_TRIS = 60000
+
+
+def _mesh_json(tris) -> Dict[str, Any]:
+    """The part as shared vertices + faces for the dialog's 3D view: as built (before any
+    mirror or turn for printing), 0.01 mm grid, capped in size. Larger meshes are thinned
+    for the preview only — the download is never touched."""
+    t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+    if len(t) > MAX_PREVIEW_TRIS:
+        t = t[np.linspace(0, len(t) - 1, MAX_PREVIEW_TRIS).astype(int)]
+    key = np.round(t.reshape(-1, 3) * 100).astype(np.int64)
+    uniq, inv = np.unique(key, axis=0, return_inverse=True)
+    return {"v": (uniq / 100.0).round(2).tolist(), "f": inv.reshape(-1, 3).tolist()}

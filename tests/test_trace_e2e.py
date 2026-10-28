@@ -86,6 +86,13 @@ def _wait_server(timeout=40):
 OUTER = "(()=>{var p=document.querySelector('.cal-view').__overlay.ann.items.filter(a=>a.type==='polyline');return p.length?p[0]:null;})()"
 
 
+def _tidy(pg, item):
+    """The clean-up tools live in the ✨ Tidy menu: open it, then choose."""
+    pg.click("#cal-ctx-tidy")
+    pg.locator(item).wait_for(state="visible", timeout=5000)
+    pg.click(item)
+
+
 def main():
     bundle_path = _bundle_file()
     env = dict(os.environ, PORT=PORT, HOST="127.0.0.1")
@@ -184,9 +191,9 @@ def main():
             # so the full-detail trace itself is the result.
             o_before = pg.evaluate(OUTER)
             pg.evaluate(f"(()=>{{const o=document.querySelector('.cal-view').__overlay;o.ann.selectedId={o_before['id']};o.setMode('select');o.requestDraw();}})()")
-            pg.locator("#cal-ctx-refine").wait_for(state="visible", timeout=5000)
+            pg.locator("#cal-ctx-tidy").wait_for(state="visible", timeout=5000)
             with pg.expect_request(lambda q: "/api/trace" in q.url, timeout=20000) as tq:
-                pg.click("#cal-ctx-refine")
+                _tidy(pg, "#cal-ctx-refine")
             assert json.loads(tq.value.post_data).get("simplify") == 0.0003, "Refine did not re-trace at full detail"
             pg.wait_for_function("[...document.querySelectorAll('div')].some(d=>d.innerText && d.innerText.startsWith('Refined: re-traced at full detail'))",
                                  timeout=20000)
@@ -196,9 +203,9 @@ def main():
             O = "document.querySelector('.cal-view').__overlay"
             before = pg.evaluate(OUTER)
             pg.evaluate(f"(()=>{{const o={O};o.ann.selectedId={before['id']};o.setMode('select');o.requestDraw();}})()")
-            pg.locator("#cal-ctx-straighten").wait_for(state="visible", timeout=5000)
+            pg.locator("#cal-ctx-tidy").wait_for(state="visible", timeout=5000)
             with pg.expect_response(lambda r: "/api/outline/straighten" in r.url):
-                pg.click("#cal-ctx-straighten")
+                _tidy(pg, "#cal-ctx-straighten")
             time.sleep(0.3)
             assert pg.evaluate(OUTER)["pts"] == before["pts"], "a round outline was changed by Straighten"
 
@@ -210,7 +217,7 @@ def main():
                 o._pushHistory();window.CalibAnn.addPolyline(o.ann,pts,o.getScale()||0.1,o.opts.units,null,true);
                 o.setMode('select');o.requestDraw();return {{id:o.ann.selectedId,n:pts.length}};}})()""")
             with pg.expect_response(lambda r: "/api/outline/straighten" in r.url):
-                pg.click("#cal-ctx-straighten")
+                _tidy(pg, "#cal-ctx-straighten")
             sel = f"{O}.ann.items.find(a=>a.id==={sq['id']})"
             pg.wait_for_function(f"{sel}.pts.length<10", timeout=5000)
             after = pg.evaluate(f"{sel}.pts")
@@ -223,14 +230,30 @@ def main():
             #    Refine: the square's corners are sharp in the photo (there is no edge there at
             #    all), so it comes back as four sides and four sharp corners, one undo step.
             pg.evaluate(f"(()=>{{const o={O};o.ann.selectedId={sq['id']};o.setMode('select');o.requestDraw();}})()")
-            pg.locator("#cal-ctx-refine").wait_for(state="visible", timeout=5000)
+            pg.locator("#cal-ctx-tidy").wait_for(state="visible", timeout=5000)
             with pg.expect_response(lambda r: "/api/outline/straighten" in r.url) as rr:
-                pg.click("#cal-ctx-refine")
+                _tidy(pg, "#cal-ctx-refine")
             assert json.loads(rr.value.request.post_data).get("mode") == "refine", "Refine did not ask for refine"
             pg.wait_for_function(f"{sel}.pts.length<10", timeout=5000)
             assert len(pg.evaluate(f"{sel}.pts")) == 4, "Refine rounded a corner the photo does not show"
             pg.evaluate(f"{O}.undo()")
             assert pg.evaluate(f"{sel}.pts.length") == sq["n"], "Undo after Refine did not restore the dots"
+
+            # Symmetric: a lopsided version of a symmetric shape comes back symmetric; the
+            # message offers the other axis, which is applied to the outline as it was.
+            sy = pg.evaluate(f"""(()=>{{const o={O};o._pushHistory();
+                window.CalibAnn.addPolyline(o.ann,[[150,60],[450,60],[450,170],[330,170],[300,215],[200,205],[170,165],[150,165]],o.getScale()||0.1,o.opts.units,null,true);
+                o.setMode('select');o.requestDraw();return o.ann.selectedId;}})()""")
+            with pg.expect_response(lambda r: "/api/outline/symmetric" in r.url) as yr:
+                _tidy(pg, "#cal-ctx-symmetric")
+            yj = yr.value.json()
+            assert yj.get("ok") and yj.get("axis") in ("long", "short"), f"symmetric refused: {yj}"
+            pg.wait_for_function(f"{O}.ann.items.find(a=>a.id==={sy}).pts.length !== 8", timeout=5000)
+            with pg.expect_response(lambda r: "/api/outline/symmetric" in r.url) as yr2:
+                pg.locator(".cal-toast-action", has_text="Use the").click()
+            assert yr2.value.json().get("axis") == yj["other"]["axis"], "other axis not applied"
+            assert json.loads(yr2.value.request.post_data)["points"] != pg.evaluate(f"{O}.ann.items.find(a=>a.id==={sy}).pts"), \
+                "the other axis was applied to the already-symmetric outline, not the original"
 
             # Square up: a scale line along a "ruler", and an outline whose long sides converge
             # (a board shot at an angle). The button turns the line scale into a tilt-corrected
@@ -240,9 +263,9 @@ def main():
                 o._pushHistory();
                 window.CalibAnn.addPolyline(o.ann,[[200,40],[400,40],[420,460],[180,460]],o.getScale(),o.opts.units,null,true);
                 o.setMode('select');o.requestDraw();}})()""")
-            pg.locator("#cal-ctx-squareup").wait_for(state="visible", timeout=5000)
+            pg.locator("#cal-ctx-tidy").wait_for(state="visible", timeout=5000)
             with pg.expect_response(lambda r: "/api/square_up" in r.url) as sr:
-                pg.click("#cal-ctx-squareup")
+                _tidy(pg, "#cal-ctx-squareup")
             assert sr.value.json().get("ok"), f"square up refused: {sr.value.json()}"
             pg.wait_for_function(f"{O}.opts.manualHomography && {O}._manualRef && {O}._manualRef.kind==='squared'",
                                  timeout=5000)
@@ -253,7 +276,7 @@ def main():
             assert not errors, f"page errors: {errors}"
             browser.close()
         print(f"E2E_RESULT: PASS (outer polyline + true-circle bore; slider re-traces coarse={coarse}->fine={fine} pts, replaced; "
-              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores; Refine keeps sharp corners sharp; Square up applies and undoes)")
+              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores; Refine keeps sharp corners sharp; Symmetric + other axis; Square up applies and undoes)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")

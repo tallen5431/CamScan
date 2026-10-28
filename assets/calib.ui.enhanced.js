@@ -383,6 +383,7 @@ window.CalibUI = (function(){
     // upload in practice). The <canvas> is a direct grid child and is left in place.
     rootEl.querySelectorAll('.cal-topbar, .cal-rail, .cal-sheet, .cal-zoom, .cal-context, .cal-coach, .cal-fab')
       .forEach(el => el.remove());
+    document.querySelectorAll('#cal-tidy-menu').forEach(el => el.remove());
 
     let calInput = null;  // hoisted so the top-bar 📐 chip can focus the panel's size field
     function openCalibration(){
@@ -1051,7 +1052,51 @@ window.CalibUI = (function(){
     ctxSquare.setAttribute('aria-label', 'Square up the photo from this outline\'s two parallel sides');
     ctxSquare.title = 'The part\'s long sides are parallel: correct the camera tilt from how they narrow in the photo';
     ctxSquare.onclick = () => { if (overlay.squareUp) overlay.squareUp(); };
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxStraight, ctxRefine, ctxSquare, ctxDepth, ctx3d, ctxFinish);
+    // A symmetric part comes back from a photo lopsided (light on one side, shadow on the
+    // other); this averages the outline with its own mirror image.
+    const ctxSym = document.createElement('button'); ctxSym.type = 'button'; ctxSym.className = 'cal-ctx-finish';
+    ctxSym.id = 'cal-ctx-symmetric';
+    ctxSym.innerHTML = '⇋ Symmetric';
+    ctxSym.setAttribute('aria-label', 'Make this outline symmetric');
+    ctxSym.title = 'Average the outline with its mirror image — for a part that is symmetric';
+    ctxSym.onclick = () => { if (overlay.symmetrizeSelected) overlay.symmetrizeSelected('auto'); };
+    // The four clean-up tools share one button and a small menu: as separate buttons they
+    // stacked four rows deep over the photo on a phone.
+    const ctxTidy = document.createElement('button'); ctxTidy.type = 'button'; ctxTidy.className = 'cal-ctx-finish';
+    ctxTidy.id = 'cal-ctx-tidy';
+    ctxTidy.innerHTML = '✨ Tidy ▾';
+    ctxTidy.setAttribute('aria-label', 'Tidy this outline: straighten, refine, symmetric, square up');
+    ctxTidy.setAttribute('aria-haspopup', 'menu'); ctxTidy.setAttribute('aria-expanded', 'false');
+    const tidyMenu = document.createElement('div'); tidyMenu.id = 'cal-tidy-menu'; tidyMenu.setAttribute('role', 'menu');
+    tidyMenu.style.cssText = 'position:fixed;z-index:90;display:none;flex-direction:column;gap:6px;padding:8px;'
+      + 'background:#0e1418;border:1px solid #29414c;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.55);'
+      + 'max-width:min(330px,calc(100vw - 16px));';
+    [[ctxStraight, 'Each long side one straight line on the part\'s edge'],
+     [ctxRefine, 'Straight sides, and corners rounded as the photo shows'],
+     [ctxSym, 'Average with its mirror image, for a symmetric part'],
+     [ctxSquare, 'Correct the photo\'s tilt from the two long sides']].forEach(([b, sub]) => {
+      b.classList.add('show'); b.setAttribute('role', 'menuitem');
+      b.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;'
+        + 'border-radius:10px;padding:9px 12px;min-height:44px;';
+      const sm = document.createElement('span'); sm.textContent = sub;
+      sm.style.cssText = 'font:500 11.5px Segoe UI,system-ui,sans-serif;opacity:.75;';
+      b.appendChild(sm);
+      const go = b.onclick; b.onclick = (e) => { closeTidy(); if (go) go(e); };
+      tidyMenu.appendChild(b);
+    });
+    document.body.appendChild(tidyMenu);
+    function closeTidy(){ tidyMenu.style.display = 'none'; ctxTidy.setAttribute('aria-expanded', 'false'); }
+    ctxTidy.onclick = () => {
+      if (tidyMenu.style.display === 'flex') return closeTidy();
+      tidyMenu.style.display = 'flex';
+      const r = ctxTidy.getBoundingClientRect(), m = tidyMenu.getBoundingClientRect();
+      tidyMenu.style.left = Math.max(8, Math.min(window.innerWidth - m.width - 8, r.left)) + 'px';
+      tidyMenu.style.top = Math.max(8, r.top - m.height - 8) + 'px';
+      ctxTidy.setAttribute('aria-expanded', 'true');
+    };
+    document.addEventListener('click', (e) => { if (!tidyMenu.contains(e.target) && e.target !== ctxTidy && !ctxTidy.contains(e.target)) closeTidy(); });
+    tidyMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeTidy(); ctxTidy.focus(); } });
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxTidy, ctxDepth, ctx3d, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1133,9 +1178,8 @@ window.CalibUI = (function(){
       const prof = overlay.selectedProfile && overlay.selectedProfile();
       ctxDepth.classList.toggle('show', !!prof);
       ctx3d.classList.toggle('show', !!prof);
-      ctxStraight.classList.toggle('show', !!prof);
-      ctxRefine.classList.toggle('show', !!prof);
-      ctxSquare.classList.toggle('show', !!prof);
+      ctxTidy.classList.toggle('show', !!prof);
+      if (!prof) closeTidy();
       // Keep any 3D view assigned from an outline on this photo in step with it (debounced).
       if (window.CalibPart3D && window.CalibPart3D.syncSoon) window.CalibPart3D.syncSoon();
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0

@@ -498,3 +498,93 @@ def refine_outline(img_bgr: np.ndarray, points: Sequence[Sequence[float]]) -> Op
         return dict(st, rounded=0)
     out["snapped"] = st["snapped"]
     return out
+
+
+# ---------------------------------------------------------------------------------------
+# Symmetric: average an outline with its own mirror image
+# ---------------------------------------------------------------------------------------
+_SYM_MAX_MISMATCH = 0.25      # halves this different are a different shape, not a sloppy trace
+
+
+def _mirror_matrix(c, ang):
+    """2x3 affine reflecting about the line through c at angle ang (radians)."""
+    ca, sa = math.cos(2 * ang), math.sin(2 * ang)
+    R = np.array([[ca, sa], [sa, -ca]])
+    t = np.asarray(c, float) - R @ np.asarray(c, float)
+    return np.hstack([R, t[:, None]])
+
+
+def symmetrize_outline(points: Sequence[Sequence[float]], axis: str = "auto") -> Optional[Dict[str, Any]]:
+    """Make an outline symmetric about its long or short axis.
+
+    A part that is symmetric comes back from a photo slightly lopsided — light falls on one
+    side, a shadow on the other, the trace wanders. Averaging the outline with its own mirror
+    image (their signed distance fields, so straight sides stay straight and corners stay put)
+    gives the shape halfway between the two halves, which is exactly symmetric.
+
+    The axis runs through the outline's centre along its long or short principal direction,
+    then is nudged (a degree or two, a percent or two) to where the halves agree best.
+    axis: "long", "short" or "auto" (whichever the halves already agree about more).
+
+    Returns {"points", "axis", "mismatch_pct", "other": {"axis", "mismatch_pct"}} in image
+    pixel coords, or None. Refused (None) when the halves differ by more than 25%, which is a
+    different shape, not a lopsided trace of the same one.
+    """
+    p = _ring(points)
+    if p is None or abs(_area(p)) < 1.0:
+        return None
+    lo, hi = p.min(axis=0), p.max(axis=0)
+    span = float(max(hi - lo))
+    k = 1000.0 / max(span, 1e-9)                       # raster the long side to ~1000 px
+    pad = 60
+    W = int(math.ceil((hi[0] - lo[0]) * k)) + 2 * pad
+    H = int(math.ceil((hi[1] - lo[1]) * k)) + 2 * pad
+    q = (p - lo) * k + pad
+    mask = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(mask, [np.round(q).astype(np.int32)], 255)
+    m = cv2.moments(mask, binaryImage=True)
+    if m["m00"] <= 0:
+        return None
+    c = np.array([m["m10"] / m["m00"], m["m01"] / m["m00"]])
+    th = 0.5 * math.atan2(2 * m["mu11"], m["mu20"] - m["mu02"])   # the long principal axis
+
+    def mismatch(ang, off):
+        cc = c + off * np.array([-math.sin(ang), math.cos(ang)])
+        mir = cv2.warpAffine(mask, _mirror_matrix(cc, ang), (W, H), flags=cv2.INTER_NEAREST)
+        inter = np.count_nonzero(mask & mir)
+        union = np.count_nonzero(mask | mir)
+        return (1.0 - inter / union) if union else 1.0, cc, mir
+
+    best = {}
+    for name, base in (("long", th), ("short", th + math.pi / 2)):
+        b = None
+        for da in np.radians(np.arange(-3.0, 3.01, 0.5)):
+            for off in np.linspace(-0.02, 0.02, 9) * 1000.0:
+                mm_, cc, mir = mismatch(base + da, off)
+                if b is None or mm_ < b[0]:
+                    b = (mm_, cc, base + da, mir)
+        best[name] = b
+    if axis not in ("long", "short"):
+        axis = "long" if best["long"][0] <= best["short"][0] else "short"
+    other = "short" if axis == "long" else "long"
+    mm_, cc, ang, mir = best[axis]
+    if mm_ > _SYM_MAX_MISMATCH:
+        return None
+
+    def sdf(bm):
+        inside = cv2.distanceTransform(bm, cv2.DIST_L2, 5)
+        outside = cv2.distanceTransform(255 - bm, cv2.DIST_L2, 5)
+        return inside - outside
+    avg = sdf(mask) + sdf(mir)
+    sym = np.where(avg > 0, 255, 0).astype(np.uint8)
+    cnts, _ = cv2.findContours(sym, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return None
+    cnt = max(cnts, key=cv2.contourArea).astype(np.float32)
+    eps = max(0.6, 0.0006 * cv2.arcLength(cnt, True))
+    poly = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2).astype(float)
+    if len(poly) < 3:
+        return None
+    out = (poly - pad) / k + lo
+    return {"points": out.tolist(), "axis": axis, "mismatch_pct": round(100.0 * float(mm_), 2),
+            "other": {"axis": other, "mismatch_pct": round(100.0 * float(best[other][0]), 2)}}
