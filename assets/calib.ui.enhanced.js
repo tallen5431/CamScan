@@ -770,7 +770,9 @@ window.CalibUI = (function(){
       const manual = overlay.opts && overlay.opts.manualMmPerPx;
       const uncal = !(overlay.isCalibrated && overlay.isCalibrated());
       let text, label;
-      if (paper)       { text = 'paper';    label = 'Scale: from a sheet of paper (tilt-corrected) — tap to change'; }
+      const squared = paper && overlay._manualRef && overlay._manualRef.kind === 'squared';
+      if (squared)     { text = 'squared';  label = 'Scale: ruler line, squared up from the part\'s parallel sides (tilt-corrected) — tap to change'; }
+      else if (paper)  { text = 'paper';    label = 'Scale: from a sheet of paper (tilt-corrected) — tap to change'; }
       else if (manual) { text = 'manual';   label = 'Scale: manual (from a known line) — tap to change'; }
       // "40 mm" on a photo with no scale read as if a scale were set (it is only the size a
       // printed square WOULD be): say what is actually true, and what the chip does.
@@ -1041,7 +1043,15 @@ window.CalibUI = (function(){
     ctxRefine.setAttribute('aria-label', 'Refine this outline: straight sides and rounded corners from the photo');
     ctxRefine.title = 'Straight sides on the part\'s edge, and each corner given the radius the photo shows';
     ctxRefine.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected('refine'); };
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxStraight, ctxRefine, ctxDepth, ctx3d, ctxFinish);
+    // Corrects the photo's tilt from the outline's two long sides, which are parallel on the
+    // part, and the scale line — no extra reference needed (square_up.py).
+    const ctxSquare = document.createElement('button'); ctxSquare.type = 'button'; ctxSquare.className = 'cal-ctx-finish';
+    ctxSquare.id = 'cal-ctx-squareup';
+    ctxSquare.innerHTML = '⊞ Square up';
+    ctxSquare.setAttribute('aria-label', 'Square up the photo from this outline\'s two parallel sides');
+    ctxSquare.title = 'The part\'s long sides are parallel: correct the camera tilt from how they narrow in the photo';
+    ctxSquare.onclick = () => { if (overlay.squareUp) overlay.squareUp(); };
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxStraight, ctxRefine, ctxSquare, ctxDepth, ctx3d, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1125,6 +1135,7 @@ window.CalibUI = (function(){
       ctx3d.classList.toggle('show', !!prof);
       ctxStraight.classList.toggle('show', !!prof);
       ctxRefine.classList.toggle('show', !!prof);
+      ctxSquare.classList.toggle('show', !!prof);
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
         ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
         : '⇥ Depth';

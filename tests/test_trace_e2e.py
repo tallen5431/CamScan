@@ -179,6 +179,19 @@ def main():
             # Hiding measurement labels must redraw cleanly (lets you edit a dense outline).
             pg.evaluate("(()=>{var o=document.querySelector('.cal-view').__overlay;o.opts.showLabels=false;o.redraw();o.opts.showLabels=true;o.redraw();})()")
 
+            # Refine on the outline exactly as traced re-traces it at full detail first (the
+            # first trace's simplification loses gentle curves). The disc has no straight sides,
+            # so the full-detail trace itself is the result.
+            o_before = pg.evaluate(OUTER)
+            pg.evaluate(f"(()=>{{const o=document.querySelector('.cal-view').__overlay;o.ann.selectedId={o_before['id']};o.setMode('select');o.requestDraw();}})()")
+            pg.locator("#cal-ctx-refine").wait_for(state="visible", timeout=5000)
+            with pg.expect_request(lambda q: "/api/trace" in q.url, timeout=20000) as tq:
+                pg.click("#cal-ctx-refine")
+            assert json.loads(tq.value.post_data).get("simplify") == 0.0003, "Refine did not re-trace at full detail"
+            pg.wait_for_function("[...document.querySelectorAll('div')].some(d=>d.innerText && d.innerText.startsWith('Refined: re-traced at full detail'))",
+                                 timeout=20000)
+            pg.evaluate("document.querySelector('.cal-view').__overlay.undo()")
+
             # Straighten. The disc is round: the button must leave it exactly as it is.
             O = "document.querySelector('.cal-view').__overlay"
             before = pg.evaluate(OUTER)
@@ -219,10 +232,28 @@ def main():
             pg.evaluate(f"{O}.undo()")
             assert pg.evaluate(f"{sel}.pts.length") == sq["n"], "Undo after Refine did not restore the dots"
 
+            # Square up: a scale line along a "ruler", and an outline whose long sides converge
+            # (a board shot at an angle). The button turns the line scale into a tilt-corrected
+            # one; the chip says so; Undo puts the line scale back.
+            pg.evaluate(f"""(()=>{{const o={O};
+                o.setManualScaleFromPixels(200, 50, [[300,150],[300,350]]);
+                o._pushHistory();
+                window.CalibAnn.addPolyline(o.ann,[[200,40],[400,40],[420,460],[180,460]],o.getScale(),o.opts.units,null,true);
+                o.setMode('select');o.requestDraw();}})()""")
+            pg.locator("#cal-ctx-squareup").wait_for(state="visible", timeout=5000)
+            with pg.expect_response(lambda r: "/api/square_up" in r.url) as sr:
+                pg.click("#cal-ctx-squareup")
+            assert sr.value.json().get("ok"), f"square up refused: {sr.value.json()}"
+            pg.wait_for_function(f"{O}.opts.manualHomography && {O}._manualRef && {O}._manualRef.kind==='squared'",
+                                 timeout=5000)
+            pg.wait_for_function("document.getElementById('cal-tb-scale').innerText.includes('squared')", timeout=5000)
+            pg.locator(".cal-toast-action", has_text="Undo").click()
+            pg.wait_for_function(f"!{O}.opts.manualHomography && {O}.opts.manualMmPerPx>0", timeout=5000)
+
             assert not errors, f"page errors: {errors}"
             browser.close()
         print(f"E2E_RESULT: PASS (outer polyline + true-circle bore; slider re-traces coarse={coarse}->fine={fine} pts, replaced; "
-              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores; Refine keeps sharp corners sharp)")
+              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores; Refine keeps sharp corners sharp; Square up applies and undoes)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")
