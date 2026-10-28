@@ -60,9 +60,13 @@ re-draw in CAD.
   1) Trace a CLOSED outline around the part (the Path/Outline tool, or ✨ Auto-trace).
      Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
      and they become real through-holes in the solid.
+     Sides that came out wobbly? Select the outline and press "📏 Straighten": each long
+     straight side becomes one line on the part's edge in the photo, sides meet at clean
+     corners, and rounded corners keep their dots. Undo puts the dots back. It straightens
+     what the trace found — a stretch that spilled onto the background still needs a drag.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
      For a COVER, also fill in the wall thickness (see below).
-  3) Download menu → "Save STL (3D print)".
+  3) 💾 menu → "Save STL (3D print)".
 
 COVERS (hollow parts). Most replacement covers — a running-board step pad, a trim cap,
 an end cover — are a thin plate with a wall round its edge, open underneath. Enter a wall

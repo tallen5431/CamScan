@@ -1163,6 +1163,51 @@ def api_trace():
     return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [])
 
 
+@server.route("/api/outline/straighten", methods=["POST"])
+def api_straighten():
+    """Straighten a traced outline onto the part's edges (see outline_cleanup.py).
+
+    Body: { image: dataURL | null, points: [[x, y], ...] } — points in the POSTed image's pixel
+    coords. Returns { ok, points, straight, snapped }. Without an image the sides are still
+    straightened, through their own dots. A failure is a 200 {ok:false}: the outline as it was
+    is always a fine answer.
+    """
+    from flask import jsonify
+    from outline_cleanup import straighten_outline
+
+    data = _json_body()
+    pts = data.get("points")
+    if not isinstance(pts, list) or not (3 <= len(pts) <= 5000):
+        return jsonify(ok=False, error="bad_points"), 400
+    try:
+        ring = [[float(p[0]), float(p[1])] for p in pts]
+    except (TypeError, ValueError, IndexError):
+        return jsonify(ok=False, error="bad_points"), 400
+    if not all(math.isfinite(v) for q in ring for v in q):
+        return jsonify(ok=False, error="bad_points"), 400
+
+    img = None
+    durl = data.get("image")
+    if isinstance(durl, str) and "," in durl:
+        try:
+            _mime, raw = _decode_data_url(durl)
+            img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            img = None
+        if img is None:
+            return jsonify(ok=False, error="bad_image"), 400
+        if img.shape[0] * img.shape[1] > MAX_IMAGE_PIXELS:
+            return jsonify(ok=False, error="too_large"), 400
+    try:
+        res = straighten_outline(img, ring)
+    except Exception as e:
+        print(f"[straighten] error: {e}")
+        return jsonify(ok=False, error="failed"), 500
+    if not res:
+        return jsonify(ok=False, error="no_change"), 200
+    return jsonify(ok=True, **res)
+
+
 def _decode_data_url(durl):
     """('data:image/jpeg;base64,...') -> (mimetype, raw_bytes)."""
     header, b64 = durl.split(",", 1)

@@ -1310,10 +1310,22 @@
           b.onclick=()=>{ api.dismiss(); opts.action.fn(); };
           el.appendChild(b);
         }
+        // One message at a time: they all sit in the same spot, so a newer one replaces the
+        // last rather than printing over it.
+        if(this._lastToast && this._lastToast!==el && this._lastToast.parentNode) this._lastToast.parentNode.removeChild(this._lastToast);
+        this._lastToast=el;
         document.body.appendChild(el);
+        const self=this;
+        let gone=false;
         const api={
-          update(m, kind){ text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
-          dismiss(){ if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
+          // A replaced message that still has news (a trace finishing) takes the spot back.
+          update(m, kind){
+            if(!gone && !el.parentNode){
+              if(self._lastToast && self._lastToast.parentNode) self._lastToast.parentNode.removeChild(self._lastToast);
+              document.body.appendChild(el); self._lastToast=el;
+            }
+            text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
+          dismiss(){ gone=true; if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
         };
         if(opts.autoMs) timer=setTimeout(api.dismiss, opts.autoMs);
         return api;
@@ -1541,6 +1553,47 @@
         const cnt=document.getElementById('cal-trace-detail-cnt');
         if(cnt) cnt.textContent=(nPts||0)+' pts'+(nHoles?(' · '+nHoles+'h'):'');
       }
+      // Straighten the selected outline onto the part's edges (outline_cleanup.py): each long
+      // side becomes one straight line fitted to the photo's edge beside it, sides meet at a
+      // clean corner, and a rounded corner keeps its traced dots. One undo step.
+      straightenSelected(){
+        const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
+        if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<3){
+          this._toast('Select a closed outline first, then Straighten.', {autoMs:2600});
+          return Promise.resolve(false);
+        }
+        if(!this.img) return Promise.resolve(false);
+        const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
+        const k=Math.min(1, 1600/Math.max(natW, natH));      // the same posted size the trace uses
+        const cnv=document.createElement('canvas');
+        cnv.width=Math.max(1,Math.round(natW*k)); cnv.height=Math.max(1,Math.round(natH*k));
+        cnv.getContext('2d').drawImage(this.img, 0, 0, cnv.width, cnv.height);
+        let durl=null; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){}   // none: straighten by the dots alone
+        const self=this, id=a.id;
+        const toast=this._toast('Straightening…');
+        return fetch(this._apiUrl('api/outline/straighten'), { method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ image:durl, points:a.pts.map(p=>[p[0]*k, p[1]*k]) }) })
+          .then(r=>r.json())
+          .then(function(j){
+            const cur=self.ann.items.find(x=>x.id===id);
+            if(!j || !j.ok || !cur || !Array.isArray(j.points)){
+              toast.update('Nothing to straighten — this outline has no long straight sides.', 'err');
+              setTimeout(toast.dismiss, 3000);
+              return false;
+            }
+            self._pushHistory();
+            cur.pts=j.points.map(p=>[p[0]/k, p[1]/k]);
+            self._dismissTraceDetail();   // its slider re-traces, which would undo this
+            self.requestDraw();
+            const n=j.straight|0, sn=j.snapped|0;
+            toast.update('Straightened '+n+' side'+(n===1?'':'s')+(sn ? ' — '+(sn===n?'all':sn)+' snapped to the edge in the photo' : '')+
+                         '. Undo to go back.', 'ok');
+            setTimeout(toast.dismiss, 3200);
+            return true;
+          })
+          .catch(function(){ toast.update('Straighten needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
+      }
+
       _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el) el.remove(); }
 
       // Ask for the real length of a just-drawn line and set the working scale from it.
