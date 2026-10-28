@@ -88,15 +88,20 @@ window.CalibViewport = (function(){
       pxToImg(px){ return px / this.k; },
 
       // --- fitting/reset -------------------------------------------------------
-      fit(canvasEl, img){
+      // insetBottomCss: CSS px at the bottom of the canvas that something fixed covers (the
+      // simple card): the photo fits, and centres, in the space above it. Never less than
+      // 40% of the canvas, so a tall card on a short screen cannot shrink the photo to nothing.
+      fit(canvasEl, img, insetBottomCss){
         if (img){ this._imgW = img.width; this._imgH = img.height; }
         this._updateBackingStore();
+        const inset = Math.max(0, Number(insetBottomCss) || 0) * (canvas.height / Math.max(1, this._ch || canvas.height));
+        const availH = Math.max(canvas.height * 0.4, canvas.height - inset);
         const kx = canvas.width  / this._imgW;
-        const ky = canvas.height / this._imgH;
+        const ky = availH / this._imgH;
         this.k = Math.max(0.0001, Math.min(kx, ky));
         // center
         this.panX = (canvas.width  - this._imgW * this.k) * 0.5;
-        this.panY = (canvas.height - this._imgH * this.k) * 0.5;
+        this.panY = (availH - this._imgH * this.k) * 0.5;
       },
       // Fit so image height matches canvas height (may crop left/right)
       fitHeight(canvasEl, img){

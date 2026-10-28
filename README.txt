@@ -10,7 +10,8 @@ QUICK START: PHOTOS TO 3D PART
 --------------------------------------------------------------------------------
 1) Per view (top, side, end): lay a ruler FLAT ON that face; shoot square-on, ~0.5 m back.
 2) Set scale (📐): a line down the ruler's middle between two numbered marks; type the length.
-3) Draw an Area box (▭) snugly round the part, then ✨ Trace outline and tap the part.
+3) ✨ Trace outline and tap the part. Missed it (a shadowed end)? Tap "▭ Draw a box" in
+   the message and drag a box round the part: it traces as soon as you let go.
 4) ✨ Tidy: Straighten or Refine the sides; Square up if the photo was taken at an angle.
 5) 🧩 Use in 3D part → Top, Side or End. Repeat 1-5 for each photo.
 6) 🧩 Build 3D part: type the height (if no Side/End view) and wall; download STL or STEP.
@@ -22,7 +23,8 @@ QUICK START: PHOTOS TO 3D PART
     height as a NEGATIVE number (-45 for an edge 45 mm below the ruler). Worked through for
     a customer's cover photo: 45 mm below the ruler reads every top-view size 7.4% small.
   * Square up uses the ruler's own edges, found along your scale line — another reason to
-    draw that line down the ruler's middle, end to end. See SQUARE UP under REFERENCE.
+    draw that line down the ruler's middle, between two numbered marks far apart. See
+    SQUARE UP under REFERENCE.
   * Downloads: STL comes out plate-down, ready to print; STEP and OBJ come as traced, the
     way the part sits on the vehicle, for editing in CAD.
 
@@ -237,7 +239,12 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
     tap the part: everything outside the box is taken as "not the part", and the shadowed
     end comes back (a real step-pad photo: 60% of the cover traced without the box, 92%
     with it). Keep the box snug — a box reaching into a dark gap beside the part lets the
-    trace reach into it too.
+    trace reach into it too. A failed trace offers "▭ Draw a box": drag it and the trace
+    runs inside it at once.
+    When the trace comes back with a side standing out over part of its length (a shadow
+    beside it), the message says "check it", names the side and end, and offers
+    Straighten — the part would otherwise be built that much too wide (on a real step-pad
+    photo: 175 mm for a cover of about 157).
 
  6. SHOOT THE SAME PART FROM MORE THAN ONE SIDE.
     One photo gives an outline; thickness and profile come from the second and third.
@@ -316,7 +323,7 @@ lines the photo up but cannot see a tilt along the ruler, so the part's taper is
 unchecked. No ruler edges along the line at all (a tape, a printed scale)? It uses the
 part's two long sides instead — that assumes the part is a true rectangle — and the
 message says why the ruler was not used, offers "Redraw scale line" (down the ruler's
-middle, end to end), and shows "Use the ruler" greyed out. When both work, it offers to
+middle, between two numbered marks far apart), and shows "Use the ruler" greyed out. When both work, it offers to
 switch between the two. Measured on a customer's step-pad photo, the cover's sides
 narrowed about twice as much as the ruler lying on it: squaring up from the cover would
 have over-corrected and hidden a ~3.6 mm taper.

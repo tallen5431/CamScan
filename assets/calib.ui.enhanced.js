@@ -77,6 +77,11 @@
       .cal-tb-left, .cal-tb-right{ gap: 0.25rem; min-width: 0; }
       .cal-icon{ padding: 0.4rem 0.45rem; }
       .cal-icon.cal-narrow-icon .cal-icon-text{ display: none; }
+      /* The scale chip keeps its word (the accent ring says "unscaled" too) but is the one
+         button that gives way: with 🧩 shown and a new, unscaled photo, "Set scale" made the
+         row 404 px on a 390 px phone and pushed ⛶ off the edge. */
+      #cal-tb-scale{ flex-shrink: 1; min-width: 44px; overflow: hidden; }
+      #cal-tb-scale .cal-icon-text{ min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       .cal-icon .cal-badge{
         display: inline-flex; position: absolute; top: -5px; right: -5px;
         min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px;
@@ -434,6 +439,10 @@ window.CalibUI = (function(){
   // body class and the card go now so the very next tap reaches the canvas.
   function leaveSimple(overlay){
     if (!document.body.classList.contains('camscan-simple')) return;
+    // Left for a step that needs taps on the photo: the simple layer (calib.simple.js) brings
+    // the guided card back once that step is done, instead of leaving the user in the full
+    // toolbar with no "Next:" — and saving '0' for every later photo too.
+    if (!window.__camscanReturnToSimple) window.__camscanReturnToSimple = true;
     try { localStorage.setItem('camscan.simplemode', '0'); } catch (e) {}
     document.body.classList.remove('camscan-simple');
     const card = document.getElementById('cal-simple');
@@ -924,6 +933,8 @@ window.CalibUI = (function(){
     calChip.innerHTML = '<span class="cal-icon-emoji">📐</span><span class="cal-icon-text"></span>';
     calChip.onclick = () => openScalePanel(true);
 
+    // The simple card and the chooser already say "Set scale": on a phone the chip says less.
+    function narrowScreen(){ try { return window.matchMedia('(max-width: 600px)').matches; } catch (e) { return false; } }
     function reflectCalChip(){
       const mm = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
       const paper = overlay.opts && overlay.opts.manualHomography;
@@ -938,7 +949,7 @@ window.CalibUI = (function(){
       else if (manual) { text = 'ruler';    label = 'Scale: from a line along your ruler — tap to change'; }
       // "40 mm" on a photo with no scale read as if a scale were set (it is only the size a
       // printed square WOULD be): say what is actually true, and what the chip does.
-      else if (uncal)  { text = 'Set scale'; label = 'No scale yet — tap to set one'; }
+      else if (uncal)  { text = narrowScreen() ? 'Scale' : 'Set scale'; label = 'No scale yet — tap to set one'; }
       else if (mm)     { text = `${mm} mm`;  label = `Calibration square: ${mm} mm — tap to change`; }
       else             { text = 'Set size';  label = 'Not calibrated — tap to set your square size'; }
       const t = calChip.querySelector('.cal-icon-text');
@@ -1352,8 +1363,8 @@ window.CalibUI = (function(){
       card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-label', 'Getting started');
       card.innerHTML =
         '<h3>🧩 Photo to 3D part</h3>' +
-        '<div class="cal-coach-step"><span class="n">1</span><span><b>Set the scale</b> (📐) along the ruler: tap two marks along its middle and type the distance.</span></div>' +
-        '<div class="cal-coach-step"><span class="n">2</span><span><b>Trace the outline</b>: draw a box round the part, then tap it. Use <b>Tidy</b> to straighten it.</span></div>' +
+        '<div class="cal-coach-step"><span class="n">1</span><span><b>Set the scale</b> (📐) along the ruler: tap two numbered marks far apart along its middle and type the distance.</span></div>' +
+        '<div class="cal-coach-step"><span class="n">2</span><span><b>Trace the outline</b>: tap the part (if it misses part of it, draw a ▭ box round it first). Use <b>Tidy</b> to straighten it.</span></div>' +
         '<div class="cal-coach-step"><span class="n">3</span><span><b>Use in 3D part</b> (Top, Side or End), then <b>Build 3D part</b> and download it.</span></div>';
       const acts = document.createElement('div'); acts.className = 'cal-coach-actions';
       const setBtn = document.createElement('button'); setBtn.type = 'button'; setBtn.className = 'cal-coach-secondary';

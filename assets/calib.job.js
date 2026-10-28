@@ -19,7 +19,9 @@
   // Each says where the ruler goes, because a ruler held under or beside the face it is meant
   // to scale reads that face several percent wrong (see CAPTURE_RULES #1).
   var RECOMMENDED = [
-    { label:'Top',  why:'from above, ruler on the top face (length × width)' },
+    // A hollow cover seen from above shows its lower outer edge, not its top face: with the
+    // ruler on top that edge reads small (45 mm below it: 7.4% small, README).
+    { label:'Top',  why:'from above, ruler on the top face (length × width). A hollow cover’s outline is its bottom edge: put the ruler level with that, or enter its height as a negative 📐 raised face' },
     { label:'Side', why:'square-on to the side, ruler against it (length × height)' },
     { label:'End',  why:'square-on to the end, ruler against the end face (width × height)' }
   ];
@@ -241,8 +243,12 @@
   // Store (or refresh) the photo on screen. `label` names a new entry; with none, the entry is
   // named after the 3D view it holds ("Top"), else "View N". An entry already stored keeps the
   // label the user gave it, but a default one ("View 2", or the role it held before) follows
-  // the role it is given now. `force` stores the photo even with nothing in it yet — for a tap
-  // on a label chip, which is the user asking for exactly that.
+  // the role it is given now - except that a main role the photo still holds wins over
+  // "Cavity": a cavity traced on the End photo renamed it "Cavity" while it went on being the
+  // End view. (Only over Cavity: the 3D part calls this BEFORE it moves the role, so a Top
+  // photo being made the Side still holds 'top' here and must still become "Side".)
+  // `force` stores the photo even with nothing in it yet — for a tap on a label chip, which is
+  // the user asking for exactly that.
   // Returns true when the photo is in the job afterwards.
   function captureCurrent(label, force){
     var o=overlay();
@@ -252,6 +258,8 @@
     // it again — while its view went on saying "photo removed". Only a label tap brings it back.
     var gone = (o.__jobRemoved && o.__jobRemoved.img === o.img) ? o.__jobRemoved : null;
     if(gone && !force) return false;
+    var held=rolesOf(photoId());
+    if(label==='Cavity' && held.length && held[0]!=='cavity') label=ROLE_LABEL[held[0]];
     var idx=currentOpenIndex();
     if(idx!=null){
       if(label && label!==job.views[idx].label && isDefaultLabel(job.views[idx].label)) job.views[idx].label=label;
@@ -259,10 +267,7 @@
       return true;
     }
     if(!force && !hasContent(o)) return false;
-    if(!label){
-      var roles=rolesOf(photoId());
-      label = roles.length ? ROLE_LABEL[roles[0]] : 'View '+(job.views.length+1);
-    }
+    if(!label) label = held.length ? ROLE_LABEL[held[0]] : 'View '+(job.views.length+1);
     // photoId() is the upload's own id both before and after this (the stored entry keeps it
     // as its sourceId, and currentOpenIndex() finds the entry by it), so a 3D view assigned
     // from this photo still points at it.
@@ -464,13 +469,26 @@
       if(uncal){ var warn=document.createElement('div'); warn.textContent='⚠️ No scale set on this view — set one first so measurements are in mm.';
         warn.style.cssText='font-size:12px;color:#e0a24a;margin-bottom:8px;'; addSec.appendChild(warn); }
       var row=document.createElement('div'); row.style.cssText='display:flex;flex-wrap:wrap;gap:7px;';
+      // The photo's name and its 3D view are one word (Top / Side / End). A chip used to rename
+      // the photo used as Top to "Side" while it stayed the Top view, so the panel read
+      // "Side · 🧩 Top". Show the current name, and move the 3D view with a role name.
+      var oi=currentOpenIndex(), main=rolesOf(photoId()).filter(function(r){ return r!=='cavity'; });
+      var curLabel=(oi!=null && job.views[oi]) ? job.views[oi].label : (main.length ? ROLE_LABEL[main[0]] : null);
       RECOMMENDED.concat(EXTRA_LABELS.map(function(l){return {label:l};})).forEach(function(v){
-        row.appendChild(chip(v.label, function(){ addView(v.label); }, false));
+        var on=(v.label===curLabel);
+        var c=chip((on?'✓ ':'')+v.label, function(){ relabelCurrent(v.label, main); }, false);
+        c.setAttribute('aria-pressed', on?'true':'false');
+        if(on){ c.style.borderColor='#00d4ff'; c.style.color='#9fe6f5'; }
+        row.appendChild(c);
       });
       addSec.appendChild(row);
     } else {
       var hint=document.createElement('div'); hint.style.cssText='font-size:13px;color:#9fb2bb;';
-      hint.textContent='No photo is open. Tap ⬅ New (top-left) to take/upload a view, measure it, then come back here to add it.';
+      // Named after the button that is really there: the toolbar's "New" became 📷 Add photo,
+      // and from the start page there is no toolbar at all.
+      hint.textContent = document.querySelector('.cal-view')
+        ? 'No photo is open. Tap 📷 Add photo to take/upload a view, measure it, then come back here to add it.'
+        : 'No photo is open. Open a saved one under Collected views below, or close this and upload a photo.';
       addSec.appendChild(hint);
     }
     card.appendChild(addSec);
@@ -595,6 +613,24 @@
     }
     return row;
   }
+  // A label chip in the job panel. A Top/Side/End name on a photo that already is one of the
+  // part's views moves that view too (the Build dialog's "Move to…"), or says where to change
+  // it when the other view is taken. Other names (Detail…) only rename the photo.
+  function relabelCurrent(label, main){
+    var role=label.toLowerCase(), P=window.CalibPart3D, pv=part().views;
+    if(main.length && ROLE_LABEL[role] && role!=='cavity' && main.indexOf(role)<0){
+      if(pv[role] || !P || typeof P.move!=='function'){
+        setStatus('This photo is the part’s '+ROLE_LABEL[main[0]]+' view, and the '+label+' view is already set. '+
+                  'Change it in 🧩 Build 3D part (Move to…).', true);
+        return false;
+      }
+      P.move(main[0], role);
+    }
+    var ok=addView(label);
+    if(ok){ openPanel(); setStatus('✓ Saved “'+label+'”.'+(main.length && main.indexOf(role)<0 && ROLE_LABEL[role] && role!=='cavity'
+                                                              ? ' It is now the part’s '+label+' view.' : '')); }
+    return ok;
+  }
   function closePanel(){ var p=document.getElementById('cal-job-panel'); if(p) p.remove(); statusEl=null; }
   function setStatus(msg, warn){
     if(statusEl){ statusEl.textContent=msg; statusEl.style.color=warn?'#e0a24a':'#9fe6c2'; }
@@ -706,7 +742,9 @@
     // stale snapshot and drop the just-made edits.
     v=job.views[i];
     var st=v.restore;
-    // Modelling wants the full markup rail, not the stripped intake flow.
+    // Modelling wants the full markup rail, not the stripped intake flow — and stays in it
+    // (calib.simple.js would otherwise bring the card back after the next trace).
+    window.__camscanReturnToSimple=null;
     try{ localStorage.setItem('camscan.simplemode','0'); }catch(e){}
     document.body.classList.remove('camscan-simple');
 
@@ -956,7 +994,7 @@
     var host=document.querySelector('.landing-card');
     if(!host) return;
     var roles=['top','side','end','cavity'].filter(function(r){ return job.part3d && job.part3d.views && job.part3d.views[r]; });
-    var n=job.views.length, sig=n+'|'+roles.join(',')+'|'+(job.brief.part||'');
+    var n=job.views.length, sig=n+'|'+roles.join(',')+'|'+(job.brief.part||'')+'|'+(window.CalibPart3D?1:0);
     var el=host.querySelector('#cal-landing-job');
     // Above the photo drop zone, so it is read before a photo joins the part. (#uploader can
     // sit a wrapper below the card, so climb to the card's own child.) Dash re-renders the
@@ -969,6 +1007,11 @@
     if(el) el.remove();
     if(!n && !roles.length) return;
     var LBL={top:'Top',side:'Side',end:'End',cavity:'Cavity'};
+    // After a reload this card was all the start page showed of the part: Build and the photos
+    // were only reachable through "Submit to Datum". Offer both here.
+    var P=window.CalibPart3D, views=reloadableViews();
+    var tops=views.filter(function(o){ return entryRoles(o.v).indexOf('top')>=0; });
+    var last=tops.length ? tops[tops.length-1] : views[views.length-1];   // the Top photo first
     el=document.createElement('div'); el.id='cal-landing-job';
     el.style.cssText='margin:12px 0 0;padding:10px 12px;border-radius:10px;background:#16202a;border:1px solid #29414c;'+
       'font:13px/1.45 Segoe UI,system-ui,sans-serif;color:#cfe6ee;display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
@@ -986,7 +1029,18 @@
     }, false);
     b.id='cal-landing-newpart';
     var sv=chip('💾 Save job', saveJobToFile, false);
-    el.appendChild(t); el.appendChild(sv); el.appendChild(b);
+    el.appendChild(t);
+    if(roles.length && P && typeof P.open==='function'){
+      var bd=chip('🧩 Continue: Build 3D part', function(){ P.open(); }, true); bd.id='cal-landing-build';
+      el.appendChild(bd);
+    }
+    if(last){
+      var op=chip('📂 Open '+(tops.length ? 'the Top photo' : 'last photo'),
+                  function(){ openViewForEditing(last.i); }, false);
+      op.id='cal-landing-open';
+      el.appendChild(op);
+    }
+    el.appendChild(sv); el.appendChild(b);
     if(up) host.insertBefore(el, up); else host.appendChild(el);
   }
 
@@ -1124,13 +1178,20 @@
     // ITS photo. A new outline from the same photo — a re-trace, or an outline deleted and
     // drawn again, which has to be assigned again — lies the same way, so it keeps them (and
     // the side's "covers"); re-aligning three views by hand after every re-trace was the cost.
-    // An outline from another photo starts square.
+    // An outline from another photo starts square. A Match factor ("Scale Top to match End")
+    // belongs to the photo too: assigning Top again on the same outline used to drop it, and
+    // the next preview went back to the size-mismatch refusal with nothing said.
     var same = !!(old && old.source === here);
     var rec = { points: prof.points, mm_per_px: prof.mm_per_px, image_height: prof.image_height,
                 size_mm: prof.size_mm, source: here, at: new Date().toISOString(),
                 ann_id: (prof.ann_id != null ? prof.ann_id : null),   // the outline it follows
                 rot: same ? (old.rot || 0) : 0, flip_h: same ? !!old.flip_h : false, flip_v: same ? !!old.flip_v : false };
     if(same && old.covers) rec.covers = old.covers;
+    if(same && Number(old.scale) > 0){
+      rec.scale = old.scale;
+      if(old.scale_note) rec.scale_note = old.scale_note;
+      if(old.scale_undo != null) rec.scale_undo = old.scale_undo;
+    }
     p.views[role] = rec;
     save(); changed();
     return true;

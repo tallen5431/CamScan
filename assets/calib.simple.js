@@ -47,6 +47,9 @@
     '#cal-simple.mini .row{flex-wrap:nowrap;gap:6px;}'+
     '#cal-simple.mini .mtx{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#9fb2bb;font-size:12.5px;}'+
     '#cal-simple.mini .lbl{padding:6px 10px;}'+
+    // The zoom buttons sat under the card (a tap on + landed on the card's row): lifted
+    // clear of it, by the height syncInset() measures. transform, so the grid is not resized.
+    'body.camscan-simple .cal-zoom{transform:translateY(calc(-1 * var(--cal-simple-zoom, 0px)));}'+
     '#cal-simple-toggle{position:fixed;top:66px;right:12px;z-index:39;min-height:38px;padding:6px 12px;border-radius:18px;'+
       'background:#12171c;color:#cfe6ee;border:1px solid #29414c;cursor:pointer;font:13px Segoe UI,system-ui,sans-serif;display:none;}';
   document.head.appendChild(css);
@@ -62,9 +65,44 @@
     toggleBtn.onclick=function(){
       var o=overlay();
       if(o && placing(o)){ o._autoOutlineArm=false; try{ if(o.setMode) o.setMode('select'); else o.opts.mode='select'; }catch(e){} }
-      setSimple(true); applyMode(true);
+      enterSimple();
     };
     document.body.appendChild(toggleBtn);
+  }
+
+  // Back to the guided card. The trace's Detail bar goes: in simple mode it sat right over the
+  // bottom (sloped) end of a step-pad outline, the end the card then asks the user to check.
+  function enterSimple(){
+    window.__camscanReturnToSimple=null;
+    var o=overlay();
+    try{ if(o && o._dismissTraceDetail) o._dismissTraceDetail(); }catch(e){}
+    setSimple(true); applyMode(true);
+  }
+  // Leaving simple mode for a step that needs taps on the photo (set scale, trace, a box)
+  // remembers so: once that step is done — the scale changed, or a new closed outline — the
+  // poll comes back to the card and its "Next:". It used to stay in the full toolbar, and
+  // saved that for every later photo, so the guided steps were gone after the first tap.
+  function closedCount(o){
+    return (o && o.ann && o.ann.items || []).filter(function(a){ return a.type==='polyline' && a.closed; }).length;
+  }
+  function scaleSig(o){
+    var op=(o && o.opts) || {};
+    return [!!(o && o.isCalibrated && o.isCalibrated()), op.manualMmPerPx||0, op.manualHomography ? JSON.stringify(op.manualHomography) : ''].join('|');
+  }
+  // `left`: simple mode is already off (leaveSimple in calib.ui.enhanced.js turned it off
+  // before the step's first tap, so the state it left from is still the state now).
+  function markReturn(o, left){
+    if((!left && !isSimple()) || !o) return;
+    window.__camscanReturnToSimple={ o:o, sc:scaleSig(o), n:closedCount(o) };
+  }
+  function maybeReturn(o){
+    var m=window.__camscanReturnToSimple;
+    if(!m || isSimple()) return;
+    if(m===true){ if(o && o.img) markReturn(o, true); return; }    // set by leaveSimple (calib.ui.enhanced.js)
+    if(m.o!==o){ window.__camscanReturnToSimple=null; return; }       // another photo since
+    if(placing(o) || document.querySelector('.cal-coach')) return;    // the step is still going
+    var scaled = o.isCalibrated && o.isCalibrated() && scaleSig(o)!==m.sc;
+    if(scaled || closedCount(o)>m.n) enterSimple();
   }
 
   // refit=true when the mode is toggled at runtime (rail shown/hidden after the overlay
@@ -76,6 +114,7 @@
     toggleBtn.style.display = (!simple && !!v) ? 'inline-flex' : 'none';
     if(refit && o && o._onBoxResize){ setTimeout(function(){ try{ o._onBoxResize(); }catch(e){} }, 0); }
     renderCard();
+    if(refit) setTimeout(syncInset, 0);
   }
 
   // Store the photo on screen into the job. CalibJob.captureCurrent does the work (one entry
@@ -157,13 +196,19 @@
       if(opts.manualMmPerPx && !opts.manualHomography && !squared && cam && cam.focal_source && cam.focal_source!=='exif')
         notes.push('This copy of the photo has no camera data (chat apps strip it), so Square up will assume a typical phone lens. The phone’s original photo corrects tilt more exactly.');
       var roles=rolesHere(), next;
+      // The Top of a hollow cover is traced along its lower outer edge, while the ruler lay on
+      // its top: every size reads small by the cover's height (README: 7.4% for 45 mm), and
+      // nothing on the way to Build said so. Only for a ruler line with no plane offset.
+      var fh=o.featureHeightMM ? Number(o.featureHeightMM())||0 : 0;
+      if(roles.indexOf('top')>=0 && opts.manualMmPerPx && !opts.manualHomography && !fh)
+        notes.push('Hollow cover? From above its outline is the bottom edge. If the ruler lay on top, open 📐 → Measuring a raised face and enter minus the cover’s height.');
       if(roles.length){
         var all=assignedRoles(), missing=ROLES.filter(function(R){ return all.indexOf(R.toLowerCase())<0; });
         next='This photo is the part’s '+roles.map(cap).join(' and ')+' view.'+
           (missing.length ? ' Next: 📷 Add another photo for the '+missing.join(' or ')+' view, or 🧩 Build 3D part.'
                           : ' Next: 🧩 Build 3D part.');
       } else if(!hasOutline(o)){
-        next='Next: ✨ Trace outline (box round the part, then tap it).';
+        next='Next: ✨ Trace outline, then tap the part. If it misses a shadowed end, draw a box round the part (▭ Draw a box).';
       } else if(selectedOutline(o)){
         next='Next: say which view this outline is — Top, Side or End.';
       } else {
@@ -239,7 +284,7 @@
     if(!st.ok){
       // The card says what to do, so it offers the button for it — rather than "tap Mark up,
       // then find 📐" — and the top banner, saying the same, steps aside for it.
-      var sc=mkBtn('prim', '📐 Set scale', function(){ setSimple(false); applyMode(true);
+      var sc=mkBtn('prim', '📐 Set scale', function(){ markReturn(overlay()); setSimple(false); applyMode(true);
         setTimeout(function(){ var c=document.getElementById('cal-tb-scale'); if(c) c.click(); }, 0); }, 'cal-simple-scale');
       sc.style.margin='-2px 0 10px';
       card.appendChild(sc);
@@ -261,7 +306,7 @@
     }, 'cal-simple-add');
     // Drop into markup and arm auto-trace: one tap on the part outlines it (draggable to
     // fix), producing a to-scale, extrudable DXF profile that rides along with the submission.
-    var trace=mkBtn(traceLead?'prim':'ghost', '✨ Trace outline', function(){ setSimple(false); applyMode(true); var o=overlay(); if(o){ if(o.armAutoOutline) o.armAutoOutline(); else if(o.setMode) o.setMode('outline'); } }, 'cal-simple-trace');
+    var trace=mkBtn(traceLead?'prim':'ghost', '✨ Trace outline', function(){ markReturn(overlay()); setSimple(false); applyMode(true); var o=overlay(); if(o){ if(o.armAutoOutline) o.armAutoOutline(); else if(o.setMode) o.setMode('outline'); } }, 'cal-simple-trace');
     r2.appendChild(neu); r2.appendChild(trace);
     if(buildLead && window.CalibPart3D && typeof window.CalibPart3D.open==='function'){
       r2.appendChild(mkBtn('prim', '🧩 Build 3D part ('+all.length+')', function(){ window.CalibPart3D.open(); }, 'cal-simple-build'));
@@ -271,8 +316,22 @@
     var sub=mkBtn('ghost', 'Review & Submit'+(n?' ('+n+')':''), function(){
       var o=overlay(); if(o && o.isCalibrated && o.isCalibrated()) captureCurrent();
       if(window.CalibJob) window.CalibJob.open(); }, 'cal-simple-submit');
-    var adv=mkBtn('adv', 'Mark up ▸', function(){ setSimple(false); applyMode(true); });
+    // The user's own choice of the full toolbar sticks: nothing brings the card back.
+    var adv=mkBtn('adv', 'Mark up ▸', function(){ window.__camscanReturnToSimple=null; setSimple(false); applyMode(true); });
     r2.appendChild(sub); r2.appendChild(adv); card.appendChild(r2);
+  }
+
+  // The photo fits in the space above the card (the overlay's _fitInset measures it), so
+  // when the card appears, changes height or goes, the photo is fitted again — unless the
+  // user has zoomed, which _onBoxResize leaves alone.
+  var _inset=-1;
+  function syncInset(){
+    var o=overlay();
+    var h=(o && o._fitInset && isSimple() && card) ? o._fitInset() : 0;
+    var cv=o && o.canvas && o.canvas.getBoundingClientRect();
+    var lift=cv ? Math.max(0, Math.min(h, cv.height-160)) : 0;
+    try{ document.body.style.setProperty('--cal-simple-zoom', Math.round(lift)+'px'); }catch(e){}
+    if(Math.abs(h-_inset)>2){ _inset=h; if(o && o._onBoxResize){ try{ o._onBoxResize(); }catch(e){} } }
   }
 
   // Brief "saved" confirmation when the job changes (the card is the only feedback surface
@@ -303,9 +362,11 @@
     applyMode(false);
     setInterval(function(){
       var v=view(), o=overlay();
-      if(isSimple() && placing(o)){ setSimple(false); applyMode(true); return; }
+      if(isSimple() && placing(o)){ markReturn(o); setSimple(false); applyMode(true); return; }
+      maybeReturn(o);
       if(toggleBtn) toggleBtn.style.display = (!isSimple() && !!v) ? 'inline-flex' : 'none';
       renderCard();
+      syncInset();
     }, 500);
   }
   if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded', boot);

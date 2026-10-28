@@ -295,9 +295,9 @@ def scenario_simple_card(browser, errors, dialogs):
     ctx, pg = _context(browser, errors, dialogs, simple=True, viewport={"width": 1366, "height": 768})
     _upload(pg, _photo("simple", 70))
     pg.wait_for_selector("#cal-simple", state="visible", timeout=8000)
-    # Precondition: the card covers the ruler (this is the photo the bug needs).
-    a = pg.evaluate(TO_SCREEN, [RULER_X[0], RULER_Y])
-    assert not a["onCanvas"], f"precondition: the card should cover the ruler, top={a['top']}"
+    # The photo fits above the card now, so the card no longer covers the ruler (it used to:
+    # the photo this check was written for). The flow below still goes through the chooser.
+    pg.wait_for_function(f"({TO_SCREEN})([{RULER_X[0]},{RULER_Y}]).onCanvas", timeout=3000)
     # The top bar's Set scale chip, then the line tool from its chooser.
     pg.click("#cal-tb-scale")
     pg.get_by_text("Ruler or tape on the part").click()
@@ -312,8 +312,8 @@ def scenario_simple_card(browser, errors, dialogs):
     pg.locator("#cal-scale-input").get_by_role("button", name="Set").click()
     pg.wait_for_function(f"{OV}.isCalibrated()", timeout=5000)
 
-    # Back to the simple card: the scale is worded by where it came from.
-    pg.click("#cal-simple-toggle")
+    # Back to the simple card by itself once the scale is set (it used to need ◂ Simple
+    # view): the scale is worded by where it came from.
     pg.wait_for_selector("#cal-simple", state="visible", timeout=5000)
     st = pg.inner_text("#cal-simple .st")
     assert "Marker found" not in st, f"a ruler line reads as a marker: {st!r}"

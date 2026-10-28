@@ -144,7 +144,7 @@ def phone(browser, bundle_path):
     _open(pg, bundle_path)
     pg.evaluate(f"(()=>{{const o={OV};o.clearManualScale();o.setMode('setscale');o.requestDraw();}})()")
     hint = pg.evaluate(f"{OV}._toolHint()")
-    assert "tap one end of the ruler" in hint, f"set-scale hint does not talk about the ruler: {hint!r}"
+    assert "two numbered marks far apart" in hint, f"set-scale hint does not talk about the ruler: {hint!r}"
 
     # Every click the document sees, so a preset pressed by the ghost click shows up by name.
     pg.evaluate("window.__clicks=[];document.addEventListener('click',e=>window.__clicks.push("

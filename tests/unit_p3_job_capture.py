@@ -9,8 +9,9 @@ browser (tests/test_job_persist_e2e.py drives the same paths in Chromium):
   - a photo with nothing done to it is not stored unless asked (a label tap);
   - the label of a stored photo follows its 3D role while it is a default one, and a label
     the user typed is kept;
-  - re-assigning a role from the same photo keeps its rotate/flip/covers, and from another
-    photo resets them;
+  - re-assigning a role from the same photo keeps its rotate/flip/covers and Match factor,
+    and from another photo resets them;
+  - a cavity traced on the End photo leaves it named "End";
   - removing a photo used by the part asks first (cancel keeps it), then flags the view;
   - a photo removed while on screen is not stored again by a reload or an edit, only by a
     label tap, which also clears its view's "photo removed" flag;
@@ -68,10 +69,15 @@ const J = window.CalibJob;
   J.setPartView('top', prof); J.setPartView('side', prof);
   out.keep = { rot: J.part().views.top.rot, flip_v: J.part().views.top.flip_v,
                covers: J.part().views.side.covers, srot: J.part().views.side.rot };
+  // A Match factor survives the same view being assigned again from the same photo.
+  Object.assign(J.part().views.top, { scale: 1.10564, scale_note: 'matched to End', scale_undo: 1 });
+  J.setPartView('top', prof);
+  out.match = { scale: J.part().views.top.scale, note: J.part().views.top.scale_note, undo: J.part().views.top.scale_undo };
   // From another photo the alignment starts square.
   J.part().views.top.source = 'some-other-photo';
   J.setPartView('top', prof);
-  out.reset = { rot: J.part().views.top.rot, flip_v: J.part().views.top.flip_v, source: J.part().views.top.source === pid0 };
+  out.reset = { rot: J.part().views.top.rot, flip_v: J.part().views.top.flip_v, source: J.part().views.top.source === pid0,
+                scale: J.part().views.top.scale === undefined };
   // A forced capture of an untouched second photo, under a label.
   attrs['data-json'] = '/uploads/side-5678.calibration.json'; attrs['data-img'] = 'data:image/jpeg;base64,BBBB';
   ov.img = { src: 'data:image/jpeg;base64,BBBB' }; ov.opts = {}; ov.ann = { items: [] };
@@ -98,6 +104,17 @@ const J = window.CalibJob;
   // A label tap brings it back, and its End view follows it again.
   out.readd = { ok: J.captureCurrent('End', true), n: J.count(), flag: !!J.part().views.end.photo_removed,
                 stored: J.isCurrentStored() };
+  // A third photo used as End, then for the cavity: the 3D part stores the photo under
+  // "Cavity" first; the photo is still the End view, so it keeps that name. Made the Side
+  // afterwards (the role moves after the capture), its default name follows.
+  attrs['data-json'] = '/uploads/end-9012.calibration.json'; attrs['data-img'] = 'data:image/jpeg;base64,CCCC';
+  ov.img = { src: 'data:image/jpeg;base64,CCCC' }; ov.opts = { manualMmPerPx: 0.4 }; ov.ann = { items: [] };
+  J.captureCurrent('End'); J.setPartView('end', prof);
+  J.captureCurrent('Cavity'); J.setPartView('cavity', prof);
+  const lab = async () => (await J.persisted()).views.find(v => v.sourceId === '/uploads/end-9012.calibration.json').label;
+  out.cavity = { afterCavity: await lab() };
+  J.captureCurrent('Side'); J.setPartView('side', prof);
+  out.cavity.afterSide = await lab();
   console.log(JSON.stringify(out));
   process.exit(0);                                          // the module's timers would keep node alive
 })().catch(e => { console.log(JSON.stringify({ error: String(e && e.stack || e) })); process.exit(0); });
@@ -132,9 +149,12 @@ def main():
     k = o["keep"]
     check("re-assigning from the same photo keeps rotate/flip/covers",
           k == {"rot": 1, "flip_v": True, "covers": "start", "srot": 3}, f"{k}")
+    m = o["match"]
+    check("re-assigning a view from the same photo keeps its Match factor",
+          m == {"scale": 1.10564, "note": "matched to End", "undo": 1}, f"{m}")
     rs = o["reset"]
-    check("an outline from another photo starts square",
-          rs["rot"] == 0 and rs["flip_v"] is False and rs["source"], f"{rs}")
+    check("an outline from another photo starts square, with no Match factor",
+          rs["rot"] == 0 and rs["flip_v"] is False and rs["source"] and rs["scale"], f"{rs}")
     s = o["second"]
     check("an untouched photo is stored only when asked (label tap)",
           s["plain"] is False and s["forced"] is True and s["n"] == 2, f"{s}")
@@ -155,6 +175,10 @@ def main():
     rd = o["readd"]
     check("a label tap re-adds the removed photo and clears its 'photo removed' flag",
           rd["ok"] is True and rd["n"] == 1 and not rd["flag"] and rd["stored"], f"{rd}")
+
+    cv = o["cavity"]
+    check("a cavity on the End photo keeps it named 'End'; a real role change still renames it",
+          cv == {"afterCavity": "End", "afterSide": "Side"}, f"{cv}")
 
     src = (ROOT / "assets" / "calib.job.js").read_text(encoding="utf-8")
     rec = src[src.index("var RECOMMENDED"):src.index("var EXTRA_LABELS")]
