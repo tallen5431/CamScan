@@ -201,10 +201,22 @@ def main():
             back = pg.evaluate(f"{sel}.pts.length")
             assert back == sq["n"], f"Undo did not restore the traced dots: {back} vs {sq['n']}"
 
+            #    Refine: the square's corners are sharp in the photo (there is no edge there at
+            #    all), so it comes back as four sides and four sharp corners, one undo step.
+            pg.evaluate(f"(()=>{{const o={O};o.ann.selectedId={sq['id']};o.setMode('select');o.requestDraw();}})()")
+            pg.locator("#cal-ctx-refine").wait_for(state="visible", timeout=5000)
+            with pg.expect_response(lambda r: "/api/outline/straighten" in r.url) as rr:
+                pg.click("#cal-ctx-refine")
+            assert json.loads(rr.value.request.post_data).get("mode") == "refine", "Refine did not ask for refine"
+            pg.wait_for_function(f"{sel}.pts.length<10", timeout=5000)
+            assert len(pg.evaluate(f"{sel}.pts")) == 4, "Refine rounded a corner the photo does not show"
+            pg.evaluate(f"{O}.undo()")
+            assert pg.evaluate(f"{sel}.pts.length") == sq["n"], "Undo after Refine did not restore the dots"
+
             assert not errors, f"page errors: {errors}"
             browser.close()
         print(f"E2E_RESULT: PASS (outer polyline + true-circle bore; slider re-traces coarse={coarse}->fine={fine} pts, replaced; "
-              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores)")
+              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores; Refine keeps sharp corners sharp)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")

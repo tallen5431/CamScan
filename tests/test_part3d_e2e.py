@@ -272,6 +272,33 @@ def main():
             pg.wait_for_function("document.getElementById('cal-part-status').innerText.includes('Saved')",
                                  timeout=8000)
 
+            # A view assigned to the wrong role moves without going back to its photo: End and
+            # Side swap, and swap back.
+            roles_js = ("(()=>{const v=window.CalibJob.part().views;"
+                        "return {side:v.side&&v.side.size_mm, end:v.end&&v.end.size_mm};})()")
+            before_roles = pg.evaluate(roles_js)
+            pg.select_option('#cal-part-row-end select[data-act="move"]', "side")
+            swapped = pg.evaluate(roles_js)
+            assert swapped == {"side": before_roles["end"], "end": before_roles["side"]}, f"move: {swapped}"
+            pg.select_option('#cal-part-row-end select[data-act="move"]', "side")
+            assert pg.evaluate(roles_js) == before_roles, "moving back did not restore the views"
+
+            #    A side profile of one end only is sent as such.
+            with pg.expect_request(lambda q: "/api/export/part" in q.url, timeout=20000) as cq:
+                pg.select_option("#cal-part-sidecovers", "start")
+            assert json.loads(cq.value.post_data)["views"]["side"].get("covers") == "start", "covers not sent"
+            pg.select_option("#cal-part-sidecovers", "all")
+
+            # STEP for editing in CAD.
+            pg.uncheck("#cal-part-mirror")
+            with pg.expect_download(timeout=30000) as sdl:
+                pg.click("#cal-part-build-step")
+            assert sdl.value.suggested_filename == "part.step", sdl.value.suggested_filename
+            step_txt = open(sdl.value.path()).read()
+            assert step_txt.startswith("ISO-10303-21;") and "MANIFOLD_SOLID_BREP" in step_txt, "not a STEP solid"
+            pg.wait_for_function("document.getElementById('cal-part-status').innerText.includes('press-pull')",
+                                 timeout=8000)
+
             # The views survive a reload, as the job does.
             pg.reload(wait_until="networkidle")
             pg.wait_for_function("window.CalibJob", timeout=15000)
@@ -323,7 +350,8 @@ def main():
             assert not dialogs, f"unexpected alerts: {dialogs}"
             browser.close()
         print("E2E_RESULT: PASS (top/side/end/cavity assigned across 3 photos; part {:.1f}x{:.1f}x{:.1f} mm, "
-              "cavity as traced; mirrored STL downloaded, {} triangles; views survive reload; "
+              "cavity as traced; mirrored STL downloaded, {} triangles; End/Side moved and back; one-end side sent; "
+              "STEP downloaded; views survive reload; "
               "landing offers a new part; scale notice steps aside)".format(
                   size[0], size[1], size[2], n))
         return 0

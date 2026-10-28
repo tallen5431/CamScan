@@ -1033,7 +1033,15 @@ window.CalibUI = (function(){
     ctxStraight.setAttribute('aria-label', 'Straighten this outline onto the part\'s edges');
     ctxStraight.title = 'Make each long side one straight line on the part\'s edge; rounded corners stay as traced';
     ctxStraight.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected(); };
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxStraight, ctxDepth, ctx3d, ctxFinish);
+    // The detailed second pass: straight sides on the edge AND each corner given the radius
+    // the photo shows (a straightened corner is sharp; a cover's often is not).
+    const ctxRefine = document.createElement('button'); ctxRefine.type = 'button'; ctxRefine.className = 'cal-ctx-finish';
+    ctxRefine.id = 'cal-ctx-refine';
+    ctxRefine.innerHTML = '✨ Refine';
+    ctxRefine.setAttribute('aria-label', 'Refine this outline: straight sides and rounded corners from the photo');
+    ctxRefine.title = 'Straight sides on the part\'s edge, and each corner given the radius the photo shows';
+    ctxRefine.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected('refine'); };
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxStraight, ctxRefine, ctxDepth, ctx3d, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1116,6 +1124,7 @@ window.CalibUI = (function(){
       ctxDepth.classList.toggle('show', !!prof);
       ctx3d.classList.toggle('show', !!prof);
       ctxStraight.classList.toggle('show', !!prof);
+      ctxRefine.classList.toggle('show', !!prof);
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
         ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
         : '⇥ Depth';

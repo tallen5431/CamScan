@@ -155,7 +155,7 @@ def _sides(p: np.ndarray, min_run: float, sigma: float) -> List[tuple]:
         j = i + 1
         while j + 1 <= n and fits(i, j + 1):
             j += 1
-        if float(np.hypot(*(q[j] - q[i]))) >= min_run and j - i >= 2:
+        if float(np.hypot(*(q[j] - q[i]))) >= min_run:
             found.append([i, j])
             i = j
         else:
@@ -176,7 +176,8 @@ def _sides(p: np.ndarray, min_run: float, sigma: float) -> List[tuple]:
 
 
 def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[float]],
-                       min_run_frac: float = 0.06) -> Optional[Dict[str, Any]]:
+                       min_run_frac: float = 0.06, fillets: bool = False,
+                       snap: bool = True, exact: bool = False) -> Optional[Dict[str, Any]]:
     """See the module notes. `points` are image pixel coords; so is the result. `img_bgr` may
     be None, in which case sides are straightened through their own dots (nothing snapped)."""
     p = _ring(points)
@@ -201,7 +202,12 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     run_med = np.median(np.stack([np.roll(off, k) for k in (-2, -1, 0, 1, 2)]), axis=0)
     # For independent jitter of spread s this median is 0.647 s (simulated over 200 straight
     # runs of 200 dots), so dividing by that gives s back.
-    sigma = float(np.median(np.abs(off - run_med))) / 0.647
+    # Only at dots that are not corners: a sparse outline (one already straightened, or
+    # clicked by hand) is all corners, and its "wobble" would read as the size of the part.
+    v1, v2 = p - a_, b_ - p
+    straightish = np.einsum("ij,ij->i", v1, v2) > np.cos(np.radians(45)) * np.hypot(*v1.T) * np.hypot(*v2.T)
+    sigma = (float(np.median(np.abs(off - run_med)[straightish])) / 0.647
+             if straightish.sum() >= 8 and not exact else 0.0)
 
     sides = _sides(p, min_run, sigma)
     if not sides:
@@ -222,7 +228,7 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     for (i, cnt) in sides:
         own = _fit_line(verts(i, cnt))
         line = own
-        if gx is not None:
+        if gx is not None and snap:
             # Search across the side along the line through its own dots, between its ends.
             c, u = own
             vv = verts(i, cnt)
@@ -256,6 +262,7 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     # lines cross.
     out: List[np.ndarray] = []
     k = len(lines)
+    rounded = 0
     for s_i in range(k):
         i, cnt, line = lines[s_i]
         ni, ncnt, nline = lines[(s_i + 1) % k]
@@ -270,19 +277,76 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
             x = cross(line, nline)
             corner = p[end]
             if x is not None and float(np.hypot(*(x - corner))) <= 3 * r:
-                out.append(x)
-                if s_i == k - 1:
-                    out[0] = x
+                arc = None
+                if fillets and gx is not None and k > 1:
+                    # Each side may give at most 45% of itself to a corner, so a rounded end
+                    # never eats a side.
+                    u_in = line[1] * (1.0 if float(np.dot(line[1], x - start_pt)) > 0 else -1.0)
+                    far = proj(p[(ni + ncnt) % n], nline)
+                    u_out = nline[1] * (1.0 if float(np.dot(nline[1], far - x)) > 0 else -1.0)
+                    max_t = 0.45 * min(float(np.hypot(*(x - start_pt))), float(np.hypot(*(far - x))))
+                    arc = _fillet(gx, gy, x, u_in, u_out, min(max_t, 6.0 * r))
+                if arc:
+                    rounded += 1
+                    if s_i == k - 1:
+                        out[0] = arc[-1]
+                        out.extend(arc[:-1])
+                    else:
+                        out.extend(arc)
+                else:
+                    out.append(x)
+                    if s_i == k - 1:
+                        out[0] = x
             else:
                 out.append(proj(corner, line))
                 out.append(proj(corner, nline))
         else:
-            out.append(proj(p[end], line))
-            out.extend(p[(end + 1 + np.arange(between - 1)) % n])
-            if s_i < k - 1:
-                out.append(proj(p[ni], nline))
+            e1, s2_ = proj(p[end], line), proj(p[ni], nline)
+            dots = [e1] + [p[(end + 1 + j) % n] for j in range(between - 1)] + [s2_]
+            arc = None
+            x = cross(line, nline) if (fillets and gx is not None and k > 1) else None
+            if x is not None:
+                # A short traced stretch between two sides — a corner the first trace rounded
+                # or cut — may be a fillet of the two sides; it is one if the photo's edge runs
+                # along the fillet better than along the dots.
+                u_in = line[1] * (1.0 if float(np.dot(line[1], x - start_pt)) > 0 else -1.0)
+                far = proj(p[(ni + ncnt) % n], nline)
+                u_out = nline[1] * (1.0 if float(np.dot(nline[1], far - x)) > 0 else -1.0)
+                gap = max(float(np.hypot(*(x - e1))), float(np.hypot(*(x - s2_))))
+                if gap <= 6.0 * r:
+                    max_t = 0.45 * min(float(np.hypot(*(x - start_pt))), float(np.hypot(*(far - x))))
+                    arc = _fillet(gx, gy, x, u_in, u_out, min(max_t, 6.0 * r),
+                                  versus=_path_edge(gx, gy, np.asarray(dots)))
+            if arc:
+                # A refinement of the dots, never a relocation: every point of the arc must lie
+                # near the traced path it replaces (else a strong edge beside the part — the
+                # gap at a truck's door — could pull the corner out to it).
+                # Measured from the outline as it was: inward, a fillet may cut well into a
+                # traced chamfer (3x the reach); outward, only as far as a side's own snap.
+                ring32 = p.astype(np.float32).reshape(-1, 1, 2)
+                for q_ in np.asarray(arc):
+                    dmin = min(_seg_dist(q_, p[j], p[(j + 1) % n]) for j in range(n))
+                    inside_ = cv2.pointPolygonTest(ring32, (float(q_[0]), float(q_[1])), False) >= 0
+                    if dmin > (3.0 * r if inside_ else r):
+                        arc = None
+                        break
+            sharp_ok = False
+            if not arc and x is not None and len(dots) > 2:
+                # No fillet, but the photo may show the corner SHARP and the first trace
+                # simply bevelled it: then the two sides meet where their lines cross.
+                if (_path_edge(gx, gy, np.asarray([e1, x, s2_])) > 1.2 * _path_edge(gx, gy, np.asarray(dots))
+                        and min(_seg_dist(x, p[j], p[(j + 1) % n]) for j in range(n)) <= r):
+                    sharp_ok = True
+            if arc:
+                rounded += 1
+                piece = arc
+            elif sharp_ok:
+                piece = [e1, x, s2_]
             else:
-                out[0] = proj(p[ni], nline) if k > 1 else out[0]
+                piece = dots
+            out.extend(piece[:-1] if s_i == k - 1 and k > 1 else piece)
+            if s_i == k - 1 and k > 1:
+                out[0] = piece[-1]
 
     res_list = [out[0]]
     for v in out[1:]:
@@ -296,4 +360,111 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     a1 = _area(res)
     if a1 * a0 <= 0 or abs(a1 - a0) > _MAX_AREA_CHANGE * abs(a0):
         return None
-    return {"points": res.tolist(), "straight": len(lines), "snapped": snapped}
+    return {"points": res.tolist(), "straight": len(lines), "snapped": snapped, "rounded": rounded}
+
+
+# ---------------------------------------------------------------------------------------
+# Refine: round the corners the photo shows are round
+# ---------------------------------------------------------------------------------------
+def _seg_dist(q, a, b) -> float:
+    """Distance from point q to segment ab."""
+    ab = b - a
+    L2 = float(np.dot(ab, ab))
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, float(np.dot(q - a, ab)) / L2))
+    return float(np.hypot(*(q - (a + ab * t))))
+
+
+def _path_edge(gx, gy, pts):
+    """Mean edge strength across a polyline, sampled every ~2 px."""
+    tot, cnt = 0.0, 0
+    for a, b in zip(pts[:-1], pts[1:]):
+        L = float(np.hypot(*(b - a)))
+        if L < 1e-6:
+            continue
+        u = (b - a) / L
+        nrm = np.array([-u[1], u[0]])
+        k = max(2, int(math.ceil(L / 2.0)))
+        q = a + (b - a) * np.linspace(0, 1, k)[:, None]
+        tot += float(np.sum(np.abs(_bilinear(gx, q[:, 0], q[:, 1]) * nrm[0] + _bilinear(gy, q[:, 0], q[:, 1]) * nrm[1])))
+        cnt += k
+    return tot / cnt if cnt else 0.0
+
+
+def _fillet(gx, gy, X, u_in, u_out, max_t, versus=None):
+    """The rounded corner the photo supports where two straight sides meet at X, as a list of
+    points from the first side's tangent point to the second's — or None to keep it sharp
+    (or, given `versus` — the edge strength along the traced dots now joining the two sides —
+    to keep those dots).
+
+    Every radius whose arc fits the two sides is tried (one number per corner, so the answer
+    can only ever be a true fillet of THESE sides: it cannot wander onto a ridge inside the
+    part or an edge beside it). An arc is kept only where the photo's edge runs along it more
+    strongly than along the sharp corner it would replace."""
+    cos_t = float(np.dot(-u_in, u_out))
+    theta = math.acos(max(-1.0, min(1.0, cos_t)))      # interior angle at the corner
+    if not (math.radians(20) < theta < math.radians(160)):
+        return None
+    bis = -u_in + u_out
+    bis /= max(float(np.hypot(*bis)), 1e-9)
+    half = theta / 2.0
+    sweep = math.pi - theta
+
+    def edge(pts, nrm):
+        return float(np.mean(np.abs(_bilinear(gx, pts[:, 0], pts[:, 1]) * nrm[:, 0]
+                                    + _bilinear(gy, pts[:, 0], pts[:, 1]) * nrm[:, 1])))
+
+    n_in, n_out = np.array([-u_in[1], u_in[0]]), np.array([-u_out[1], u_out[0]])
+    best = None
+    R_max = max_t * math.tan(half)
+    # From 8 px: below that a photo cannot tell a fillet from a sharp corner — the corner's
+    # own blur reads as a small radius (sharp rectangles came back with 3-4 px "fillets").
+    for R in np.arange(8.0, R_max + 0.5, 1.0):
+        t = R / math.tan(half)
+        C = X + bis * (R / math.sin(half))
+        T1, T2 = X - u_in * t, X + u_out * t
+        a1 = math.atan2(*(T1 - C)[::-1])
+        a2 = math.atan2(*(T2 - C)[::-1])
+        d = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi          # the short way round
+        if abs(abs(d) - sweep) > 1e-3:
+            continue
+        m = max(3, int(math.ceil(sweep / (2.0 * math.acos(max(-1.0, 1.0 - 0.5 / R))))))   # <= 0.5 px off the true arc
+        ang = a1 + d * np.linspace(0.0, 1.0, m + 1)
+        arc = C + R * np.stack([np.cos(ang), np.sin(ang)], 1)
+        e_arc = edge(arc, (arc - C) / R)
+        k = max(3, int(math.ceil(t / 2.0)))
+        s1 = T1 + (X - T1) * np.linspace(0, 1, k)[:, None]
+        s2 = X + (T2 - X) * np.linspace(0, 1, k)[:, None]
+        e_sharp = 0.5 * (edge(s1, np.repeat(n_in[None], k, 0)) + edge(s2, np.repeat(n_out[None], k, 0)))
+        if (e_arc > 1.2 * e_sharp and e_arc >= 6.0 and (versus is None or e_arc > 1.1 * versus)
+                and (best is None or e_arc > best[0])):
+            best = (e_arc, arc)
+    return None if best is None else [q for q in best[1]]
+
+
+def refine_outline(img_bgr: np.ndarray, points: Sequence[Sequence[float]]) -> Optional[Dict[str, Any]]:
+    """Straighten, then give each corner where two sides meet the radius the photo shows.
+
+    Straightening meets sides at a sharp point, which is wrong for a part whose corners are
+    rounded. Following the photo's edge point by point to fix that was tried and rejected: on
+    the customer's step pad the strongest edge near a corner was as often the ridge just
+    inside the cover, the gap beside it, or the chrome below it as the cover's own edge, and
+    every guard against one of those let another through. A fillet is one number per corner
+    and can only ever be tangent to the two sides already fitted, so it is either the corner
+    the photo shows or no change at all.
+
+    Returns {"points", "straight", "snapped", "rounded"} in image pixel coords, or None.
+    """
+    if img_bgr is None or not getattr(img_bgr, "size", 0):
+        return None
+    st = straighten_outline(img_bgr, points)
+    if st is None:
+        return None
+    # The sides are now on the photo's edges. Fitting them to it again, from two dots each,
+    # only nudged them off (measured on rounded rectangles); so the second pass keeps every
+    # side's line exactly (and, the outline being straight already, allows its sides no
+    # wobble — or a corner dot joins a side and tilts it) and only decides the corners.
+    out = straighten_outline(img_bgr, st["points"], fillets=True, snap=False, exact=True)
+    if out is None:
+        return dict(st, rounded=0)
+    out["snapped"] = st["snapped"]
+    return out

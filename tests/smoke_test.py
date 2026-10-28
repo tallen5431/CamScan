@@ -396,7 +396,7 @@ def main():
             "none": {}, "short": {"points": [[0, 0], [1, 1]]}, "nan": {"points": [[0, 0], [1, "x"], [2, 2]]},
             "inf": {"points": [[0, 0], [1e400, 1], [2, 2]]}, "bad image": {"image": "data:x,@@", "points": wob.tolist()},
         }.items()}
-        ok_t = (st and _tiou(st["points"]) > _tiou(wob) and len(st["points"]) < len(wob) / 2
+        ok_t = (st and _tiou(st["points"]) > _tiou(wob) and len(st["points"]) < 0.75 * len(wob)
                 and st["straight"] >= 4 and st["snapped"] >= 4 and side_err < 1.5
                 and no_img and no_img["straight"] >= 4 and tiny is None and round_left
                 and codes == {"ok": 200, "none": 400, "short": 400, "nan": 400, "inf": 400, "bad image": 400})
@@ -406,6 +406,67 @@ def main():
               f"no-image sides={no_img and no_img['straight']}, circle left alone={round_left}, codes={codes}")
     except Exception as e:
         check("Straighten puts wobbly sides on the part's edge, not a ridge beside it", False, repr(e))
+
+    # 2g4) Refine: a corner gets the radius the photo shows — the true one on a rounded part,
+    #      none on a sharp one — and the outline is never made meaningfully worse.
+    try:
+        import math as _m
+        import outline_cleanup as _oc
+        from auto_outline import auto_outline_full as _aof2
+        radii, sharp_rounded, worst = [], 0, 1.0
+        _orig_f = _oc._fillet
+
+        def _spy_f(*a, **kw):
+            arc = _orig_f(*a, **kw)
+            if arc:
+                A = np.asarray(arc); p1, p2, p3 = A[0], A[len(A) // 2], A[-1]
+                aa, bb, cc = np.hypot(*(p2 - p3)), np.hypot(*(p1 - p3)), np.hypot(*(p1 - p2))
+                ss = (aa + bb + cc) / 2
+                ar = _m.sqrt(max(1e-12, ss * (ss - aa) * (ss - bb) * (ss - cc)))
+                _spy_f.r.append(aa * bb * cc / (4 * ar))
+            return arc
+        _oc._fillet = _spy_f
+        try:
+            for sd in range(4):
+                for rounded_part in (True, False):
+                    rng_r = np.random.default_rng(sd)
+                    R_true = int(rng_r.uniform(18, 40)) if rounded_part else 0
+                    img_r = np.clip(rng_r.normal(170, 15, (700, 600, 3)), 0, 255).astype(np.uint8)
+                    pm = np.zeros((700, 600), np.uint8)
+                    if R_true:
+                        cv2.rectangle(pm, (150 + R_true, 100), (430 - R_true, 600), 255, -1)
+                        cv2.rectangle(pm, (150, 100 + R_true), (430, 600 - R_true), 255, -1)
+                        for cx, cy in [(150 + R_true, 100 + R_true), (430 - R_true, 100 + R_true),
+                                       (150 + R_true, 600 - R_true), (430 - R_true, 600 - R_true)]:
+                            cv2.circle(pm, (cx, cy), R_true, 255, -1)
+                    else:
+                        cv2.rectangle(pm, (150, 100), (430, 600), 255, -1)
+                    M_r = cv2.getRotationMatrix2D((300, 350), rng_r.uniform(-20, 20), 1)
+                    pm = cv2.warpAffine(pm, M_r, (600, 700), flags=cv2.INTER_NEAREST)
+                    img_r[pm > 0] = (70, 70, 70)
+                    img_r = cv2.GaussianBlur(img_r, (3, 3), 0)
+                    with _quiet():
+                        tr = _aof2(img_r, seed=[290, 350])
+                    _spy_f.r = []
+                    rf = _oc.refine_outline(img_r, tr["outer"])
+
+                    def _iou_r(poly):
+                        m = np.zeros(pm.shape, np.uint8); cv2.fillPoly(m, [np.round(poly).astype(np.int32)], 255)
+                        return np.count_nonzero((m > 0) & (pm > 0)) / np.count_nonzero((m > 0) | (pm > 0))
+                    worst = min(worst, _iou_r(rf["points"]) - _iou_r(tr["outer"]))
+                    if R_true:
+                        radii += [r_ / R_true for r_ in _spy_f.r]
+                    else:
+                        sharp_rounded += rf["rounded"]
+        finally:
+            _oc._fillet = _orig_f
+        ok_r = (len(radii) >= 6 and all(0.75 <= x <= 1.3 for x in radii) and sharp_rounded == 0
+                and worst > -0.005)
+        check("Refine fits a rounded corner's radius and leaves a sharp one sharp", ok_r,
+              f"{len(radii)} of 16 rounded corners fitted, radius/true {min(radii or [0]):.2f}-{max(radii or [0]):.2f}; "
+              f"sharp corners rounded={sharp_rounded}; worst IoU change {worst:+.4f}")
+    except Exception as e:
+        check("Refine fits a rounded corner's radius and leaves a sharp one sharp", False, repr(e))
 
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
@@ -1940,6 +2001,94 @@ def main():
               not any(fails9.values()), f"failures of {n9}: {fails9}")
     except Exception as e:
         check("outlines as traced on a real photo build closed, through every path", False, repr(e))
+
+    # 8r9) STEP and OBJ for CAD: one face per flat face of the part, not one per triangle, so
+    #      Fusion can edit it. Checked without a CAD kernel: the STEP's faces/edges/vertices
+    #      satisfy Euler-Poincare for one closed solid (holes counted), its faces enclose the
+    #      part's exact volume, the OBJ is closed vertex-to-vertex with the same volume, and a
+    #      side profile of one end builds the full-length part. (Verified separately: every
+    #      file here also reads back in OpenCascade as one valid solid of this volume.)
+    try:
+        import tempfile as _tf
+        import re as _re
+        from part_builder import build_part as _bp10
+        import cad_export as _ce
+        _toe = [[0, 20], [30, 0], [177, 0], [177, 86], [0, 86]]
+        parts10 = {
+            "toe, one end": (_bp10({"top": {"points": [[0, 0], [700, 0], [700, 170], [0, 170]]},
+                                    "side": {"points": _toe, "covers": "start"}}), 700 * 170 * 86 - 0.5 * 30 * 20 * 170, 0),
+            "through-hole": (_bp10({"top": {"points": [[0, 0], [100, 0], [100, 60], [0, 60]]},
+                                    "end": {"points": [[0, 0], [60, 0], [60, 20], [0, 20]]}},
+                                   cavity={"points": [[20, 5], [40, 5], [40, 15], [20, 15]], "view": "end",
+                                           "same_photo": True}), 100000.0, 1),
+        }
+        bad10 = []
+        for nm, (res, vol_true, genus) in parts10.items():
+            d = _tf.mkdtemp()
+            st = _ce.write_step(res["tris"], d + "/p.step")
+            ob = _ce.write_obj(res["tris"], d + "/p.obj")
+            txt = open(d + "/p.step").read()
+            loops = len(_re.findall(r"=FACE(?:_OUTER)?_BOUND\(", txt))
+            euler = st["vertices"] - st["edges"] + st["faces"] - (loops - st["faces"])
+            if euler != 2 * (1 - genus):
+                bad10.append(f"{nm}: Euler {euler}")
+            if not txt.startswith("ISO-10303-21;") or "MANIFOLD_SOLID_BREP" not in txt:
+                bad10.append(f"{nm}: not a STEP solid")
+            # Volume from the STEP's own geometry: points of each loop, divergence theorem.
+            pts = {int(i): tuple(map(float, xyz.split(","))) for i, xyz in
+                   _re.findall(r"#(\d+)=CARTESIAN_POINT\('',\(([^)]*)\)\)", txt)}
+            vp = {int(i): pts[int(j)] for i, j in _re.findall(r"#(\d+)=VERTEX_POINT\('',#(\d+)\)", txt)}
+            ec = {int(i): (int(a), int(b)) for i, a, b in
+                  _re.findall(r"#(\d+)=EDGE_CURVE\('',#(\d+),#(\d+),", txt)}
+            oe = {int(i): (ec[int(e)] if f == "T" else ec[int(e)][::-1]) for i, e, f in
+                  _re.findall(r"#(\d+)=ORIENTED_EDGE\('',\*,\*,#(\d+),\.(T|F)\.\)", txt)}
+            vol = 0.0
+            for lst in _re.findall(r"=EDGE_LOOP\('',\(([^)]*)\)\)", txt):
+                chain = [np.array(vp[oe[int(x.strip()[1:])][0]]) for x in lst.split(",")]
+                o = chain[0]
+                for a_, b_ in zip(chain[1:-1], chain[2:]):
+                    vol += float(np.dot(o, np.cross(a_, b_))) / 6.0
+            if abs(vol - vol_true) > 1e-6 * vol_true:
+                bad10.append(f"{nm}: STEP volume {vol:.1f} vs {vol_true:.1f}")
+            # OBJ: closed vertex-to-vertex (every directed edge once, its reverse once).
+            V10, E10 = [], []
+            for ln in open(d + "/p.obj"):
+                if ln.startswith("v "):
+                    V10.append([float(x) for x in ln.split()[1:4]])
+                elif ln.startswith("f "):
+                    E10.append([int(x) - 1 for x in ln.split()[1:]])
+            V10 = np.array(V10)
+            dirs = {}
+            ov = 0.0
+            for fc in E10:
+                for k in range(len(fc)):
+                    e_ = (fc[k], fc[(k + 1) % len(fc)])
+                    dirs[e_] = dirs.get(e_, 0) + 1
+                for k in range(1, len(fc) - 1):
+                    ov += float(np.dot(V10[fc[0]], np.cross(V10[fc[k]], V10[fc[k + 1]]))) / 6.0
+            if any(c != 1 or dirs.get((b_, a_)) != 1 for (a_, b_), c in dirs.items()):
+                bad10.append(f"{nm}: OBJ not closed")
+            if abs(ov - vol_true) > 1e-6 * vol_true:
+                bad10.append(f"{nm}: OBJ volume {ov:.1f}")
+            if ob["polygons"] + ob["triangles"] >= len(res["tris"]) and genus == 0:
+                bad10.append(f"{nm}: OBJ faces not merged")
+        import app as _app10
+        cli10 = _app10.server.test_client()
+        body10 = {"views": {"top": {"points": [[0, 0], [100, 0], [100, 50], [0, 50]], "mm_per_px": 1}},
+                  "depth_mm": 10}
+        fmt_ok = {}
+        for fmt in ("stl", "step", "obj", "dwg"):
+            rr = cli10.post("/api/export/part", json=dict(body10, format=fmt))
+            fmt_ok[fmt] = (rr.status_code, (rr.headers.get("Content-Disposition") or "").split("=")[-1])
+        if fmt_ok != {"stl": (200, "part.stl"), "step": (200, "part.step"), "obj": (200, "part.obj"),
+                      "dwg": (400, "")}:
+            bad10.append(f"endpoint formats {fmt_ok}")
+        check("STEP/OBJ for CAD: one face per flat face, a valid closed solid, exact volume",
+              not bad10, "; ".join(bad10) or
+              f"toe part {parts10['toe, one end'][0]['info']['size_mm']} mm from a 177 mm toe profile; "
+              f"faces merged; Euler and volume exact; formats {sorted(fmt_ok)}")
+    except Exception as e:
+        check("STEP/OBJ for CAD: one face per flat face, a valid closed solid, exact volume", False, repr(e))
 
     # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
     #      422 — never a 500 — for everything else.

@@ -64,6 +64,9 @@ re-draw in CAD.
      straight side becomes one line on the part's edge in the photo, sides meet at clean
      corners, and rounded corners keep their dots. Undo puts the dots back. It straightens
      what the trace found — a stretch that spilled onto the background still needs a drag.
+     "✨ Refine" does the same and then gives each corner the radius the photo shows — a
+     straightened corner is sharp, a cover's usually is not — or keeps it sharp if that is
+     what the photo shows. Use either; both undo in one step.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
      For a COVER, also fill in the wall thickness (see below).
   3) 💾 menu → "Save STL (3D print)".
@@ -110,7 +113,19 @@ is built from several outlines instead of one, each traced on whichever photo sh
      views — press "Start a new part" there (or "💾 Save job" first to keep a copy), or the
      new photos join the old part.
   3) Set the fit clearance for the cavity (0.4 mm default), where it runs (all the way
-     through, or in from one end by a depth), and download the STL.
+     through, or in from one end by a depth), and download:
+       STL                 for the printer.
+       STEP (edit in CAD)  a real solid: Fusion 360 / any CAD program opens it as a body with
+                           one face per flat side, ready to press-pull, fillet or shell. An
+                           STL opens as a mesh, and converting that makes one face per
+                           triangle, which is hard to change.
+       OBJ                 a mesh with one polygon per flat side, for programs that only take
+                           meshes (in Fusion: Insert Mesh, then Convert Mesh).
+  Assigned an outline to the wrong view? Use "Move to…" on its row (swaps with whatever held
+  that view) — no need to go back to the photo.
+  A Side profile of only ONE END (a toe photographed up close): on the Side row choose
+  "covers only the left/right end". It shapes that end; the rest of the length carries on at
+  the height of its cut edge. The Top view sets the full length.
 
 How it works: each outline is pushed straight through the part and only what every view
 agrees is material is kept, then the cavity — grown by the clearance — is cut out. Things to

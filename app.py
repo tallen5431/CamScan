@@ -845,9 +845,9 @@ def export_part():
     """A part built from several traced views — see part_builder.
 
     Body: { views: { top|side|end: {points, mm_per_px, image_height, rot, flip_h, flip_v,
-                                    source},
+                                    source, covers: all|start|end (side only)},
                      cavity: {..same.., view, align, open, depth_mm} },
-            depth_mm, clearance_mm, wall_mm, mirror, upside_down, preview }
+            depth_mm, clearance_mm, wall_mm, mirror, upside_down, preview, format: stl|step|obj }
 
     Each outline arrives exactly as the DXF/STL exports send it and goes through the same
     pixel->mm rule (_points_mm). `source` identifies the photo an outline was traced on: a
@@ -855,8 +855,8 @@ def export_part():
 
     preview=true returns JSON (normalised outlines, the result's silhouette in all three
     views, fits and warnings) so the user can check the views line up before building.
-    Otherwise returns the STL. 400 for malformed input, 422 with a reason for a part that
-    cannot be built.
+    Otherwise returns the file: STL by default, or STEP / OBJ for editing in CAD. 400 for
+    malformed input, 422 with a reason for a part that cannot be built.
     """
     from flask import Response, jsonify
     try:
@@ -885,8 +885,11 @@ def export_part():
             rot = int(entry.get("rot") or 0) % 4
         except (TypeError, ValueError):
             raise ValueError(f"{what} rotation is not a number")
+        covers = entry.get("covers") or "all"
+        if covers not in ("all", "start", "end"):
+            raise ValueError(f"{what} coverage must be all, start or end")
         return {"points": pts, "rot": rot, "flip_h": bool(entry.get("flip_h")),
-                "flip_v": bool(entry.get("flip_v")),
+                "flip_v": bool(entry.get("flip_v")), "covers": covers,
                 "source": str(entry.get("source") or "")[:500]}
 
     try:
@@ -927,13 +930,26 @@ def export_part():
     if preview:
         return jsonify(ok=True, preview=res["preview"], info=info)
 
-    fd, path = tempfile.mkstemp(suffix=".stl")
+    # STL for the printer; STEP and OBJ for CAD, where the part has to be EDITED — see
+    # cad_export: one face per flat face of the part instead of one per triangle.
+    fmt = data.get("format") or "stl"
+    if fmt not in ("stl", "step", "obj"):
+        return "Format must be stl, step or obj", 400
+    fd, path = tempfile.mkstemp(suffix="." + fmt)
     os.close(fd)
     try:
-        from solid_export import write_binary_stl
-        header = "CamScan part" + (" (mirrored)" if info.get("mirrored") else "")
-        if not write_binary_stl(res["tris"], path, header):
-            return "Could not write the STL", 500
+        if fmt == "stl":
+            from solid_export import write_binary_stl
+            header = "CamScan part" + (" (mirrored)" if info.get("mirrored") else "")
+            if not write_binary_stl(res["tris"], path, header):
+                return "Could not write the STL", 500
+        else:
+            import cad_export
+            try:
+                (cad_export.write_step if fmt == "step" else cad_export.write_obj)(res["tris"], path)
+            except Exception as e:
+                print(f"[Part] {fmt} export error: {e}")
+                return f"Could not write the {fmt.upper()} file", 500
         with open(path, "rb") as f:
             payload = f.read()
     finally:
@@ -942,8 +958,9 @@ def export_part():
         except OSError:
             pass
     import json as _json
-    name = "part-mirrored.stl" if info.get("mirrored") else "part.stl"
-    return Response(payload, mimetype="model/stl", headers={
+    name = ("part-mirrored" if info.get("mirrored") else "part") + "." + fmt
+    mime = {"stl": "model/stl", "step": "model/step", "obj": "model/obj"}[fmt]
+    return Response(payload, mimetype=mime, headers={
         "Content-Disposition": f"attachment; filename={name}",
         "X-CamScan-Kind": str(info.get("kind") or "solid"),
         "X-CamScan-Volume-MM3": f"{info.get('volume_mm3', 0):.1f}",
@@ -1167,13 +1184,13 @@ def api_trace():
 def api_straighten():
     """Straighten a traced outline onto the part's edges (see outline_cleanup.py).
 
-    Body: { image: dataURL | null, points: [[x, y], ...] } — points in the POSTed image's pixel
-    coords. Returns { ok, points, straight, snapped }. Without an image the sides are still
+    Body: { image: dataURL | null, points: [[x, y], ...], mode: "straighten" | "refine" } —
+    points in the POSTed image's pixel coords. Returns { ok, points, straight, snapped[, rounded] }. Without an image the sides are still
     straightened, through their own dots. A failure is a 200 {ok:false}: the outline as it was
     is always a fine answer.
     """
     from flask import jsonify
-    from outline_cleanup import straighten_outline
+    from outline_cleanup import refine_outline, straighten_outline
 
     data = _json_body()
     pts = data.get("points")
@@ -1198,8 +1215,12 @@ def api_straighten():
             return jsonify(ok=False, error="bad_image"), 400
         if img.shape[0] * img.shape[1] > MAX_IMAGE_PIXELS:
             return jsonify(ok=False, error="too_large"), 400
+    # "refine" also gives each corner the radius the photo shows (it needs the photo).
+    refine = data.get("mode") == "refine"
+    if refine and img is None:
+        return jsonify(ok=False, error="no_image"), 400
     try:
-        res = straighten_outline(img, ring)
+        res = refine_outline(img, ring) if refine else straighten_outline(img, ring)
     except Exception as e:
         print(f"[straighten] error: {e}")
         return jsonify(ok=False, error="failed"), 500
