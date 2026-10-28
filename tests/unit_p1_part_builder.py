@@ -9,6 +9,7 @@ the running-board step-pad cover came out wrong:
   * an end photo at x1.05 was fitted on its width only, so the height kept the 5% error;
   * one blob of shadow in the top trace widened the whole part;
   * 0.35 mm of trace noise left 18 of 122,500 mm^2 of the deck on the bed;
+  * noise on the bottom edge floated the deck 0.4 mm off the bed and was read as a thin rim;
   * the status said "turned plate-down" for a file that was open side down;
   * STEP files for CAD came in upside down;
   * with no Side photo the sloped ends came out square.
@@ -54,6 +55,15 @@ def jittered_profile(length, height, sigma, rng, step=2.0):
     xs = np.arange(length, -1e-9, -step)
     top = np.c_[xs, height + rng.normal(0.0, sigma, len(xs))]
     return np.vstack([[0, 0], [length, 0], top]).tolist()
+
+
+def jittered_ring(w, h, sigma, rng, step=2.0):
+    """A rectangle traced densely all the way round, every point off by sub-pixel noise —
+    the bottom and sides as well as the top, as a real trace is."""
+    pts = ([[x, 0] for x in np.arange(0, w, step)] + [[w, y] for y in np.arange(0, h, step)]
+           + [[x, h] for x in np.arange(w, 0, -step)] + [[0, y] for y in np.arange(h, 0, -step)])
+    p = np.asarray(pts, float)
+    return (p + rng.normal(0.0, sigma, p.shape)).tolist()
 
 
 def rounded_bottom(w, h, r, n=12):
@@ -165,6 +175,14 @@ def main():
     i = build_part({"top": {"points": blob}, "end": {"points": rect(172, 50).tolist()}}, preview=True)["info"]
     check("a wide part the End view confirms keeps its full width",
           abs(i["size_mm"][1] - 173) < 0.01 and not i["warnings"], f"{i['size_mm']} {i['warnings']}")
+    #    ...and a typed width is held against the body too, not the blob: read off the box,
+    #    155 typed for the 173 mm box shrank the whole Top view, length and all, to 627 mm.
+    i = build_part({"top": {"points": blob}, "end": {"points": rect(156, 50).tolist()}},
+                   known_mm={"width": 155}, preview=True)["info"]
+    check("a typed width on a Top trace with a blob keeps the length",
+          np.allclose(i["size_mm"][:2], [700, 155], atol=0.01)
+          and any("18 mm wider" in x for x in i["warnings"]) and not any("rescaled" in x for x in i["warnings"]),
+          f"{i['size_mm']} {i['warnings']}")
 
     # 4) Overrides: known sizes, which view sets an axis, a per-view scale.
     bad = []
@@ -243,6 +261,19 @@ def main():
     check("a clean cover is unchanged: exact volume, no flattening",
           abs(clean["info"]["volume_mm3"] - want) < 1e-6 * want and "Flattened" not in (clean["info"].get("note") or ""),
           f"{clean['info']['volume_mm3']:.1f} vs {want:.1f} mm3")
+    #    Noise on every edge, the bottom too: the deck still lands at z = 0 and the ragged
+    #    rim is not taken for a thin one (it floated 0.4 mm up, and was warned as both).
+    bad = []
+    for seed, sigma in ((1, 0.2), (2, 0.2), (3, 0.35), (1, 0.5)):
+        g = np.random.default_rng(seed)
+        r = build_part({"top": {"points": jittered_ring(700, 175, sigma, g)},
+                        "side": {"points": jittered_ring(700, 50, sigma, g)},
+                        "end": {"points": jittered_ring(175, 50, sigma, g)}}, wall_mm=3)
+        zmin = float(np.asarray(r["tris"])[:, :, 2].min())
+        if abs(zmin) > 1e-4 or r["info"]["warnings"]:
+            bad.append(f"seed {seed}, {sigma} mm: lowest z {zmin:.3f}, warnings {r['info']['warnings']}")
+    check("noise on every edge: the deck is at z = 0, no bed or thin-rim warning",
+          not bad, "; ".join(bad) or "4 noisy covers, all flat on the bed")
     #    A deck the flattening cannot help (tilted 4 degrees) is flagged.
     slant = [[0, 0], [700, 0], [700, 40], [0, 40 + 700 * math.tan(math.radians(4))]]
     r = build_part({"top": {"points": TOP.tolist()}, "side": {"points": slant, "keep_tilt": True}}, wall_mm=2.5)
@@ -305,12 +336,21 @@ def main():
     check("ends slope without a radius cuts exactly 2*Z*tan(slope)", abs(short - want) < 0.01,
           f"{short:.3f} vs {want:.3f} mm")
 
-    # 10) A rounded outer bottom corner feathers the open rim; say so.
-    r = build_part({"top": {"points": TOP.tolist()}, "end": {"points": rounded_bottom(175, 55, 3.0)}}, wall_mm=3)
+    # 10) A rounded outer bottom corner feathers the open rim; say so. r = 6 under a 2 mm wall
+    #     leaves 0.9 mm of rim under 0.8 mm thick; r = 3 under 3 mm only 0.11 mm, under a layer.
+    r = build_part({"top": {"points": TOP.tolist()}, "end": {"points": rounded_bottom(175, 55, 6.0)}}, wall_mm=2)
+    sliver = build_part({"top": {"points": TOP.tolist()}, "end": {"points": rounded_bottom(175, 55, 3.0)}}, wall_mm=3)
     sharp = build_part({"top": {"points": TOP.tolist()}, "end": {"points": rect(175, 55).tolist()}}, wall_mm=3)
-    check("a rim thinned by a rounded bottom corner is warned about, a square one is not",
-          any("open edge thins" in w for w in r["info"]["warnings"]) and not sharp["info"]["warnings"],
-          f"rounded: {r['info']['warnings']}; square: {sharp['info']['warnings']}")
+    check("a rim thinned by a rounded bottom corner is warned about; a square one, or a sub-layer sliver, is not",
+          any("open edge thins" in w for w in r["info"]["warnings"]) and not sharp["info"]["warnings"]
+          and not sliver["info"]["warnings"],
+          f"r=6: {r['info']['warnings']}; r=3: {sliver['info']['warnings']}; square: {sharp['info']['warnings']}")
+    noisy = build_part({"top": {"points": TOP.tolist()},
+                        "end": {"points": (np.asarray(rounded_bottom(175, 55, 6.0))
+                                           + np.random.default_rng(2).normal(0, 0.1, (28, 2))).tolist()}},
+                       wall_mm=2)
+    check("a rounded bottom corner is still warned about when the trace is noisy",
+          any("open edge thins" in w for w in noisy["info"]["warnings"]), str(noisy["info"]["warnings"]))
 
     # 11) The endpoint: detail in the 422, new fields parsed, STEP Z up and STL plate-down.
     import app as _app

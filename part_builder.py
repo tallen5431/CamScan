@@ -71,6 +71,8 @@ BULGE_WARN = 0.05             # a box this much over the outline's usual width i
 _BAND_PCT = 90                # the widest tenth of an outline's length is taken as stray
 FLAT_TILT_DEG = 3.0           # a top edge leaning less than this is a level deck with noise
 BED_CONTACT_MIN = 0.5         # less of the deck than this on the bed is a print that fails
+_LAYER_MM = 0.2              # a typical first/last layer height
+_RIM_SCAN_MM = 3.0            # a ragged rim closes within this: 0.5 mm of trace noise needed 1 mm
 
 
 class PartError(ValueError):
@@ -423,11 +425,35 @@ def _flatten_top(view: "View", level: Optional[float] = None):
 
 
 def _thin_rim(solid) -> Optional[float]:
-    """The open edge of a cover, a sliver above its rim: the thickness it thins to when that
-    is under THIN_WALL_MM, else None. A rounded outer bottom corner feathers the wall to
-    nothing at the rim — measured 0.5 mm, 0.05 mm up, for r = 3 and a 3 mm wall — because the
-    inside is carried straight down while the outside curves in under it."""
-    cs = solid.slice(0.05)
+    """The open edge of a cover, one print layer above where its rim closes: the thickness it
+    thins to there when that is under THIN_WALL_MM, else None. A rounded outer bottom corner
+    feathers the wall at the rim, because the inside is carried straight down while the
+    outside curves in under it: r = 6 under a 2 mm wall leaves 0.9 mm of rim under 0.8 mm.
+
+    Read a layer up, not at the rim itself: a noisy bottom edge leaves the rim ragged — at a
+    fixed 0.05 mm only specks of a square 3 mm wall were cut (0-12 of 5,250 mm^2 at 0.35 mm of
+    noise) and opening removed them all — so the slice is taken where it has first closed into
+    the same loops as the wall higher up. Thinning that ends within a layer (r = 3 under a 3 mm
+    wall: 0.11 mm) is a sliver the slicer does not print, and is not reported."""
+    bb = solid.bounding_box()
+    z0, z1 = bb[2], bb[5]
+    if z1 - z0 <= 2 * _LAYER_MM:
+        return None
+
+    def shape(cs):
+        return len(cs.decompose()), len(cs.to_polygons())
+
+    want = shape(solid.slice(z0 + (z1 - z0) / 2.0))
+    z = z0 + 0.05
+    stop = z0 + min(_RIM_SCAN_MM, (z1 - z0) / 2.0)
+    while z < stop:
+        cs = solid.slice(z)
+        if cs.area() > 0 and shape(cs) == want:
+            break
+        z += 0.05
+    else:
+        return None
+    cs = solid.slice(z + _LAYER_MM)
     a0 = cs.area()
     if a0 <= 0:
         return None
@@ -743,6 +769,19 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     # Sizes typed as already measured on the part come first: the view that sets each is
     # scaled to it — the whole view, as a photo has one scale, unless it sets two of them.
     pinned = set()
+    bulged = set()
+
+    def _bulge_note(s, axis, box, usual, where):
+        if s in bulged:
+            return
+        bulged.add(s)
+        info["warnings"].append(
+            "The {} outline is {:.0f} mm {} near {:.0f}% of its {} than along the rest "
+            "— the trace may include shadow; use Tidy/Refine. The other views were "
+            "fitted to its usual {:.1f} mm.".format(
+                s, box - usual, "taller" if axis == 2 else "wider", where * 100,
+                AXIS_NAMES[AXES[s][0]], usual))
+
     governs: Dict[str, List[int]] = {}
     for axis in known:
         if setter[axis] in vs:
@@ -753,6 +792,14 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         for axis in axes:
             kk = AXES[role].index(axis)
             have, want = float(view.extent[kk]), known[axis]
+            if kk == 1:
+                # Read across the length, as target() does: a shadow blob 18 mm proud of a
+                # 155 mm top otherwise rescaled the whole view by 11.6%, length and all.
+                lo, hi, where, _at = _band(view.pts)
+                usual = hi - lo
+                if usual > 0 and have - usual > BULGE_WARN * usual and abs(want - usual) < abs(want - have):
+                    _bulge_note(role, axis, have, usual, where)
+                    have = usual
             off = have / want - 1.0
             if abs(off) > KNOWN_TOLERANCE:
                 raise PartError(
@@ -792,8 +839,6 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         return [(k, a) for k, a in enumerate(AXES[role][:2])
                 if setter[a] != role and not (partial_side and role == "side" and a == 0)]
 
-    bulged = set()
-
     def target(axis: int, have: float):
         """What a view's `axis` must measure to agree with the view setting it, and where along
         that axis it starts. A width (or height) is read across the setter's length, so a blob
@@ -807,15 +852,7 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
             lo, hi, where, _at = _band(sv.pts)
             usual = hi - lo
             if usual > 0 and box - usual > BULGE_WARN * usual and abs(have - usual) < abs(have - box):
-                if s not in bulged:
-                    bulged.add(s)
-                    u_name = AXIS_NAMES[AXES[s][0]]
-                    info["warnings"].append(
-                        "The {} outline is {:.0f} mm {} near {:.0f}% of its {} than along the rest "
-                        "— the trace may include shadow; use Tidy/Refine. The other views were "
-                        "fitted to its usual {:.1f} mm.".format(
-                            s, box - usual, "taller" if axis == 2 else "wider", where * 100,
-                            u_name, usual))
+                _bulge_note(s, axis, box, usual, where)
                 return usual, lo
         return box, 0.0
 
@@ -1077,9 +1114,10 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     # from there, and is reported as given, apart from the automatic turn.
     turned = (is_shell and bool(for_print)) != bool(upside_down)
     if turned:
-        # A rotation, never a flip: turning a part over must not change its hand. Turned
-        # within its own bounds, so whatever is highest — the deck — lands on the bed.
-        solid = solid.rotate([180.0, 0.0, 0.0]).translate([0.0, bb[1] + bb[4], bb[2] + bb[5]])
+        # A rotation, never a flip: turning a part over must not change its hand. Whatever is
+        # highest — the deck — lands at z = 0: a noisy bottom edge leaves the part's lowest point
+        # 0.35-0.4 mm up, and keeping its z range floated the deck that far off the bed.
+        solid = solid.rotate([180.0, 0.0, 0.0]).translate([0.0, bb[1] + bb[4], bb[5]])
     if mirror:
         solid = solid.mirror([1.0, 0.0, 0.0]).translate([X, 0.0, 0.0])
     info["mirrored"] = bool(mirror)
