@@ -166,10 +166,16 @@ def main():
             # _handleR()*vp.k (its on-screen size) must be invariant across zoom — zooming in
             # yields a SMALLER image-space dot, i.e. precise placement over the edge.
             hsize = pg.evaluate(
-                "(()=>{var o=document.querySelector('.cal-view').__overlay;var k1=o.vp.k;var r1=o._handleR();"
-                "o.vp.setZoomAround(k1*3, o.vp.centerAnchor());var k2=o.vp.k;var r2=o._handleR();o.redraw();"
-                "return {screen1:r1*k1, screen2:r2*k2, shrank:r2<r1};})()")
+                "(()=>{var o=document.querySelector('.cal-view').__overlay;var k1=o.vp.k;"
+                "var r1=o._handleR(), l1=o._lblScale(), w1=o._lineW();"
+                "o.vp.setZoomAround(k1*3, o.vp.centerAnchor());var k2=o.vp.k;"
+                "var r2=o._handleR(), l2=o._lblScale(), w2=o._lineW();o.redraw();"
+                "return {screen1:r1*k1, screen2:r2*k2, shrank:r2<r1, lbl1:l1*k1, lbl2:l2*k2, ln1:w1*k1, ln2:w2*k2};})()")
             assert abs(hsize["screen1"] - hsize["screen2"]) < 1e-6 and hsize["shrank"], f"handles not constant on-screen: {hsize}"
+            # Labels and lines too: sized in image pixels they grew with zoom until a label
+            # covered the dots being checked and a selected line hid the edge (customer report).
+            assert abs(hsize["lbl1"] - hsize["lbl2"]) < 1e-6 and abs(hsize["ln1"] - hsize["ln2"]) < 1e-6, \
+                f"labels/lines not constant on-screen: {hsize}"
             # Hiding measurement labels must redraw cleanly (lets you edit a dense outline).
             pg.evaluate("(()=>{var o=document.querySelector('.cal-view').__overlay;o.opts.showLabels=false;o.redraw();o.opts.showLabels=true;o.redraw();})()")
 
