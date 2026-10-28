@@ -627,13 +627,26 @@
       _handleR(mult){
         return this.vp.pxToImg((this.opts.handlePx || 5) * (mult || 1) * this.vp.dpr);
       }
+      // Labels likewise: a constant on-screen size (about 15 px text). Sized in image pixels
+      // they grew with the zoom until, zoomed in to check an outline's dots, one label covered
+      // the very dots being checked. (The PNG export keeps its own fixed labelScale.)
+      // Lines too: sized in image pixels, a selected outline was ~35 px wide on screen when
+      // zoomed in, hiding the edge its dots were being lined up against.
+      _lineW(mult){
+        return this.vp.pxToImg((this.opts.linePx || 3) * 0.8 * (mult || 1) * (this.vp.dpr || 1));
+      }
+      _lblScale(){
+        return this.vp.pxToImg((this.opts.labelScale || 1.35) * 0.5 * (this.vp.dpr || 1));
+      }
 
       _drawAnnotations(){
         if(!this.opts.showAnn) return;
         const c=this.ctx, unit=Units.get(this.opts.units);
         const C=Draw.colors;
-        const dotR = this._handleR(), linePx=Draw.px(this.canvas,this.opts.linePx);
+        const dotR = this._handleR(), linePx=this._lineW();
         const showLabels = this.opts.showLabels !== false;
+        // While a dot is being dragged, labels step back so nothing hides what is being lined up.
+        if(Draw.setLabelAlpha) Draw.setLabelAlpha((this.drag || this._selDrag!=null) ? 0.18 : 1);
         // Selected shapes render in a high-contrast white and a bolder line so the
         // selection is unmistakable regardless of the base tool color.
         const selW = linePx*1.7;
@@ -645,18 +658,18 @@
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.segment;
             c.beginPath(); c.moveTo(a.a[0],a.a[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
             c.fillStyle=sel?C.selected:C.segment;
-            for(const [x,y] of [a.a,a.b]){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
+            for(const [x,y] of [a.a,a.b]){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=this._lineW(0.6); c.stroke(); }
             const mid=[(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
-            if(showLabels) Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this.opts.labelScale, C.segment);
+            if(showLabels) Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this._lblScale(), C.segment);
           } else if(a.type==='note'){
             const [tx,ty]=a.p; c.fillStyle=sel?C.selected:C.note;
             c.beginPath(); c.arc(tx,ty,this._handleR(1.6),0,Math.PI*2); c.fill();
-            c.strokeStyle="#000"; c.lineWidth=Draw.px(this.canvas,2); c.stroke();
-            if(a.text && showLabels){ const f=Math.round(18*this.opts.labelScale); const pad=8*this.opts.labelScale; const lx=tx+14;
+            c.strokeStyle="#000"; c.lineWidth=this._lineW(0.6); c.stroke();
+            if(a.text && showLabels){ const f=Math.round(18*this._lblScale()); const pad=8*this._lblScale(); const lx=tx+14;
               c.font=Draw.font(f); c.textAlign="left"; c.textBaseline="middle";
               const boxW=c.measureText(a.text).width + 2*pad, boxH=f+2*pad, ly=ty-boxH/2;
               c.fillStyle="rgba(0,0,0,.72)"; c.fillRect(lx,ly,boxW,boxH);
-              c.strokeStyle="rgba(255,255,255,.35)"; c.lineWidth=Draw.px(this.canvas,1.5); c.strokeRect(lx,ly,boxW,boxH);
+              c.strokeStyle="rgba(255,255,255,.35)"; c.lineWidth=this._lineW(0.5); c.strokeRect(lx,ly,boxW,boxH);
               c.fillStyle="#fff"; c.fillText(a.text, lx+pad, ty);
             }
           } else if(a.type==='polyline'){
@@ -674,7 +687,7 @@
             // Handles: constant small screen size; the SELECTED outline's are a touch larger so
             // the active one is easy to grab. The generous hit tolerance (hitTolPx) makes even
             // small dots easy to catch, so they can stay unobtrusive over a dense outline.
-            const hR = sel ? this._handleR(1.5) : dotR, ringW = Draw.px(this.canvas,1.5);
+            const hR = sel ? this._handleR(1.5) : dotR, ringW = this._lineW(0.5);
             for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,hR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=ringW; c.stroke(); }
             if(showLabels){
               let label=this._fmtLen(mm, pxLen);
@@ -692,7 +705,7 @@
                 for(const [x,y] of pts){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; }
                 ax=(minX+maxX)/2; ay=minY;
               }else{ const m=pts[Math.floor(pts.length/2)]; ax=m[0]; ay=m[1]; }
-              Draw.boxLabel(c, this.canvas, ax, ay, label, this.opts.labelScale, C.polyline);
+              Draw.boxLabel(c, this.canvas, ax, ay, label, this._lblScale(), C.polyline);
             }
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
@@ -705,17 +718,17 @@
               const pw=Math.abs(x2-x1), ph=Math.abs(y2-y1);
               rlabel = `${Math.round(pw)}×${Math.round(ph)} px • A ${Math.round(pw*ph)} px²`;
             }
-            if(showLabels) Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, rlabel, this.opts.labelScale, C.rectangle);
+            if(showLabels) Draw.boxLabel(c, this.canvas, (x1+x2)/2, y1-10, rlabel, this._lblScale(), C.rectangle);
           } else if(a.type==='angle'){
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.angle;
             c.beginPath(); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.a[0],a.a[1]); c.moveTo(a.v[0],a.v[1]); c.lineTo(a.b[0],a.b[1]); c.stroke();
-            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); if(showLabels) Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this.opts.labelScale, C.angle);
+            const ang=Measure.angle(this._measureCtx(a), a.a, a.v, a.b); if(showLabels) Draw.boxLabel(c, this.canvas, a.v[0], a.v[1]-20, `θ ${ang.toFixed(2)}°`, this._lblScale(), C.angle);
           } else if(a.type==='circle'){
             // Shared with the PNG exporter so the live canvas and the export never
             // drift (line thickness, label size/position all come from opts here).
             if(window.CalibCircles){
               window.CalibCircles.drawCircle(c, this.canvas, a, this._dataForMeasure(), this.opts.units,
-                { selected: sel, labelScale: this.opts.labelScale, linePx: this.opts.linePx,
+                { selected: sel, labelScale: this._lblScale(), linePx: this.opts.linePx, lineW: this._lineW(),
                   fallbackScale: this.getScale(), allowHomography: this._allowHomography(),
                   showLabel: showLabels, handleR: this._handleR(1.2) });
             }
@@ -726,27 +739,27 @@
       _drawPreview(){
         if(this.selectedPoints.length===0 && !this.hover) return;
         const c=this.ctx, unit=Units.get(this.opts.units);
-        const linePx=Draw.px(this.canvas,this.opts.linePx), dotR=this._handleR();
+        const linePx=this._lineW(), dotR=this._handleR();
         // Snap cursor: when snapping is on, ring the point the next click will land on
         // (marker corner or an existing measurement's endpoint) so chaining is visible.
         if(this.opts.snap && this.hover && this.opts.mode!=='pan' && this.opts.mode!=='select'){
-          c.save(); c.strokeStyle='rgba(0,212,255,.95)'; c.lineWidth=Draw.px(this.canvas,2);
+          c.save(); c.strokeStyle='rgba(0,212,255,.95)'; c.lineWidth=this._lineW(0.6);
           c.beginPath(); c.arc(this.hover[0], this.hover[1], this._handleR(1.6), 0, Math.PI*2); c.stroke();
           c.restore();
         }
         c.fillStyle='orange'; c.strokeStyle='rgba(255,200,0,.9)'; c.lineWidth=linePx;
-        for(const [x,y] of this.selectedPoints){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle='#000'; c.lineWidth=Draw.px(this.canvas,2); c.stroke(); }
+        for(const [x,y] of this.selectedPoints){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle='#000'; c.lineWidth=this._lineW(0.6); c.stroke(); }
         const H=this.hover;
         if((this.opts.mode==='segment'||this.opts.mode==='setscale'||this.opts.mode==='verifyscale') && this.selectedPoints.length===1 && H){ const a=this.selectedPoints[0], b=H;
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(a[0],a[1]); c.lineTo(b[0],b[1]); c.stroke(); c.restore();
           const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
           if(this.opts.mode==='setscale'){
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this._lblScale());
           } else if(this.opts.mode==='verifyscale'){
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `verify — click 2nd point`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `verify — click 2nd point`, this._lblScale());
           } else {
             const mm=Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]);
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this.opts.labelScale);
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this._lblScale());
           }
         }
         else if((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
@@ -761,7 +774,7 @@
           c.stroke(); c.restore();
           const need=4-this.selectedPoints.length;
           const mid=this.selectedPoints[0];
-          Draw.boxLabel(c, this.canvas, mid[0], mid[1], need>0?`tap ${need} more corner${need===1?'':'s'}`:`pick paper size`, this.opts.labelScale);
+          Draw.boxLabel(c, this.canvas, mid[0], mid[1], need>0?`tap ${need} more corner${need===1?'':'s'}`:`pick paper size`, this._lblScale());
         }
         else if(this.opts.mode==='rectangle' && this.selectedPoints.length===1 && H){
           const a=this.selectedPoints[0], b=H;
@@ -782,7 +795,7 @@
           c.beginPath(); c.arc(center[0],center[1],radius,0,Math.PI*2); c.stroke();
           c.setLineDash([]); c.beginPath(); c.moveTo(center[0]-radius,center[1]); c.lineTo(center[0]+radius,center[1]); c.stroke();
           c.restore();
-          Draw.boxLabel(c, this.canvas, center[0], center[1]-radius-15, `⌀ ~${this._fmtLen(2*radius*sMM, 2*radius)}`, this.opts.labelScale);
+          Draw.boxLabel(c, this.canvas, center[0], center[1]-radius-15, `⌀ ~${this._fmtLen(2*radius*sMM, 2*radius)}`, this._lblScale());
         }
         else if(this.opts.mode==='circle3pt' && this.selectedPoints.length>=2 && H){
           const pts=(this.selectedPoints.length===2)?[...this.selectedPoints,H]:this.selectedPoints;
@@ -795,7 +808,7 @@
               c.beginPath(); c.arc(cx,cy,r,0,Math.PI*2); c.stroke();
               c.setLineDash([]); c.beginPath(); c.moveTo(cx-r,cy); c.lineTo(cx+r,cy); c.stroke();
               c.restore();
-              Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ~${this._fmtLen(2*r*sMM, 2*r)}`, this.opts.labelScale);
+              Draw.boxLabel(c, this.canvas, cx, cy-r-15, `⌀ ~${this._fmtLen(2*r*sMM, 2*r)}`, this._lblScale());
             }
           }
         }

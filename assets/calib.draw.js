@@ -27,6 +27,8 @@ window.CalibDraw = (function(){
   // at the start of every frame (live redraw and PNG export) before any boxLabel call.
   let _placed = [];
   function resetLabels(){ _placed = []; }
+  let _alpha = 1;
+  function setLabelAlpha(a){ _alpha = (a > 0 && a <= 1) ? a : 1; }
   function _overlaps(a, b){
     return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
   }
@@ -63,7 +65,9 @@ window.CalibDraw = (function(){
   // accent (optional): a tool color used for a thin colored strip on the label's left
   // edge, so a label can be traced back to its annotation in a cluster.
   function boxLabel(ctx, canvas, cx, cy, text, scale=1.2, accent){
-    const f = Math.round(22*scale), pad = 10*scale, gap = 6*scale;
+    // Not rounded: on the live canvas the scale is in image pixels, and zoomed in, a label of
+    // a constant ~15 px on screen is only a few image pixels tall.
+    const f = 22*scale, pad = 10*scale, gap = 6*scale;
     // Size the box to the actual text instead of a 200px floor, so labels are snug
     // and far less likely to overlap in the first place.
     ctx.font = font(f);
@@ -72,15 +76,16 @@ window.CalibDraw = (function(){
     const boxH = f + 2*pad;
 
     // Desired position: centered above the anchor. Then nudge to avoid earlier labels.
-    let box = { x: cx - boxW/2, y: cy - boxH - 12, w: boxW, h: boxH };
+    let box = { x: cx - boxW/2, y: cy - boxH - 9*scale, w: boxW, h: boxH };
     let moved = false, guard = 0;
     while(_placed.some(p => _overlaps(box, p)) && guard++ < 60){ box.y -= (boxH + gap); moved = true; }
     // If stacking pushed it off the top, drop below the anchor and walk downward.
-    if(box.y < 2){ box.y = cy + 12; moved = true; guard = 0;
+    if(box.y < 2){ box.y = cy + 9*scale; moved = true; guard = 0;
       while(_placed.some(p => _overlaps(box, p)) && guard++ < 60){ box.y += (boxH + gap); }
     }
     _placed.push({ x: box.x, y: box.y, w: boxW, h: boxH });
 
+    ctx.save(); ctx.globalAlpha *= _alpha;
     // Leader line back to the anchor when the label had to move, so it stays tied to
     // its measurement.
     if(moved){
@@ -96,7 +101,8 @@ window.CalibDraw = (function(){
     ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = px(canvas, 1.5); ctx.strokeRect(box.x, box.y, boxW, boxH);
     ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic"; ctx.font = font(f);
     ctx.fillText(text, box.x + boxW/2, box.y + pad + f*0.75);
+    ctx.restore();
   }
 
-  return { px, font, drawGrid, drawMarkers, boxLabel, colors, resetLabels };
+  return { px, font, drawGrid, drawMarkers, boxLabel, colors, resetLabels, setLabelAlpha };
 })();

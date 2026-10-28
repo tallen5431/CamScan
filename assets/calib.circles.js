@@ -64,7 +64,8 @@ window.CalibCircles = (function(){
     // Circle outline + solid diameter line (honors the Line-Thickness slider). A
     // selected circle draws bolder so the selection reads clearly.
     ctx.strokeStyle = color;
-    ctx.lineWidth = D().px(canvas, selected ? linePx*1.7 : linePx);
+    // opts.lineW: an absolute width (the live canvas passes one that stays constant on screen).
+    ctx.lineWidth = (opts.lineW != null) ? opts.lineW * (selected ? 1.7 : 1) : D().px(canvas, selected ? linePx*1.7 : linePx);
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.stroke();
 
