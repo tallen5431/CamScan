@@ -263,6 +263,16 @@ def main():
             pg.wait_for_function("document.querySelectorAll('#cal-part-preview path[data-view]').length===3",
                                  timeout=8000)
             assert "Part:" in pg.inner_text("#cal-part-status"), "no part summary shown"
+            # The part in 3D: drawn from the preview's mesh, and it turns when dragged.
+            pg.wait_for_function("+(document.getElementById('cal-part-3d')||{getAttribute:()=>0}).getAttribute('data-faces')>0",
+                                 timeout=8000)
+            shot1 = pg.evaluate("document.getElementById('cal-part-3d').toDataURL()")
+            bx = pg.locator("#cal-part-3d").bounding_box()
+            pg.mouse.move(bx["x"] + bx["width"] / 2, bx["y"] + bx["height"] / 2)
+            pg.mouse.down()
+            pg.mouse.move(bx["x"] + bx["width"] / 2 + 120, bx["y"] + bx["height"] / 2 + 30, steps=6)
+            pg.mouse.up()
+            assert pg.evaluate("document.getElementById('cal-part-3d').toDataURL()") != shot1, "the 3D view did not turn"
 
             # Mirror: the preview refreshes, and the download is the other-hand part.
             with pg.expect_response(lambda r: "/api/export/part" in r.url, timeout=20000):
@@ -371,7 +381,7 @@ def main():
             assert not dialogs, f"unexpected alerts: {dialogs}"
             browser.close()
         print("E2E_RESULT: PASS (top/side/end/cavity assigned across 3 photos; part {:.1f}x{:.1f}x{:.1f} mm, "
-              "cavity as traced; mirrored STL downloaded, {} triangles; End/Side moved and back; one-end side sent; "
+              "cavity as traced; 3D view drawn and turned; mirrored STL downloaded, {} triangles; End/Side moved and back; one-end side sent; "
               "STEP downloaded; views follow their outlines (and say when one is deleted); views survive reload; "
               "landing offers a new part; scale notice steps aside)".format(
                   size[0], size[1], size[2], n))

@@ -1707,6 +1707,39 @@
           .catch(function(){ toast.update('Square up needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
       }
 
+      // Make the selected outline symmetric (outline_cleanup.symmetrize_outline): averaged with
+      // its own mirror image about whichever axis its halves already agree on more. The message
+      // offers the other axis, applied to the outline as it was. One undo step each.
+      symmetrizeSelected(axis, fromPts){
+        const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
+        if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<3){
+          this._toast('Select a closed outline first, then Symmetric.', {autoMs:2600});
+          return Promise.resolve(false);
+        }
+        const src=(fromPts || a.pts).map(p=>p.slice()), self=this, id=a.id;
+        const toast=this._toast('Making it symmetric…');
+        return fetch(this._apiUrl('api/outline/symmetric'), { method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ points:src, axis:axis||'auto' }) })
+          .then(r=>r.json())
+          .then(function(j){
+            const cur=self.ann.items.find(x=>x.id===id);
+            if(!j || !j.ok || !cur){ toast.update((j && j.error) || 'Could not make this outline symmetric.', 'err'); setTimeout(toast.dismiss, 4500); return false; }
+            self._pushHistory();
+            cur.pts=j.points.map(p=>p.slice());
+            self._dismissTraceDetail(); self.requestDraw();
+            toast.dismiss();
+            const name={long:'long', short:'short'};
+            self._toast('Made symmetric about its '+name[j.axis]+' axis (its halves differed by '+j.mismatch_pct+'%). Undo to go back.',
+              { autoMs:8000, action:{ label:'Use the '+name[j.other.axis]+' axis ('+j.other.mismatch_pct+'%)', fn:function(){
+                const c2=self.ann.items.find(x=>x.id===id); if(!c2) return;
+                self.ann.selectedId=id;
+                self.symmetrizeSelected(j.other.axis, src);
+              } } });
+            return true;
+          })
+          .catch(function(){ toast.update('Symmetric needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
+      }
+
       _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el) el.remove(); }
 
       // Ask for the real length of a just-drawn line and set the working scale from it.

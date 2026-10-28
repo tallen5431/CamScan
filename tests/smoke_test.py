@@ -489,6 +489,46 @@ def main():
     except Exception as e:
         check("Refine handles a short chamfer between two long sides", False, repr(e))
 
+    # 2g6) Symmetric: a symmetric part traced with noise comes back exactly symmetric (its own
+    #      halves then agree to well under 1%) and closer to the true shape; a shape whose
+    #      halves differ by more than a quarter is refused; the endpoint takes junk.
+    try:
+        import math as _m6
+        from outline_cleanup import symmetrize_outline as _sym
+        base6 = np.array([[0, 0], [400, 0], [400, 150], [260, 150], [230, 190], [170, 190], [140, 150], [0, 150]], float)
+
+        def _iou6(A, B):
+            m1 = np.zeros((900, 1000), np.uint8); m2 = m1.copy()
+            cv2.fillPoly(m1, [np.round(A).astype(np.int32)], 255); cv2.fillPoly(m2, [np.round(B).astype(np.int32)], 255)
+            return np.count_nonzero(m1 & m2) / np.count_nonzero(m1 | m2)
+        gains6, after6, axes6 = [], [], []
+        for sd in range(4):
+            rng6 = np.random.default_rng(sd)
+            a6 = _m6.radians(rng6.uniform(-30, 30))
+            R6 = np.array([[_m6.cos(a6), -_m6.sin(a6)], [_m6.sin(a6), _m6.cos(a6)]])
+            true6 = (base6 - [200, 95]) @ R6.T + [500, 400]
+            noisy6 = []
+            for i in range(len(true6)):
+                a_, b_ = true6[i], true6[(i + 1) % len(true6)]
+                noisy6 += [(a_ + (b_ - a_) * t + rng6.normal(0, 3.0, 2)).tolist() for t in np.linspace(0, 1, 10, endpoint=False)]
+            r6 = _sym(noisy6)
+            axes6.append(r6["axis"])
+            gains6.append(_iou6(np.array(r6["points"]), true6) - _iou6(np.array(noisy6), true6))
+            after6.append(_sym(r6["points"], r6["axis"])["mismatch_pct"])
+        wedge6 = _sym([[0, 0], [400, 0], [400, 40], [0, 300]])
+        import app as _app6
+        cli6 = _app6.server.test_client()
+        codes6 = {k: cli6.post("/api/outline/symmetric", json=b).status_code for k, b in {
+            "ok": {"points": base6.tolist()}, "none": {}, "short": {"points": [[0, 0], [1, 1]]},
+            "nan": {"points": [[0, 0], [1, "x"], [2, 2]]}, "wedge": {"points": [[0, 0], [400, 0], [400, 40], [0, 300]]}}.items()}
+        ok6 = (all(a == "short" for a in axes6) and all(g > 0 for g in gains6) and max(after6) < 1.0
+               and wedge6 is None and codes6 == {"ok": 200, "none": 400, "short": 400, "nan": 400, "wedge": 200})
+        check("Symmetric makes a noisy symmetric part exactly symmetric, refuses a lopsided one", ok6,
+              f"axes {axes6}, IoU gain {min(gains6):+.4f}..{max(gains6):+.4f}, halves after "
+              f"{max(after6):.2f}% apart, wedge refused={wedge6 is None}, codes {codes6}")
+    except Exception as e:
+        check("Symmetric makes a noisy symmetric part exactly symmetric, refuses a lopsided one", False, repr(e))
+
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
     #     must not drift when snapping is on. (Its benefit is on soft real-photo fringes; here we

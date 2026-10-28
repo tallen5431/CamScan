@@ -330,6 +330,30 @@
     [fDepth.el, fWall.el, cMirror.el, cUpside.el].concat(cav ? [cav.view.el, cav.clr.el, cav.open.el, cav.dep.el, cav.align.el] : [])
       .forEach(function(el){ el.addEventListener('change', sync); el.addEventListener('input', sync); });
 
+    // The part itself, turnable — a flipped view or a wrong chamfer shows here at a glance,
+    // where the three flat silhouettes below make you work it out.
+    var v3 = document.createElement('div'); v3.id = 'cal-part-3d-wrap';
+    v3.style.cssText = 'position:relative;background:#0b1013;border:1px solid #22303a;border-radius:10px;margin-bottom:8px;';
+    var cv3 = document.createElement('canvas'); cv3.id = 'cal-part-3d';
+    cv3.style.cssText = 'display:block;width:100%;height:min(300px,45vh);touch-action:none;cursor:grab;border-radius:10px;';
+    cv3.setAttribute('aria-label', 'The part in 3D — drag to turn, scroll to zoom');
+    v3.appendChild(cv3);
+    var bar3 = document.createElement('div');
+    bar3.style.cssText = 'position:absolute;left:8px;top:8px;display:flex;gap:6px;flex-wrap:wrap;';
+    [['iso', 'Iso'], ['top', 'Top'], ['side', 'Side'], ['end', 'End'], ['under', 'Under']].forEach(function(b){
+      var bt = document.createElement('button'); bt.type = 'button'; bt.textContent = b[1]; bt.setAttribute('data-view3d', b[0]);
+      bt.style.cssText = 'min-height:30px;padding:3px 10px;border-radius:7px;background:rgba(21,26,31,.85);color:#cfe6ee;border:1px solid #29414c;font-size:12px;cursor:pointer;';
+      bt.onclick = function(){ setView3d(b[0]); };
+      bar3.appendChild(bt);
+    });
+    v3.appendChild(bar3);
+    var hint3 = document.createElement('div');
+    hint3.style.cssText = 'position:absolute;right:10px;bottom:6px;font-size:11px;color:#6f8791;pointer-events:none;';
+    hint3.textContent = 'drag to turn · scroll to zoom · double-click to reset';
+    v3.appendChild(hint3);
+    card.appendChild(v3);
+    hook3d(cv3);
+
     var pv = document.createElement('div'); pv.id = 'cal-part-preview';
     pv.style.cssText = 'background:#0b1013;border:1px solid #22303a;border-radius:10px;min-height:120px;padding:6px;';
     card.appendChild(pv);
@@ -389,9 +413,95 @@
         if(!j || !j.ok){ pv.innerHTML = ''; setStatus(esc((j && j.error) || 'Could not build the part.'), true); if(btn) btn.disabled = true; return; }
         if(btn) btn.disabled = false;
         drawPreview(pv, j.preview);
+        mesh3d = (j.preview && j.preview.mesh) || null;
+        draw3d();
         setStatus(describe(j.info || {}), (j.info && j.info.warnings && j.info.warnings.length));
       })
       .catch(function(e){ if(my === seq) setStatus('Preview needs the server (' + esc(e.message) + ').', true); });
+  }
+
+  // ---- the 3D view: a small canvas renderer, no library ------------------------------------
+  // Flat-shaded triangles, back faces dropped, drawn far to near. A few thousand triangles
+  // turn smoothly; nothing to download, so it works wherever the app does.
+  var mesh3d = null;
+  var VIEWS3D = { iso: [-0.65, 0.55], top: [0, Math.PI / 2], side: [0, 0], end: [-Math.PI / 2, 0],
+                  under: [-0.65, -0.75] };                     // a hollow cover's inside
+  var view3d = { yaw: VIEWS3D.iso[0], pitch: VIEWS3D.iso[1], zoom: 1 };
+  function setView3d(name){ var v = VIEWS3D[name] || VIEWS3D.iso; view3d.yaw = v[0]; view3d.pitch = v[1]; view3d.zoom = 1; draw3d(); }
+  function draw3d(){
+    var cv = document.getElementById('cal-part-3d'); if(!cv) return;
+    var dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, H = cv.clientHeight || 200;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = '#0b1013'; g.fillRect(0, 0, W, H);
+    var m = mesh3d;
+    if(!m || !m.v || !m.v.length || !m.f || !m.f.length){ cv.removeAttribute('data-faces'); return; }
+    var V = m.v, F = m.f, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for(var i = 0; i < V.length; i++) for(var k = 0; k < 3; k++){ if(V[i][k] < lo[k]) lo[k] = V[i][k]; if(V[i][k] > hi[k]) hi[k] = V[i][k]; }
+    var c = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+    var R = Math.max(1e-6, Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2);
+    var cy = Math.cos(view3d.yaw), sy = Math.sin(view3d.yaw), cp = Math.cos(view3d.pitch), sp = Math.sin(view3d.pitch);
+    var sc = view3d.zoom * 0.46 * Math.min(W, H) / R;
+    // Camera space: X right, Y up, D into the screen (larger = farther).
+    var P = new Array(V.length);
+    for(i = 0; i < V.length; i++){
+      var x = V[i][0] - c[0], y = V[i][1] - c[1], z = V[i][2] - c[2];
+      var xr = x * cy - y * sy, yr = x * sy + y * cy;
+      P[i] = [xr, z * cp + yr * sp, yr * cp - z * sp];
+    }
+    var L = [-0.45, 0.6, -0.66], Ln = Math.hypot(L[0], L[1], L[2]); L = [L[0] / Ln, L[1] / Ln, L[2] / Ln];
+    var list = [];
+    for(i = 0; i < F.length; i++){
+      var a = P[F[i][0]], b = P[F[i][1]], d = P[F[i][2]];
+      var e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], e2 = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+      var n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+      var nl = Math.hypot(n[0], n[1], n[2]); if(nl === 0) continue;
+      n = [n[0] / nl, n[1] / nl, n[2] / nl];
+      if(n[2] > 0) continue;                                   // facing away
+      var lit = 0.12 + 0.88 * Math.pow(Math.max(0, n[0] * L[0] + n[1] * L[1] + n[2] * L[2]), 1.4);
+      list.push([(a[2] + b[2] + d[2]) / 3, a, b, d, lit]);
+    }
+    list.sort(function(p, q){ return q[0] - p[0]; });
+    for(i = 0; i < list.length; i++){
+      var t = list[i], col = 'rgb(' + Math.round(25 + 110 * t[4]) + ',' + Math.round(55 + 170 * t[4]) + ',' + Math.round(70 + 175 * t[4]) + ')';
+      g.beginPath();
+      g.moveTo(W / 2 + t[1][0] * sc, H / 2 - t[1][1] * sc);
+      g.lineTo(W / 2 + t[2][0] * sc, H / 2 - t[2][1] * sc);
+      g.lineTo(W / 2 + t[3][0] * sc, H / 2 - t[3][1] * sc);
+      g.closePath(); g.fillStyle = col; g.fill(); g.strokeStyle = col; g.lineWidth = 0.6; g.stroke();
+    }
+    cv.setAttribute('data-faces', String(list.length));       // for tests: how many faces were drawn
+  }
+  function hook3d(cv){
+    var drag = null, pts = {};
+    cv.addEventListener('pointerdown', function(e){
+      pts[e.pointerId] = [e.clientX, e.clientY];
+      drag = { x: e.clientX, y: e.clientY, yaw: view3d.yaw, pitch: view3d.pitch, zoom: view3d.zoom,
+               pinch: Object.keys(pts).length === 2 ? pinchDist() : 0 };
+      try{ cv.setPointerCapture(e.pointerId); }catch(err){}
+      cv.style.cursor = 'grabbing';
+    });
+    function pinchDist(){ var k = Object.keys(pts); return k.length === 2 ? Math.hypot(pts[k[0]][0] - pts[k[1]][0], pts[k[0]][1] - pts[k[1]][1]) : 0; }
+    cv.addEventListener('pointermove', function(e){
+      if(!drag || !pts[e.pointerId]) return;
+      pts[e.pointerId] = [e.clientX, e.clientY];
+      if(Object.keys(pts).length === 2 && drag.pinch){
+        view3d.zoom = Math.min(8, Math.max(0.3, drag.zoom * pinchDist() / drag.pinch));
+      }else{
+        view3d.yaw = drag.yaw + (e.clientX - drag.x) * 0.01;
+        view3d.pitch = Math.min(1.55, Math.max(-1.55, drag.pitch + (e.clientY - drag.y) * 0.01));
+      }
+      draw3d();
+    });
+    function end(e){ delete pts[e.pointerId]; if(!Object.keys(pts).length){ drag = null; cv.style.cursor = 'grab'; } }
+    cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+    cv.addEventListener('wheel', function(e){
+      e.preventDefault();
+      view3d.zoom = Math.min(8, Math.max(0.3, view3d.zoom * Math.exp(-e.deltaY * 0.0015)));
+      draw3d();
+    }, { passive: false });
+    cv.addEventListener('dblclick', function(){ setView3d('iso'); });
+    if(!hook3d.resize){ hook3d.resize = true; window.addEventListener('resize', draw3d); }
   }
 
   // Three-view drawing, laid out like an engineering drawing: Top above Side (sharing the

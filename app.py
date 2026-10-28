@@ -1229,6 +1229,38 @@ def api_straighten():
     return jsonify(ok=True, **res)
 
 
+@server.route("/api/outline/symmetric", methods=["POST"])
+def api_symmetric():
+    """Make an outline symmetric about its long or short axis (see outline_cleanup).
+
+    Body: { points: [[x, y], ...], axis: "auto" | "long" | "short" } in image pixel coords.
+    Returns { ok, points, axis, mismatch_pct, other } or 200 { ok:false, error } in words.
+    """
+    from flask import jsonify
+    from outline_cleanup import symmetrize_outline
+
+    data = _json_body()
+    pts = data.get("points")
+    if not isinstance(pts, list) or not (3 <= len(pts) <= 5000):
+        return jsonify(ok=False, error="Select a closed outline first."), 400
+    try:
+        ring = [[float(p[0]), float(p[1])] for p in pts]
+    except (TypeError, ValueError, IndexError):
+        return jsonify(ok=False, error="The outline is not a list of points."), 400
+    if not all(math.isfinite(v) for q in ring for v in q):
+        return jsonify(ok=False, error="The outline has non-finite points."), 400
+    axis = data.get("axis") if data.get("axis") in ("long", "short") else "auto"
+    try:
+        res = symmetrize_outline(ring, axis)
+    except Exception as e:
+        print(f"[symmetric] error: {e}")
+        return jsonify(ok=False, error="Could not make this outline symmetric."), 500
+    if not res:
+        return jsonify(ok=False, error="This outline's halves differ by more than a quarter — making "
+                                       "it symmetric would change its shape, not tidy it."), 200
+    return jsonify(ok=True, **res)
+
+
 @server.route("/api/square_up", methods=["POST"])
 def api_square_up():
     """Perspective from a part's two parallel sides plus the scale line — see square_up.py.

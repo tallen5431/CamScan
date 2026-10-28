@@ -60,6 +60,12 @@ re-draw in CAD.
   1) Trace a CLOSED outline around the part (the Path/Outline tool, or ✨ Auto-trace).
      Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
      and they become real through-holes in the solid.
+     The clean-up tools are under "✨ Tidy" (with an outline selected): Straighten, Refine,
+     Symmetric and Square up.
+     "⇋ Symmetric" averages the outline with its own mirror image — for a part that is
+     symmetric but traced lopsided (light on one side, shadow on the other). It picks the axis
+     its halves already agree about more; the message offers the other axis. It refuses an
+     outline whose halves differ by more than a quarter.
      Sides that came out wobbly? Select the outline and press "📏 Straighten": each long
      straight side becomes one line on the part's edge in the photo, sides meet at clean
      corners, and rounded corners keep their dots. Undo puts the dots back. It straightens
@@ -115,8 +121,9 @@ is built from several outlines instead of one, each traced on whichever photo sh
      Do this across as many photos as you need; the views are kept with the job. The
      picker marks a view that is already set (and from which photo) — choosing it replaces it.
   2) Press "🧩 Build 3D part" — in the top bar once any view is set, or on the message that
-     confirms each view (also in the 💾 menu). The preview draws Top, Side and End like an
-     engineering drawing: blue lines are your outlines, the filled shape is the part. If a
+     confirms each view (also in the 💾 menu). The dialog shows the part in 3D (drag to turn,
+     scroll or pinch to zoom; Iso / Top / Side / End / Under), and below it draws Top, Side
+     and End like an engineering drawing: blue lines are your outlines, the filled shape is the part. If a
      view is turned or reversed, use ⟲ / ⇋ / ⇵ on its row until they line up.
      Starting a different part? The first page shows "Part in progress" with its photos and
      views — press "Start a new part" there (or "💾 Save job" first to keep a copy), or the
