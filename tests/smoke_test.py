@@ -2002,6 +2002,94 @@ def main():
     except Exception as e:
         check("outlines as traced on a real photo build closed, through every path", False, repr(e))
 
+    # 8r9) STEP and OBJ for CAD: one face per flat face of the part, not one per triangle, so
+    #      Fusion can edit it. Checked without a CAD kernel: the STEP's faces/edges/vertices
+    #      satisfy Euler-Poincare for one closed solid (holes counted), its faces enclose the
+    #      part's exact volume, the OBJ is closed vertex-to-vertex with the same volume, and a
+    #      side profile of one end builds the full-length part. (Verified separately: every
+    #      file here also reads back in OpenCascade as one valid solid of this volume.)
+    try:
+        import tempfile as _tf
+        import re as _re
+        from part_builder import build_part as _bp10
+        import cad_export as _ce
+        _toe = [[0, 20], [30, 0], [177, 0], [177, 86], [0, 86]]
+        parts10 = {
+            "toe, one end": (_bp10({"top": {"points": [[0, 0], [700, 0], [700, 170], [0, 170]]},
+                                    "side": {"points": _toe, "covers": "start"}}), 700 * 170 * 86 - 0.5 * 30 * 20 * 170, 0),
+            "through-hole": (_bp10({"top": {"points": [[0, 0], [100, 0], [100, 60], [0, 60]]},
+                                    "end": {"points": [[0, 0], [60, 0], [60, 20], [0, 20]]}},
+                                   cavity={"points": [[20, 5], [40, 5], [40, 15], [20, 15]], "view": "end",
+                                           "same_photo": True}), 100000.0, 1),
+        }
+        bad10 = []
+        for nm, (res, vol_true, genus) in parts10.items():
+            d = _tf.mkdtemp()
+            st = _ce.write_step(res["tris"], d + "/p.step")
+            ob = _ce.write_obj(res["tris"], d + "/p.obj")
+            txt = open(d + "/p.step").read()
+            loops = len(_re.findall(r"=FACE(?:_OUTER)?_BOUND\(", txt))
+            euler = st["vertices"] - st["edges"] + st["faces"] - (loops - st["faces"])
+            if euler != 2 * (1 - genus):
+                bad10.append(f"{nm}: Euler {euler}")
+            if not txt.startswith("ISO-10303-21;") or "MANIFOLD_SOLID_BREP" not in txt:
+                bad10.append(f"{nm}: not a STEP solid")
+            # Volume from the STEP's own geometry: points of each loop, divergence theorem.
+            pts = {int(i): tuple(map(float, xyz.split(","))) for i, xyz in
+                   _re.findall(r"#(\d+)=CARTESIAN_POINT\('',\(([^)]*)\)\)", txt)}
+            vp = {int(i): pts[int(j)] for i, j in _re.findall(r"#(\d+)=VERTEX_POINT\('',#(\d+)\)", txt)}
+            ec = {int(i): (int(a), int(b)) for i, a, b in
+                  _re.findall(r"#(\d+)=EDGE_CURVE\('',#(\d+),#(\d+),", txt)}
+            oe = {int(i): (ec[int(e)] if f == "T" else ec[int(e)][::-1]) for i, e, f in
+                  _re.findall(r"#(\d+)=ORIENTED_EDGE\('',\*,\*,#(\d+),\.(T|F)\.\)", txt)}
+            vol = 0.0
+            for lst in _re.findall(r"=EDGE_LOOP\('',\(([^)]*)\)\)", txt):
+                chain = [np.array(vp[oe[int(x.strip()[1:])][0]]) for x in lst.split(",")]
+                o = chain[0]
+                for a_, b_ in zip(chain[1:-1], chain[2:]):
+                    vol += float(np.dot(o, np.cross(a_, b_))) / 6.0
+            if abs(vol - vol_true) > 1e-6 * vol_true:
+                bad10.append(f"{nm}: STEP volume {vol:.1f} vs {vol_true:.1f}")
+            # OBJ: closed vertex-to-vertex (every directed edge once, its reverse once).
+            V10, E10 = [], []
+            for ln in open(d + "/p.obj"):
+                if ln.startswith("v "):
+                    V10.append([float(x) for x in ln.split()[1:4]])
+                elif ln.startswith("f "):
+                    E10.append([int(x) - 1 for x in ln.split()[1:]])
+            V10 = np.array(V10)
+            dirs = {}
+            ov = 0.0
+            for fc in E10:
+                for k in range(len(fc)):
+                    e_ = (fc[k], fc[(k + 1) % len(fc)])
+                    dirs[e_] = dirs.get(e_, 0) + 1
+                for k in range(1, len(fc) - 1):
+                    ov += float(np.dot(V10[fc[0]], np.cross(V10[fc[k]], V10[fc[k + 1]]))) / 6.0
+            if any(c != 1 or dirs.get((b_, a_)) != 1 for (a_, b_), c in dirs.items()):
+                bad10.append(f"{nm}: OBJ not closed")
+            if abs(ov - vol_true) > 1e-6 * vol_true:
+                bad10.append(f"{nm}: OBJ volume {ov:.1f}")
+            if ob["polygons"] + ob["triangles"] >= len(res["tris"]) and genus == 0:
+                bad10.append(f"{nm}: OBJ faces not merged")
+        import app as _app10
+        cli10 = _app10.server.test_client()
+        body10 = {"views": {"top": {"points": [[0, 0], [100, 0], [100, 50], [0, 50]], "mm_per_px": 1}},
+                  "depth_mm": 10}
+        fmt_ok = {}
+        for fmt in ("stl", "step", "obj", "dwg"):
+            rr = cli10.post("/api/export/part", json=dict(body10, format=fmt))
+            fmt_ok[fmt] = (rr.status_code, (rr.headers.get("Content-Disposition") or "").split("=")[-1])
+        if fmt_ok != {"stl": (200, "part.stl"), "step": (200, "part.step"), "obj": (200, "part.obj"),
+                      "dwg": (400, "")}:
+            bad10.append(f"endpoint formats {fmt_ok}")
+        check("STEP/OBJ for CAD: one face per flat face, a valid closed solid, exact volume",
+              not bad10, "; ".join(bad10) or
+              f"toe part {parts10['toe, one end'][0]['info']['size_mm']} mm from a 177 mm toe profile; "
+              f"faces merged; Euler and volume exact; formats {sorted(fmt_ok)}")
+    except Exception as e:
+        check("STEP/OBJ for CAD: one face per flat face, a valid closed solid, exact volume", False, repr(e))
+
     # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
     #      422 — never a 500 — for everything else.
     try:

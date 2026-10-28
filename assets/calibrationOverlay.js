@@ -1311,9 +1311,9 @@
           el.appendChild(b);
         }
         // One message at a time: they all sit in the same spot, so a newer one replaces the
-        // last rather than printing over it.
-        if(this._lastToast && this._lastToast!==el && this._lastToast.parentNode) this._lastToast.parentNode.removeChild(this._lastToast);
-        this._lastToast=el;
+        // last rather than printing over it — page-wide, since each photo has its own overlay.
+        if(window.__calLastToast && window.__calLastToast!==el && window.__calLastToast.parentNode) window.__calLastToast.parentNode.removeChild(window.__calLastToast);
+        window.__calLastToast=el;
         document.body.appendChild(el);
         const self=this;
         let gone=false;
@@ -1321,8 +1321,8 @@
           // A replaced message that still has news (a trace finishing) takes the spot back.
           update(m, kind){
             if(!gone && !el.parentNode){
-              if(self._lastToast && self._lastToast.parentNode) self._lastToast.parentNode.removeChild(self._lastToast);
-              document.body.appendChild(el); self._lastToast=el;
+              if(window.__calLastToast && window.__calLastToast.parentNode) window.__calLastToast.parentNode.removeChild(window.__calLastToast);
+              document.body.appendChild(el); window.__calLastToast=el;
             }
             text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
           dismiss(){ gone=true; if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }

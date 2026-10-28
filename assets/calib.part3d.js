@@ -96,15 +96,32 @@
   }
 
   // ---- the request ---------------------------------------------------------------------
-  function viewSpec(v){
-    return { points: v.points, mm_per_px: v.mm_per_px, image_height: v.image_height,
-             rot: v.rot || 0, flip_h: !!v.flip_h, flip_v: !!v.flip_v, source: v.source || '' };
+  function viewSpec(v, role){
+    var s = { points: v.points, mm_per_px: v.mm_per_px, image_height: v.image_height,
+              rot: v.rot || 0, flip_h: !!v.flip_h, flip_v: !!v.flip_v, source: v.source || '' };
+    if(role === 'side' && (v.covers === 'start' || v.covers === 'end')) s.covers = v.covers;
+    return s;
+  }
+  // Give an outline a different role — it was assigned as End and is really the Side — without
+  // going back to its photo. Whatever held the target role takes this one's place. Turns and
+  // flips meant something in the old role only, so they start again.
+  function move(from, to){
+    var job = J(); if(!job) return;
+    var p = job.part(), a = p.views[from], b = p.views[to];
+    if(!a || from === to) return;
+    [a, b].forEach(function(v){ if(v){ v.rot = 0; v.flip_h = false; v.flip_v = false; delete v.covers; } });
+    p.views[to] = a;
+    if(b) p.views[from] = b; else delete p.views[from];
+    if(to === 'cavity' && !p.opts.cavity_view) p.opts.cavity_view = 'end';
+    job.savePart();
+    render();
+    try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){}   // top-bar 🧩 count
   }
   function body(preview){
     var p = J().part(), o = p.opts, views = {};
-    ['top', 'side', 'end'].forEach(function(r){ if(p.views[r]) views[r] = viewSpec(p.views[r]); });
+    ['top', 'side', 'end'].forEach(function(r){ if(p.views[r]) views[r] = viewSpec(p.views[r], r); });
     if(p.views.cavity){
-      views.cavity = Object.assign(viewSpec(p.views.cavity), {
+      views.cavity = Object.assign(viewSpec(p.views.cavity, 'cavity'), {
         view: o.cavity_view || 'end', align: o.cavity_align || 'bottom',
         open: o.cavity_open || 'through', depth_mm: o.cavity_depth || null });
     }
@@ -119,6 +136,14 @@
 
   function open(){
     var prev = document.getElementById('cal-part-panel'); if(prev) prev.remove();
+    // The trace's Detail slider and the last message sit above everything; with the dialog
+    // open they only cover it.
+    var ov = overlay();
+    if(ov){
+      if(ov._dismissTraceDetail) ov._dismissTraceDetail();
+    }
+    var lt = window.__calLastToast;
+    if(lt && lt.parentNode) lt.parentNode.removeChild(lt);
     var back = document.createElement('div'); back.id = 'cal-part-panel';
     back.style.cssText = 'position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.6);display:flex;' +
       'align-items:flex-start;justify-content:center;overflow:auto;padding:18px;box-sizing:border-box;';
@@ -180,8 +205,8 @@
     ROLES.forEach(function(r){
       var v = p.views[r[0]];
       var row = document.createElement('div'); row.id = 'cal-part-row-' + r[0];
-      row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:7px 9px;border:1px solid #22303a;border-radius:9px;margin-bottom:6px;';
-      var meta = document.createElement('div'); meta.style.cssText = 'flex:1 1 auto;min-width:0;';
+      row.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:7px 9px;border:1px solid #22303a;border-radius:9px;margin-bottom:6px;';
+      var meta = document.createElement('div'); meta.style.cssText = 'flex:1 1 150px;min-width:0;';
       meta.innerHTML = '<b>' + esc(r[1]) + '</b> <span style="font-size:12px;color:' + (v ? '#9fe6c2' : '#7f8f98') + ';">' +
         (v ? ((v.size_mm ? v.size_mm[0].toFixed(1) + ' × ' + v.size_mm[1].toFixed(1) + ' mm' : 'set') +
               ((v.rot || v.flip_h || v.flip_v) ? ' · turned' : '')) : 'not set — ' + esc(r[2])) + '</span>';
@@ -201,8 +226,35 @@
           };
           row.appendChild(btn);
         });
+        var mv = document.createElement('select'); mv.setAttribute('data-act', 'move');
+        mv.setAttribute('aria-label', 'Move the ' + r[1] + ' outline to another view');
+        mv.title = 'Wrong view? Move this outline to another one';
+        mv.style.cssText = 'min-height:36px;max-width:110px;border-radius:8px;background:#151515;color:#cde;border:1px solid #2a3540;';
+        var o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Move to…'; mv.appendChild(o0);
+        ROLES.forEach(function(q){
+          if(q[0] === r[0]) return;
+          var oo = document.createElement('option'); oo.value = q[0];
+          oo.textContent = q[1] + (p.views[q[0]] ? ' (swap)' : ''); mv.appendChild(oo);
+        });
+        mv.onchange = function(){ if(mv.value) move(r[0], mv.value); };
+        row.appendChild(mv);
       }
       card.appendChild(row);
+      if(v && r[0] === 'side'){
+        // A side profile traced of one end only (the toe, photographed close) shapes that end;
+        // the rest of the length continues at the height of its cut edge.
+        var cv = document.createElement('label');
+        cv.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:12.5px;color:#9fb2bb;margin:-2px 0 8px 10px;';
+        cv.appendChild(document.createTextNode('This side profile covers'));
+        var sel = document.createElement('select'); sel.id = 'cal-part-sidecovers';
+        sel.style.cssText = 'min-height:34px;border-radius:8px;background:#0b1013;color:#eef;border:1px solid #29414c;';
+        [['all', 'the whole length'], ['start', 'only the left end (as drawn below)'], ['end', 'only the right end (as drawn below)']]
+          .forEach(function(op){ var o = document.createElement('option'); o.value = op[0]; o.textContent = op[1]; sel.appendChild(o); });
+        sel.value = v.covers || 'all';
+        sel.onchange = function(){ if(sel.value === 'all') delete v.covers; else v.covers = sel.value; job.savePart(); schedulePreview(); };
+        cv.appendChild(sel);
+        card.appendChild(cv);
+      }
     });
 
     var opts = document.createElement('div'); opts.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 4px;';
@@ -251,8 +303,19 @@
     var build = document.createElement('button'); build.type = 'button'; build.id = 'cal-part-build';
     build.textContent = '🧊 Download STL';
     build.style.cssText = 'min-height:46px;padding:10px 20px;border-radius:10px;background:#00d4ff;color:#000;border:none;font-weight:700;font-size:15px;cursor:pointer;';
-    build.onclick = download;
+    build.onclick = function(){ download('stl'); };
     acts.appendChild(build);
+    // For CAD: a real solid with one face per flat side, which Fusion can edit — an STL comes
+    // in as a mesh whose every triangle becomes its own face.
+    [['step', '📐 STEP (edit in CAD)', 'A solid body for Fusion / CAD: one face per flat side, ready to edit'],
+     ['obj', 'OBJ', 'A mesh with one polygon per flat side, for programs that take meshes']].forEach(function(f){
+      var bb = document.createElement('button'); bb.type = 'button'; bb.id = 'cal-part-build-' + f[0];
+      bb.textContent = f[1]; bb.title = f[2];
+      bb.style.cssText = 'min-height:46px;padding:10px 16px;border-radius:10px;background:#151a1f;color:#cfe6ee;border:1px solid #29414c;font-weight:600;font-size:14px;cursor:pointer;';
+      bb.onclick = function(){ download(f[0]); };
+      acts.appendChild(bb);
+    });
+    acts.style.flexWrap = 'wrap';
     card.appendChild(acts);
     schedulePreview();
   }
@@ -342,8 +405,9 @@
     host.innerHTML = out.join('');
   }
 
-  function download(){
+  function download(fmt){
     var b = body(false);
+    if(fmt === 'step' || fmt === 'obj') b.format = fmt;
     if(!Object.keys(b.views).length){ setStatus('Assign at least one outline to a view first.', true); return; }
     setStatus('Building…');
     fetch(apiUrl('api/export/part'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b) })
@@ -357,11 +421,13 @@
         return r.blob().then(function(blob){
           var a = document.createElement('a'); a.download = name; a.href = URL.createObjectURL(blob); a.click();
           setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
-          setStatus('✓ Saved ' + esc(name) + '<br>' + describe(info));
+          var tip = fmt === 'step' ? '<br>Open it in Fusion (or any CAD program) as a solid body — each flat side is one face you can press-pull or fillet.'
+                  : fmt === 'obj' ? '<br>In Fusion: Insert Mesh, then Convert Mesh — each flat side comes in as one face. STEP needs no converting.' : '';
+          setStatus('✓ Saved ' + esc(name) + tip + '<br>' + describe(info));
         });
       })
       .catch(function(e){ setStatus(esc(e.message), true); });
   }
 
-  window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body, assigned: assigned };
+  window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body, assigned: assigned, move: move };
 })();

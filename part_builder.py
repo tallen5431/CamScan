@@ -130,6 +130,38 @@ class View:
         self.scale[axis_index] *= factor
 
 
+def _extend_side(view: "View", length: float, covers: str) -> None:
+    """Make a side profile of one end into a profile of the whole length: place it at its
+    end, and carry its cut edge's height across the rest. The height there is read off the
+    profile itself, a sliver in from the cut, so it is whatever the trace says it is."""
+    pts = view.pts
+    lp = float(np.ptp(pts[:, 0]))
+    view.covered = lp
+    if lp >= length:
+        return
+    if covers == "end":
+        pts = pts + [length - lp, 0.0]
+    cs = _cross_section(pts)
+    sliver = min(2.0, 0.02 * lp)
+    cut = lp if covers == "start" else length - lp
+    x0 = cut - sliver if covers == "start" else cut
+    big = float(np.ptp(pts[:, 1])) + 10.0
+    strip = mf.CrossSection.square([sliver, big]).translate([x0, float(pts[:, 1].min()) - 5.0])
+    edge = (cs ^ strip).bounds()                       # (xmin, ymin, xmax, ymax)
+    v0, v1 = float(edge[1]), float(edge[3])
+    if not (v1 > v0):
+        raise PartError("The side view of one end has no height at its cut edge.")
+    if covers == "start":
+        rest = mf.CrossSection.square([length - x0, v1 - v0]).translate([x0, v0])
+    else:
+        rest = mf.CrossSection.square([x0 + sliver, v1 - v0]).translate([0.0, v0])
+    whole = cs + rest
+    polys = whole.to_polygons()
+    if not polys:
+        raise PartError("Could not extend the side view along the part.")
+    view.pts = np.asarray(max(polys, key=lambda q: abs(signed_area(np.asarray(q)))), float)
+
+
 def _ccw(p: np.ndarray) -> np.ndarray:
     return p if signed_area(p) > 0 else p[::-1]
 
@@ -203,12 +235,22 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     if not vs:
         raise PartError("Assign at least one outline to a view (Top, Side or End).")
 
+    # A side profile of only ONE END of a long part — the toe of a step pad, say, photographed
+    # close enough to trace — covers part of the length. It sets the height and shapes that
+    # end; the rest of the length carries on at the height of the profile's cut edge.
+    covers = ((views.get("side") or {}).get("covers") or "all") if "side" in vs else "all"
+    if covers not in ("all", "start", "end"):
+        raise PartError("A side view covers the whole length, its start, or its end.")
+    partial_side = covers != "all"
+    if partial_side and "top" not in vs:
+        raise PartError("A side view of one end needs a Top view for the part's full length.")
+
     # Who sets each axis, and how long it is.
     size = [None, None, None]
     setter = [None, None, None]
     for axis in range(3):
         for role in AXIS_SOURCES[axis]:
-            if role in vs:
+            if role in vs and not (partial_side and role == "side" and axis == 0):
                 k = AXES[role].index(axis)
                 size[axis] = float(vs[role].extent[k])
                 setter[axis] = role
@@ -232,6 +274,14 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         for k, axis in enumerate(AXES[role][:2]):
             if setter[axis] == role:
                 continue
+            if partial_side and role == "side" and axis == 0:
+                have, want = float(view.extent[0]), float(size[0])
+                if have > want * (1.0 + FIT_TOLERANCE):
+                    raise PartError(
+                        "The side view of one end is longer than the whole part ({:.1f} vs "
+                        "{:.1f} mm). Set it to cover the whole length, or check its scale."
+                        .format(have, want))
+                continue                                  # placed at its end below, not fitted
             have = float(view.extent[k])
             want = float(size[axis])
             if have <= 0:
@@ -249,6 +299,12 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
 
     X, Y, Z = size
     info["size_mm"] = [round(X, 3), round(Y, 3), round(Z, 3)]
+    if partial_side:
+        _extend_side(vs["side"], X, covers)
+        info["side_covers"] = covers
+        info["note"] = ("The side view shapes the {} {:.0f} mm; the rest of the length continues "
+                        "at the height of its cut edge.".format(
+                            "first" if covers == "start" else "last", vs["side"].covered))
 
     # Uniform wall: the existing, measured shell builder, for the case it was built for.
     if wall_mm is not None and float(wall_mm) > 0:
