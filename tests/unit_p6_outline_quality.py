@@ -206,6 +206,22 @@ def test_end_top_edge():
           f"top-edge vertices: at most {worst} with role='end' (Straighten and Refine), "
           f"{worst_plain} without")
 
+    # A dense trace (the endpoint takes up to 5000 dots) must not hold a worker: the top-run
+    # search once grew with the cube of the dots — 16 s at 1132, minutes at 2800.
+    import time
+    big = np.array([(100, 100), (1500, 100), (1500, 400), (100, 400)], float)
+    bimg = np.full((500, 1600, 3), 190, np.uint8)
+    cv2.fillPoly(bimg, [big.astype(np.int32)], (60, 60, 60))
+    ring = _dense(big, step=1.5, jit=1.0, seed=4)
+    t0 = time.perf_counter()
+    res = straighten_outline(bimg, ring.tolist(), role="end")
+    dt = time.perf_counter() - t0
+    q = np.asarray(res["points"]) if res else np.zeros((0, 2))
+    ntop = int(((np.abs(q[:, 1] - 100) < 6) & (q[:, 0] > 110) & (q[:, 0] < 1490)).sum()) if len(q) else -1
+    check("Straighten with role='end' on a 2000-dot trace is quick",
+          dt < 1.0 and res and res.get("top_merged") and ntop == 0,
+          f"{len(ring)} dots in {dt:.2f} s, {ntop} dots left inside the top edge after")
+
 
 # ---------------------------------------------------------------------------------------
 # Trace: one "Not the part" tap removes a whole chrome strip
@@ -297,6 +313,26 @@ def test_background_as_part():
     check("a close-up part is not mistaken for background",
           not rb.get("hint") and not rb.get("warnings") and Pb[:, 0].min() < 45 and Pb[:, 0].max() > 755,
           f"outer x {Pb[:, 0].min():.0f}-{Pb[:, 0].max():.0f}, hint {rb.get('hint')}")
+
+    # A plate with a window, boxed tight and tapped on the plate beside the window: the
+    # trace runs along the box and the tap is near a big hole, but the tapped pixels match the
+    # plate — the trace is right, and no "that traced the background" goes with it.
+    win = np.full((H, W, 3), 175, np.uint8)
+    cv2.rectangle(win, (200, 150), (700, 550), (60, 60, 60), -1)
+    cv2.rectangle(win, (380, 280), (520, 420), (175, 175, 175), -1)
+    win = cv2.GaussianBlur(win, (3, 3), 0)
+    bad = []
+    for seed in ([372, 350], [376, 300], [300, 350]):
+        for roi in ((202, 152, 496, 396), (205, 155, 490, 390)):
+            with _quiet():
+                rw = ao.auto_outline_full(win, seed=seed, roi=list(roi))
+            Pw = np.asarray(rw["outer"]) if rw and rw.get("outer") else np.zeros((1, 2))
+            # The outline stops at the box (as any boxed trace does) and keeps the window.
+            if (rw.get("hint") or rw.get("warnings") or len(rw.get("holes") or ()) != 1
+                    or Pw[:, 0].min() > roi[0] + 3 or Pw[:, 0].max() < roi[0] + roi[2] - 4):
+                bad.append((seed, roi, rw.get("hint")))
+    check("a boxed plate tapped beside its window gets no background hint", not bad,
+          f"{len(bad)} of 6 taps wrong" + (f": {bad[:2]}" if bad else ""))
 
     # Nothing found: the caller is told what to try, not just "no".
     flat = np.full((H, W, 3), 128, np.uint8)

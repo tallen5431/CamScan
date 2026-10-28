@@ -249,6 +249,14 @@ def _background_as_part(mask, seed, scale, sh, sw, box, img=None):
         tap = np.median(lab[max(0, sy - r):sy + r + 1, max(0, sx - r):sx + r + 1].reshape(-1, 3), axis=0)
         d_hole = float(np.linalg.norm(tap - np.median(lab[part > 0], axis=0)))
         d_trace = float(np.linalg.norm(tap - np.median(lab[on], axis=0)))
+        # Tapped pixels that plainly match the trace: either the trace IS the part — a plate
+        # with a window, boxed tight or filling a close-up, tapped beside the window — or the
+        # tap was on the background next to the part. Colour cannot tell those apart; the
+        # frame can. A part runs along the Area box drawn round it, and a close-up's along 2
+        # sides of the frame (both seen giving a false hint), while a background trace with
+        # no box runs along all of them; only that one is told.
+        if d_trace < 0.5 * d_hole:
+            return "hint" if box is None and sides >= 3 else None
         if not d_hole < 0.5 * d_trace:
             return "hint"
     return part

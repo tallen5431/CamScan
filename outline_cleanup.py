@@ -239,48 +239,71 @@ def _merge_top_run(p: np.ndarray) -> Optional[np.ndarray]:
     tol = max(3.0, 0.012 * float(np.hypot(*np.ptp(p, axis=0))))
     max_slope = math.tan(math.radians(_TOP_MAX_TILT))
     ring32 = p.astype(np.float32).reshape(-1, 1, 2)
-
-    def fit(idx):
-        q = p[idx]
-        span = float(np.ptp(q[:, 0]))
-        if span < 1e-6:
-            return None
-        dx = np.diff(q[:, 0])
-        if not (np.all(dx > -tol) or np.all(dx < tol)):
-            return None
-        m, c = np.polyfit(q[:, 0], q[:, 1], 1)
-        # Over a few dots the slope is all wobble; it is judged once the run has some length.
-        if span >= 0.1 * w and abs(m) > max_slope:
-            return None
-        if float(np.max(np.abs(q[:, 1] - (m * q[:, 0] + c)))) > tol:
-            return None
-        return m, c, span
+    # The search grows a run from every dot, so its cost goes with the cube of the dots: a
+    # 1132-dot trace took 16 s, a 2800-dot one minutes. It runs on dots picked evenly along
+    # the outline instead — at 240 they are at most about one band apart, so a run's ends move
+    # by a dot at most, and the dots between stay as they were — and the line is fitted to all
+    # the dots of the run it finds.
+    sub = np.arange(n)
+    if n > _TOP_SEARCH_DOTS:
+        arc = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(p, axis=0).T))])
+        sub = np.unique(np.searchsorted(arc, np.linspace(0.0, arc[-1], _TOP_SEARCH_DOTS, endpoint=False)))
+        sub = sub[sub < n]
+    q = p[sub]
+    k = len(q)
+    if k < 4:
+        return None
 
     best = None
-    for i in range(n):
-        j = 1
+    for i in range(k):
+        # The line through the run so far, from running sums: a fit per added dot.
+        x, y = q[i]
+        sx, sy, sxx, sxy, cnt = x, y, x * x, x * y, 1
+        lo, hi = x, x
+        fwd = bwd = True                    # every step so far within tol of going right / left
         last = None
-        while j < n - 2:
-            f_ = fit([(i + t) % n for t in range(j + 1)])
-            if f_ is None:
+        j = 1
+        while j < k - 2:
+            xa, ya = q[(i + j) % k]
+            dx = xa - q[(i + j - 1) % k][0]
+            fwd, bwd = fwd and dx > -tol, bwd and dx < tol
+            if not (fwd or bwd):
                 break
-            last = (j, f_)
+            sx, sy, sxx, sxy, cnt = sx + xa, sy + ya, sxx + xa * xa, sxy + xa * ya, cnt + 1
+            lo, hi = min(lo, xa), max(hi, xa)
+            span = hi - lo
+            den = cnt * sxx - sx * sx
+            if span < 1e-6 or den <= 1e-9:
+                break                       # straight down: a side, not a top
+            m = (cnt * sxy - sx * sy) / den
+            c = (sy - m * sx) / cnt
+            # Over a few dots the slope is all wobble; it is judged once the run has some length.
+            if span >= 0.1 * w and abs(m) > max_slope:
+                break
+            idx = (i + np.arange(j + 1)) % k
+            if float(np.max(np.abs(q[idx, 1] - (m * q[idx, 0] + c)))) > tol:
+                break
+            last = (j, m, c, span)
             j += 1
         if last is None:
             continue
-        j, (m, c, span) = last
-        if span < 0.3 * w or (best is not None and span <= best[3]):
+        j, m, c, span = last
+        if span < 0.3 * w or (best is not None and span <= best[2]):
             continue
-        xm = 0.5 * (p[i][0] + p[(i + j) % n][0])
+        xm = 0.5 * (q[i][0] + q[(i + j) % k][0])
         if cv2.pointPolygonTest(ring32, (float(xm), float(m * xm + c + tol)), False) <= 0:
             continue                                   # the part is above it: a bottom edge
-        best = (i, j, (m, c), span)
+        best = (i, j, span)
     if best is None:
         return None
-    i, j, (m, c), _ = best
-    x0, x1 = p[i][0], p[(i + j) % n][0]
+    i, j, _ = best
+    a, b = int(sub[i]), int(sub[(i + j) % k])
+    J = (b - a) % n                                    # the run, in the full ring's dots
+    run = p[(a + np.arange(J + 1)) % n]
+    m, c = np.polyfit(run[:, 0], run[:, 1], 1)
+    x0, x1 = p[a][0], p[b][0]
     ends = [np.array([x0, m * x0 + c]), np.array([x1, m * x1 + c])]
-    keep = [p[(i + j + 1 + t) % n] for t in range(n - j - 1)]
+    keep = [p[(a + J + 1 + t) % n] for t in range(n - J - 1)]
     return np.asarray(ends + keep, float)
 
 
@@ -539,6 +562,7 @@ def _straighten(img_bgr, points, min_run_frac, fillets, snap, exact, jogs):
     return out_d
 
 
+_TOP_SEARCH_DOTS = 240     # dots the top-run search looks at (see _merge_top_run)
 _TOP_MAX_TILT = 15.0      # degrees: a Side/End photo's deck further off level than this is not its top
 _JOG_MAX_STRETCH = 0.20   # of the side's length (step included): a longer step is a real change of width
 _JOG_MIN_STEP = 0.01      # of the part's length: below this a step is trace wobble
