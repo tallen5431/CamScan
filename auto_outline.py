@@ -98,7 +98,13 @@ def auto_outline_full(
     Holes are enclosed background inside the part — a box-end ring, bolt holes — which is what
     turns a flat outline into a printable replica; a round bore comes back as a true circle.
     A wrench's OPEN jaw is not a hole (it opens to the exterior) so it stays part of `outer`.
-    Returns None if nothing could be segmented.
+    If nothing could be segmented, "outer" is None and "hint" says what to try next.
+
+    Also, when they apply: "hint" (the trace looks like the background, not a part — the
+    caller should say so rather than report success), "warnings" (words for the user: the
+    first trace took the background and the tapped region inside it was used instead; a long
+    side steps out where a shadow lies beside it) and "jogs" (those steps, with where they
+    are: {"side", "end", "px", "at": [x, y]}).
 
     fg_points / bg_points : taps saying "this IS the part" and "this is NOT". Supplying any
           background point switches segmentation to GrabCut, which models both sides as
@@ -121,22 +127,150 @@ def auto_outline_full(
             except (TypeError, ValueError, IndexError):
                 continue
         return out
-    seg = _segment(crop, seed2, excl2, downscale_to, _shift(fg_points), _shift(bg_points),
-                   box=_box_in_crop(roi, ox, oy, crop, img_bgr))
+    box = _box_in_crop(roi, ox, oy, crop, img_bgr)
+    seg = _segment(crop, seed2, excl2, downscale_to, _shift(fg_points), _shift(bg_points), box=box)
+    # Nothing found is still an answer the user can act on: what to do next, said by the
+    # caller in place of a bare "no part found" — the advice that works is the Area box.
+    failed = {"outer": None, "holes": [],
+              "hint": _HINT_NO_OUTLINE_BOX if box is not None else _HINT_NO_OUTLINE}
     if seg is None:
-        return None
+        return failed
     mask, scale, sh, sw, grad = seg
+    warnings: List[str] = []
+    hint = None
+    small = (cv2.resize(crop, (sw, sh), interpolation=cv2.INTER_AREA)
+             if crop.shape[:2] != (sh, sw) else crop)
+    inside = _background_as_part(mask, seed2, scale, sh, sw, box, small)
+    if isinstance(inside, np.ndarray):
+        mask = inside
+        warnings.append(_WARN_BACKGROUND_SWAPPED)
+    elif inside == "hint":
+        hint = _HINT_BACKGROUND
     outer = _outer_polygon(mask, scale, sh, sw, simplify, max_points, grad, edge_snap)
     if outer is None:
-        return None
+        return failed
     holes = _holes(mask, scale, sh, sw, simplify, max_points, min_hole_frac) if want_holes else []
     if ox or oy:
         outer = [[x + ox, y + oy] for (x, y) in outer]
         holes = [_offset_hole(h, ox, oy) for h in holes]
     H, W = img_bgr.shape[:2]
     cov, border = trace_extent(outer, W, H)
-    return {"outer": outer, "holes": holes, "coverage": cov, "border": border,
-            "runaway": is_runaway_trace(cov, border)}
+    res = {"outer": outer, "holes": holes, "coverage": cov, "border": border,
+           "runaway": is_runaway_trace(cov, border)}
+    jogs = _jog_warnings(img_bgr, outer)
+    if jogs:
+        res["jogs"] = jogs
+        warnings.extend(f"The {j['side']} side steps out {j['px']:.0f} px near the {j['end']} end "
+                        f"— shadow? Tap ✖ Not the part there, or use Straighten." for j in jogs)
+    if hint:
+        res["hint"] = hint
+    if warnings:
+        res["warnings"] = warnings
+    return res
+
+
+# ---------------------------------------------------------------------------------------
+# Advice for a trace that went wrong, carried as `hint` / `warnings` for the caller to show
+# ---------------------------------------------------------------------------------------
+_HINT_NO_OUTLINE = ("Couldn't separate the part from the background here. Draw a box round "
+                    "the part (▭ Area), then tap the part again.")
+_HINT_NO_OUTLINE_BOX = ("Couldn't find the part inside your Area box. Tap right on the part, "
+                        "or tap ✖ Not the part on what isn't.")
+_HINT_BACKGROUND = ("That traced the background — tap ✖ Not the part on the "
+                    "background, or draw an Area box.")
+_WARN_BACKGROUND_SWAPPED = ("The first trace took the background, so the region you tapped "
+                            "inside it was used. Check the outline.")
+_BG_MIN_PART_FRAC = 0.015    # of the frame: a hole smaller than this is a bore, not the part
+
+
+def _background_as_part(mask, seed, scale, sh, sw, box, img=None):
+    """When the trace took the BACKGROUND, the part the user tapped is a hole in it. Returns
+    that hole as a filled mask to trace instead, the string "hint" when the trace looks like
+    background but no hole can be taken for the part, or None when the trace looks like a part.
+
+    Seen on the customer's top photo tapped near the cover's edge: the colour model called the
+    cover background, and the "outline" was the concrete and the truck round it — 34% of the
+    frame, along its top and bottom, with the cover a hole 21 px from the tap — reported as a
+    success. Two signs, either enough:
+      - the trace runs along 3 or more sides of the frame (of the Area box, when one is drawn)
+        and the tap is in one of its holes, not on it;
+      - it runs along 2 or more and the tap is on it but within 3% of the frame of a big
+        hole: then the hole is used if the tapped pixels look like it, not like the trace
+        (`img`, at mask size), and otherwise the user is told.
+    A hole has to be 1.5% of the frame to be taken for the part: smaller is a bore."""
+    if seed is None:
+        return None
+    try:
+        sx = int(round(float(seed[0]) * scale)); sy = int(round(float(seed[1]) * scale))
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not (0 <= sx < sw and 0 <= sy < sh):
+        return None
+    if box is not None:
+        x0, y0 = int(box[0] * scale), int(box[1] * scale)
+        x1, y1 = int((box[0] + box[2]) * scale), int((box[1] + box[3]) * scale)
+    else:
+        x0, y0, x1, y1 = 0, 0, sw, sh
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(sw, x1), min(sh, y1)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    t = max(2, int(0.01 * min(x1 - x0, y1 - y0)))
+    on = mask > 0
+    sides = sum(1 for v in (on[y0:y0 + t, x0:x1].any(axis=0).mean(), on[y1 - t:y1, x0:x1].any(axis=0).mean(),
+                            on[y0:y1, x0:x0 + t].any(axis=1).mean(), on[y0:y1, x1 - t:x1].any(axis=1).mean())
+                if v >= 0.2)
+    tapped_on = bool(on[sy, sx])
+    if sides < (2 if tapped_on else 3):
+        return None
+    min_area = _BG_MIN_PART_FRAC * (x1 - x0) * (y1 - y0)
+    reach = 0.03 * min(x1 - x0, y1 - y0)
+    cnts, hier = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    best = None
+    for i, cnt in enumerate(cnts if hier is not None else ()):
+        if hier[0][i][3] < 0 or cv2.contourArea(cnt) < min_area:
+            continue
+        d = cv2.pointPolygonTest(cnt, (float(sx), float(sy)), True)    # > 0: inside the hole
+        if d >= 0 or (tapped_on and -d <= reach):
+            if best is None or d > best[0]:
+                best = (d, cnt)
+    if best is None:
+        return None if tapped_on else "hint"
+    part = np.zeros_like(mask)
+    cv2.drawContours(part, [best[1]], -1, 255, -1)
+    if tapped_on:
+        # Less certain: say so, and swap only when the tapped pixels plainly match the hole.
+        # On the customer's photo they did not — the tap was on the cover's dark lip, which
+        # went with the shadow round it while the cover's lit face made the hole — so there
+        # the user gets the hint, not a half cover.
+        if img is None:
+            return "hint"
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+        r = max(2, int(0.006 * min(sh, sw)))
+        tap = np.median(lab[max(0, sy - r):sy + r + 1, max(0, sx - r):sx + r + 1].reshape(-1, 3), axis=0)
+        d_hole = float(np.linalg.norm(tap - np.median(lab[part > 0], axis=0)))
+        d_trace = float(np.linalg.norm(tap - np.median(lab[on], axis=0)))
+        # Tapped pixels that plainly match the trace: either the trace IS the part — a plate
+        # with a window, boxed tight or filling a close-up, tapped beside the window — or the
+        # tap was on the background next to the part. Colour cannot tell those apart; the
+        # frame can. A part runs along the Area box drawn round it, and a close-up's along 2
+        # sides of the frame (both seen giving a false hint), while a background trace with
+        # no box runs along all of them; only that one is told.
+        if d_trace < 0.5 * d_hole:
+            return "hint" if box is None and sides >= 3 else None
+        if not d_hole < 0.5 * d_trace:
+            return "hint"
+    return part
+
+
+def _jog_warnings(img_bgr, outer):
+    """Steps a shadow put on the traced outline's long sides (see outline_cleanup._pull_jogs),
+    found but not changed — the user decides — or [] when there are none or the check fails."""
+    try:
+        from outline_cleanup import straighten_outline
+        st = straighten_outline(img_bgr, outer)
+    except Exception:
+        return []
+    return list((st or {}).get("jogs") or [])
 
 
 # ---------------------------------------------------------------------------------------
@@ -344,6 +478,25 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
         _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_PR_FGD, r * 4)
     n_fg = _paint(list(fg_pts or ()) + ([seed] if seed is not None else []), cv2.GC_FGD, r)
     n_bg = _paint(bg_pts, cv2.GC_BGD, r) + (1 if box is not None else 0)
+    if bg_pts:
+        # One brush disc teaches GrabCut one patch of colour. A chrome step beside the part
+        # is many — its reflections ramp along it — so one tap on it removed only the patch
+        # under the tap, and the customer needed two taps and still kept a strip of chrome.
+        # What the user tapped is the whole connected, smoothly-shaded region round the tap.
+        lim = None
+        if box is not None:
+            lim = (int(box[0] * scale * f), int(box[1] * scale * f),
+                   int((box[0] + box[2]) * scale * f), int((box[1] + box[3]) * scale * f))
+        keep = [(float(p[0]) * scale * f, float(p[1]) * scale * f)
+                for p in list(fg_pts or ()) + ([seed] if seed is not None else [])]
+        for p in bg_pts:
+            try:
+                x, y = float(p[0]) * scale * f, float(p[1]) * scale * f
+            except (TypeError, ValueError, IndexError):
+                continue
+            region = _flood_bg(img, x, y, lim, keep)
+            if region is not None:
+                gc[region & (gc != cv2.GC_FGD)] = cv2.GC_BGD
     if border_bg:
         b = max(2, int(0.03 * min(h2, w2)))
         gc[:b, :] = gc[-b:, :] = cv2.GC_BGD
@@ -367,6 +520,68 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k)
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k)
     return fg
+
+
+_FLOOD_STEP = 4          # Lab units between neighbouring pixels a background flood may cross
+# Log brightness per px that walls a flood in, loosest first (8%, 5%, 3% contrast per px).
+# No one wall suits every photo: on the customer's cover only the loosest let a tap in the
+# black gap beside it fill the gap (the trace's 30 px spill there went: right edge 906 -> 878
+# at y=1300, the true edge ~879), while a dark part beside its own shadow (71 vs 57 grey)
+# needed the strictest, the looser ones leaking into the part and reaching the tap on it.
+_FLOOD_WALLS = (0.08, 0.05, 0.03)
+_FLOOD_MAX_FRAC = 0.5    # of the box (or the photo): a flood bigger than this has leaked
+
+
+def _flood_bg(img, x, y, lim, keep):
+    """The region a background tap at (x, y) stands for, as a bool mask, or None.
+
+    Flood from the tap across neighbours that differ by a few Lab units — so it follows the
+    slow shading of a chrome step but not a step in colour — and never across an edge, which
+    is walled off first. Kept inside the Area box `lim` (x0, y0, x1, y1) when given. A flood
+    that reaches a tap on the part (`keep`, the seed and the "this IS the part" taps) or
+    covers half the box has leaked into the part; it is tried again with stricter walls, and
+    when even the strictest leaks, None: the plain brush disc is all that is safe."""
+    h, w = img.shape[:2]
+    if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < w and 0 <= y < h):
+        return None
+    lab = cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2LAB), (0, 0), 1.5)
+    # Edges are judged in log brightness, as contrast: in deep shadow the cover's end (grey
+    # ~15) and the gap beside it (~4) differ by a handful of levels, which a wall in grey
+    # levels did not stop — a flood from a tap in that gap ran up the shadowed end and cut
+    # 100 px off the cover — but by a factor of two, as plain an edge as any in sunlight.
+    L = np.log(lab[:, :, 0].astype(np.float32) + 8.0)
+    g = cv2.magnitude(cv2.Sobel(L, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(L, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
+    area = float(h * w)
+    out = None
+    if lim is not None:
+        x0, y0, x1, y1 = max(0, lim[0]), max(0, lim[1]), min(w, lim[2]), min(h, lim[3])
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return None
+        out = np.ones((h, w), bool)
+        out[y0:y1, x0:x1] = False
+        area = float((x1 - x0) * (y1 - y0))
+    xi, yi = int(x), int(y)
+    d = (_FLOOD_STEP,) * 3
+    flags = 4 | cv2.FLOODFILL_MASK_ONLY | (2 << 8)
+    for wall in _FLOOD_WALLS:
+        m = np.zeros((h + 2, w + 2), np.uint8)
+        m[1:-1, 1:-1][g > wall] = 1
+        if out is not None:
+            m[1:-1, 1:-1][out] = 1
+        m[yi + 1, xi + 1] = 0
+        try:
+            cv2.floodFill(lab, m, (xi, yi), 0, d, d, flags)
+        except cv2.error:
+            return None
+        region = m[1:-1, 1:-1] == 2
+        if region.sum() > _FLOOD_MAX_FRAC * area:
+            continue
+        if any(0 <= kx < w and 0 <= ky < h and region[int(ky), int(kx)] for (kx, ky) in keep):
+            continue
+        # Off the region's own rim by a pixel: those pixels are as much the part's edge.
+        region = cv2.erode(region.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        return region if region.any() else None
+    return None
 
 
 _GC_COARSE_PX = 560      # long side of the first, whole-picture GrabCut pass
