@@ -155,6 +155,13 @@
     .cal-context{
       grid-area: canvas; align-self: end; justify-self: start; min-width: 0; min-height: 0;
       margin: 12px; z-index: 7; display: flex; gap: 8px; pointer-events: none;
+      /* A selected outline offers five actions; on a phone they wrap to a second row rather
+         than run off the screen, clear of the zoom buttons on the right. */
+      flex-wrap: wrap; align-content: flex-end; max-width: calc(100% - 84px);
+    }
+    @media (max-width: 600px){
+      .cal-context{ gap: 6px; }
+      .cal-context button{ padding: 8px 12px; min-height: 40px; font-size: 13px; }
     }
     .cal-context button{
       pointer-events: auto; display: none; align-items: center; gap: 6px;
@@ -1018,7 +1025,15 @@ window.CalibUI = (function(){
     ctx3d.title = 'Use this outline as the Top, Side, End or Cavity of a 3D part';
     ctx3d.onclick = () => { if (window.CalibPart3D) window.CalibPart3D.pick(ctx3d); };
 
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxDepth, ctx3d, ctxFinish);
+    // A traced side wobbles with every scuff and shadow along the edge; this makes each long
+    // side one straight line on the photo's edge instead of dragging its dots one by one.
+    const ctxStraight = document.createElement('button'); ctxStraight.type = 'button'; ctxStraight.className = 'cal-ctx-finish';
+    ctxStraight.id = 'cal-ctx-straighten';
+    ctxStraight.innerHTML = '📏 Straighten';
+    ctxStraight.setAttribute('aria-label', 'Straighten this outline onto the part\'s edges');
+    ctxStraight.title = 'Make each long side one straight line on the part\'s edge; rounded corners stay as traced';
+    ctxStraight.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected(); };
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxStraight, ctxDepth, ctx3d, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1100,6 +1115,7 @@ window.CalibUI = (function(){
       const prof = overlay.selectedProfile && overlay.selectedProfile();
       ctxDepth.classList.toggle('show', !!prof);
       ctx3d.classList.toggle('show', !!prof);
+      ctxStraight.classList.toggle('show', !!prof);
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
         ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
         : '⇥ Depth';

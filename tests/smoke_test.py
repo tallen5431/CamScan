@@ -340,6 +340,73 @@ def main():
     except Exception as e:
         check("an Area box keeps the part's shadowed end in the trace", False, repr(e))
 
+    # 2g3) Straighten: a traced side that wobbles becomes one straight line ON the part's edge
+    #      — not on a ridge running just inside it, which is the edge a fit most wants to hop
+    #      to on a step pad — while rounded corners keep their dots. The endpoint takes junk.
+    try:
+        from outline_cleanup import straighten_outline as _so
+        rng_t = np.random.default_rng(3)
+        H_t, W_t = 900, 600
+        timg = np.clip(rng_t.normal(170, 18, (H_t, W_t, 3)), 0, 255).astype(np.uint8)
+        tpart = np.zeros((H_t, W_t), np.uint8)
+        x0t, y0t, x1t, y1t, rr = 150, 100, 430, 800, 30
+        cv2.rectangle(tpart, (x0t + rr, y0t), (x1t - rr, y1t), 255, -1)
+        cv2.rectangle(tpart, (x0t, y0t + rr), (x1t, y1t - rr), 255, -1)
+        for cx, cy in [(x0t + rr, y0t + rr), (x1t - rr, y0t + rr), (x0t + rr, y1t - rr), (x1t - rr, y1t - rr)]:
+            cv2.circle(tpart, (cx, cy), rr, 255, -1)
+        tpart = cv2.warpAffine(tpart, cv2.getRotationMatrix2D((290, 450), 4, 1.0), (W_t, H_t),
+                               flags=cv2.INTER_NEAREST)
+        timg[tpart > 0] = (75, 78, 80)
+        inner = cv2.erode(tpart, np.ones((29, 29), np.uint8))
+        timg[(inner > 0) & (cv2.erode(inner, np.ones((5, 5), np.uint8)) == 0)] = (40, 40, 42)   # ridge 14 px in
+        timg = cv2.GaussianBlur(timg, (3, 3), 0)
+        cs_t, _ = cv2.findContours(tpart, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        ctrue = cs_t[0].reshape(-1, 2).astype(float)
+        wob = ctrue[::12] + rng_t.normal(0, 3.0, (len(ctrue[::12]), 2))
+
+        def _tiou(poly):
+            m = np.zeros((H_t, W_t), np.uint8); cv2.fillPoly(m, [np.round(poly).astype(np.int32)], 255)
+            return np.count_nonzero((m > 0) & (tpart > 0)) / np.count_nonzero((m > 0) | (tpart > 0))
+        st = _so(timg, wob.tolist())
+        edge_dt = cv2.distanceTransform(255 - cv2.Canny(tpart, 50, 150), cv2.DIST_L2, 3)
+        # How far the straightened SIDES sit from the true edge: sample the long segments only.
+        P = np.asarray(st["points"]); far = []
+        for i in range(len(P)):
+            a_, b_ = P[i], P[(i + 1) % len(P)]
+            if np.hypot(*(b_ - a_)) > 100:
+                for tt in np.linspace(0.1, 0.9, 30):
+                    q = np.clip(np.round(a_ + (b_ - a_) * tt).astype(int), 0, [W_t - 1, H_t - 1])
+                    far.append(edge_dt[q[1], q[0]])
+        side_err = float(np.mean(far)) if far else 99.0
+        no_img = _so(None, wob.tolist())
+        tiny = _so(timg, [[0, 0], [1, 0], [0, 1]])
+        # A round part has no sides: every chord of it is long, but none is straight. Use the
+        # tracer's own outline of a disc — sparse, clean dots — which is what reaches here.
+        from auto_outline import auto_outline_full as _aof
+        dimg = np.clip(rng_t.normal(190, 12, (700, 700, 3)), 0, 255).astype(np.uint8)
+        cv2.circle(dimg, (350, 350), 200, (60, 60, 60), -1)
+        dimg = cv2.GaussianBlur(dimg, (3, 3), 0)
+        with _quiet():
+            dtrace = _aof(dimg, seed=[350, 350])
+        round_left = bool(dtrace) and _so(dimg, dtrace["outer"]) is None
+        import app as _appS
+        cliS = _appS.server.test_client()
+        codes = {k: cliS.post("/api/outline/straighten", json=b).status_code for k, b in {
+            "ok": {"points": wob.tolist()},
+            "none": {}, "short": {"points": [[0, 0], [1, 1]]}, "nan": {"points": [[0, 0], [1, "x"], [2, 2]]},
+            "inf": {"points": [[0, 0], [1e400, 1], [2, 2]]}, "bad image": {"image": "data:x,@@", "points": wob.tolist()},
+        }.items()}
+        ok_t = (st and _tiou(st["points"]) > _tiou(wob) and len(st["points"]) < len(wob) / 2
+                and st["straight"] >= 4 and st["snapped"] >= 4 and side_err < 1.5
+                and no_img and no_img["straight"] >= 4 and tiny is None and round_left
+                and codes == {"ok": 200, "none": 400, "short": 400, "nan": 400, "inf": 400, "bad image": 400})
+        check("Straighten puts wobbly sides on the part's edge, not a ridge beside it", bool(ok_t),
+              f"IoU {_tiou(wob):.3f}->{_tiou(st['points']):.3f}, pts {len(wob)}->{len(st['points'])}, "
+              f"sides {st['straight']} (snapped {st['snapped']}), side-to-edge {side_err:.2f}px, "
+              f"no-image sides={no_img and no_img['straight']}, circle left alone={round_left}, codes={codes}")
+    except Exception as e:
+        check("Straighten puts wobbly sides on the part's edge, not a ridge beside it", False, repr(e))
+
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
     #     must not drift when snapping is on. (Its benefit is on soft real-photo fringes; here we

@@ -173,9 +173,38 @@ def main():
             # Hiding measurement labels must redraw cleanly (lets you edit a dense outline).
             pg.evaluate("(()=>{var o=document.querySelector('.cal-view').__overlay;o.opts.showLabels=false;o.redraw();o.opts.showLabels=true;o.redraw();})()")
 
+            # Straighten. The disc is round: the button must leave it exactly as it is.
+            O = "document.querySelector('.cal-view').__overlay"
+            before = pg.evaluate(OUTER)
+            pg.evaluate(f"(()=>{{const o={O};o.ann.selectedId={before['id']};o.setMode('select');o.requestDraw();}})()")
+            pg.locator("#cal-ctx-straighten").wait_for(state="visible", timeout=5000)
+            with pg.expect_response(lambda r: "/api/outline/straighten" in r.url):
+                pg.click("#cal-ctx-straighten")
+            time.sleep(0.3)
+            assert pg.evaluate(OUTER)["pts"] == before["pts"], "a round outline was changed by Straighten"
+
+            #    A square traced with wobbly dots becomes four straight sides; Undo restores it.
+            sq = pg.evaluate(f"""(()=>{{const o={O};const pts=[];let s=7;
+                const r=()=>{{s=(s*16807)%2147483647;return (s/2147483647-0.5)*6;}};
+                const side=(x0,y0,x1,y1)=>{{for(let i=0;i<12;i++){{const t=i/12;pts.push([x0+(x1-x0)*t+r(),y0+(y1-y0)*t+r()]);}}}};
+                side(60,60,260,60);side(260,60,260,260);side(260,260,60,260);side(60,260,60,60);
+                o._pushHistory();window.CalibAnn.addPolyline(o.ann,pts,o.getScale()||0.1,o.opts.units,null,true);
+                o.setMode('select');o.requestDraw();return {{id:o.ann.selectedId,n:pts.length}};}})()""")
+            with pg.expect_response(lambda r: "/api/outline/straighten" in r.url):
+                pg.click("#cal-ctx-straighten")
+            sel = f"{O}.ann.items.find(a=>a.id==={sq['id']})"
+            pg.wait_for_function(f"{sel}.pts.length<10", timeout=5000)
+            after = pg.evaluate(f"{sel}.pts")
+            xs = sorted(p[0] for p in after)
+            assert len(after) == 4 and xs[1] - xs[0] < 6 and xs[3] - xs[2] < 6, f"square not straightened: {after}"
+            pg.evaluate(f"{O}.undo()")
+            back = pg.evaluate(f"{sel}.pts.length")
+            assert back == sq["n"], f"Undo did not restore the traced dots: {back} vs {sq['n']}"
+
             assert not errors, f"page errors: {errors}"
             browser.close()
-        print(f"E2E_RESULT: PASS (outer polyline + true-circle bore; slider re-traces coarse={coarse}->fine={fine} pts, replaced)")
+        print(f"E2E_RESULT: PASS (outer polyline + true-circle bore; slider re-traces coarse={coarse}->fine={fine} pts, replaced; "
+              f"Straighten leaves a round part alone, makes a wobbly square 4 sides, Undo restores)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")
