@@ -28,13 +28,57 @@ _Q = 1e6            # positions are joined at 1e-6 mm, the quantum mesh_report p
 # Triangles -> flat faces with boundary loops
 # ---------------------------------------------------------------------------------------
 def _weld(tris: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Unique vertices (V, 3) and triangles as vertex indices (T, 3); collapsed ones dropped."""
+    """Unique vertices (V, 3) and triangles as vertex indices (T, 3); collapsed ones dropped,
+    and zero-area slivers (three points on one line) resolved — see _unsliver."""
     t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
     key = np.round(t.reshape(-1, 3) * _Q).astype(np.int64)
     uniq, inv = np.unique(key, axis=0, return_inverse=True)
     idx = inv.reshape(-1, 3)
     ok = (idx[:, 0] != idx[:, 1]) & (idx[:, 1] != idx[:, 2]) & (idx[:, 2] != idx[:, 0])
-    return uniq.astype(float) / _Q, idx[ok]
+    V = uniq.astype(float) / _Q
+    return V, _unsliver(V, idx[ok])
+
+
+def _unsliver(V: np.ndarray, F: np.ndarray) -> np.ndarray:
+    """Remove zero-area triangles without opening the surface.
+
+    The solid library can leave a sliver whose three corners lie on one line (seen where a
+    rounded inner offset meets a chamfer: a 0.09 mm edge). It is closed by vertex index and
+    harmless in an STL, but a CAD face needs area. Such a sliver says the long edge p-q is
+    really p-m-q: so drop it and split the triangle across p-q at m — the surface stays closed.
+    """
+    tris = [list(map(int, f)) for f in F]
+    for _ in range(len(tris)):
+        bad = None
+        for ti, (a, b, c) in enumerate(tris):
+            P = V[[a, b, c]]
+            cr = np.linalg.norm(np.cross(P[1] - P[0], P[2] - P[0]))
+            span = max(np.linalg.norm(P[1] - P[0]), np.linalg.norm(P[2] - P[0]), np.linalg.norm(P[2] - P[1]))
+            if cr <= 1e-9 * max(span, 1e-12) ** 2:
+                bad = ti
+                break
+        if bad is None:
+            break
+        a, b, c = tris.pop(bad)
+        # The middle vertex m and the long edge p->q as this sliver runs it.
+        best = None
+        for m, (p_, q_) in ((a, (b, c)), (b, (c, a)), (c, (a, b))):
+            d = np.linalg.norm(V[q_] - V[p_])
+            if best is None or d > best[0]:
+                best = (d, m, p_, q_)
+        _d, m, p_, q_ = best
+        # The neighbour runs that edge the other way: q->p. Split it at m.
+        for tj, tri in enumerate(tris):
+            for k in range(3):
+                if tri[k] == q_ and tri[(k + 1) % 3] == p_:
+                    r = tri[(k + 2) % 3]
+                    tris[tj] = [q_, m, r]
+                    tris.append([m, p_, r])
+                    break
+            else:
+                continue
+            break
+    return np.asarray(tris, dtype=np.int64).reshape(-1, 3)
 
 
 def _faces(V: np.ndarray, F: np.ndarray, angle_tol: float = 1e-6):

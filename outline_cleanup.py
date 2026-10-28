@@ -264,8 +264,8 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
             if lens[j] >= 0.35 * min(lens[jp], lens[jn]):
                 continue
             # Same turn at both ends: the short side bends from one long side to the next.
-            d = [lines[q][1][1] for q in (jp, j, jn)]
-            o = [p[(lines[q][0] + lines[q][2]) % n] - p[lines[q][0]] for q in (jp, j, jn)]
+            d = [lines[q][2][1] for q in (jp, j, jn)]                        # each side's direction
+            o = [p[(lines[q][0] + lines[q][1]) % n] - p[lines[q][0]] for q in (jp, j, jn)]
             d = [dd * (1.0 if float(np.dot(dd, oo)) > 0 else -1.0) for dd, oo in zip(d, o)]
             t1 = d[0][0] * d[1][1] - d[0][1] * d[1][0]
             t2 = d[1][0] * d[2][1] - d[1][1] * d[2][0]

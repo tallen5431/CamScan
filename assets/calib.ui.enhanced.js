@@ -1136,6 +1136,8 @@ window.CalibUI = (function(){
       ctxStraight.classList.toggle('show', !!prof);
       ctxRefine.classList.toggle('show', !!prof);
       ctxSquare.classList.toggle('show', !!prof);
+      // Keep any 3D view assigned from an outline on this photo in step with it (debounced).
+      if (window.CalibPart3D && window.CalibPart3D.syncSoon) window.CalibPart3D.syncSoon();
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
         ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
         : '⇥ Depth';

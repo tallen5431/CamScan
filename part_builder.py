@@ -40,7 +40,7 @@ try:
 except ImportError:  # pragma: no cover - reported to the caller as "unavailable"
     mf = None
 
-from solid_export import _print_orientation, build_shell, manifold_tris, mesh_report, signed_area
+from solid_export import MIN_WALL_MM, _print_orientation, build_shell, manifold_tris, mesh_report, signed_area
 
 ROLES = ("top", "side", "end")
 # (u axis, v axis, normal axis) of each view in X=0, Y=1, Z=2.
@@ -128,6 +128,47 @@ class View:
         self.pts = self.pts.copy()
         self.pts[:, axis_index] *= factor
         self.scale[axis_index] *= factor
+
+
+def _hollow(solid, vs, size, wall: float, info: Dict[str, Any]):
+    """A cover of a shaped part: `wall` thick everywhere, open underneath.
+
+    The part is the box cut by each view's prism, so the inside — the part shrunk by the
+    wall — is the same intersection with every view's outline shrunk inward by the wall
+    (shrinking distributes over intersection, and shrinking a prism along its length leaves
+    it a prism). That inside is then carried straight down out of the bottom, so the cover
+    opens underneath, as a cover over a board does."""
+    try:
+        w = float(wall)
+    except (TypeError, ValueError):
+        raise PartError("The wall thickness must be a number.")
+    if not (math.isfinite(w) and w >= MIN_WALL_MM):
+        raise PartError(f"A wall under {MIN_WALL_MM:.1f} mm cannot print.")
+    X, Y, Z = size
+    if 2 * w >= min(X, Y) or w >= Z:
+        raise PartError("The wall is as thick as the part, so it would be solid. Use a thinner "
+                        "wall, or leave the wall empty for a solid part.")
+    inner = mf.Manifold.cube([X - 2 * w, Y - 2 * w, Z - w]).translate([w, w, 0.0])
+    for role, view in vs.items():
+        cs = _cross_section(view.pts).offset(-w, mf.JoinType.Round)
+        if cs.is_empty():
+            raise PartError(f"The {role} view is thinner than two walls, so there is no inside.")
+        n_ax = AXES[role][2]
+        inner = inner ^ _prism(cs, role, -_MARGIN, size[n_ax] + _MARGIN)
+    if inner.is_empty() or inner.volume() <= 0:
+        raise PartError("The views leave no inside for that wall — try a thinner wall.")
+    # Open the bottom: continue the inside's lowest slice straight down out of the part.
+    zlo = float(inner.bounding_box()[2])
+    foot = inner.slice(zlo + 0.01)
+    if foot.is_empty():
+        raise PartError("Could not open the cover underneath.")
+    inner = inner + mf.Manifold.extrude(foot, zlo + _MARGIN + 0.01).translate([0.0, 0.0, -_MARGIN])
+    shell = solid - inner
+    if shell.is_empty() or shell.volume() <= 0:
+        raise PartError("Hollowing left nothing — try a thinner wall.")
+    info.update(kind="shell", wall_mm=w,
+                note="Hollow, {:.1f} mm walls, open underneath; turned plate-down for printing.".format(w))
+    return shell
 
 
 def _extend_side(view: "View", length: float, covers: str) -> None:
@@ -306,13 +347,15 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                         "at the height of its cut edge.".format(
                             "first" if covers == "start" else "last", vs["side"].covered))
 
-    # Uniform wall: the existing, measured shell builder, for the case it was built for.
+    shell_wall = None
     if wall_mm is not None and float(wall_mm) > 0:
         if cavity:
             raise PartError("Use either a uniform wall or a traced cavity, not both.")
         if set(vs) != {"top"}:
-            raise PartError("A uniform wall works on a Top outline alone. For a shaped part, "
-                            "trace the cavity as its own outline instead.")
+            shell_wall = float(wall_mm)           # a shaped cover: hollowed below, after the solid
+    # Uniform wall on a Top outline alone: the existing, measured shell builder (bosses round
+    # holes and all), for the case it was built for.
+    if wall_mm is not None and float(wall_mm) > 0 and shell_wall is None:
         tris, sinfo = build_shell(vs["top"].pts.tolist(), [], Z, float(wall_mm))
         if tris is None:
             raise PartError(sinfo.get("reason") or "Could not build the cover.")
@@ -341,6 +384,11 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                         "buttons until the preview outlines line up.")
     info["kind"] = "solid"
     cav_poly = None
+
+    if shell_wall is not None:
+        solid = _hollow(solid, vs, size, shell_wall, info)
+        # Print it plate-down, as the Top-only covers are: the open side up needs no support.
+        upside_down = not upside_down
 
     if cavity:
         role = cavity.get("view")

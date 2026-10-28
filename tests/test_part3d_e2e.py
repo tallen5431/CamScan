@@ -194,6 +194,18 @@ def main():
             assert not pg.is_visible("#cal-tb-part"), "Build 3D part shown before any view is assigned"
             _trace(pg, (400, 300))
             _assign(pg, "top")
+            # The view follows its outline: widen the traced outline and, without assigning it
+            # again, the stored Top view catches up (Refine, Square up and drags all count).
+            w_before = pg.evaluate("window.CalibJob.part().views.top.size_mm[0]")
+            pg.evaluate(f"(()=>{{const o={OV};const pl=o.ann.items.find(a=>a.type==='polyline'&&a.closed);"
+                        "const xs=pl.pts.map(p=>p[0]);const mx=Math.max(...xs);"
+                        "pl.pts=pl.pts.map(p=>p[0]>mx-1?[p[0]+20,p[1]]:p);o.requestDraw();})()")
+            pg.wait_for_function(f"window.CalibJob.part().views.top.size_mm[0] > {w_before} + 5", timeout=5000)
+            # ...and back, so the rest of this test builds the part it expects.
+            pg.evaluate(f"(()=>{{const o={OV};const pl=o.ann.items.find(a=>a.type==='polyline'&&a.closed);"
+                        "const xs=pl.pts.map(p=>p[0]);const mx=Math.max(...xs);"
+                        "pl.pts=pl.pts.map(p=>p[0]>mx-1?[p[0]-20,p[1]]:p);o.requestDraw();})()")
+            pg.wait_for_function(f"Math.abs(window.CalibJob.part().views.top.size_mm[0] - {w_before}) < 0.01", timeout=5000)
             # The way to the build is visible right away: on the toast, and in the top bar.
             pg.wait_for_selector(".cal-toast-action", timeout=5000)
             pg.wait_for_function("(()=>{const b=document.getElementById('cal-tb-part');"
@@ -299,6 +311,15 @@ def main():
             pg.wait_for_function("document.getElementById('cal-part-status').innerText.includes('press-pull')",
                                  timeout=8000)
 
+            # An outline deleted after it was assigned: the view keeps its last copy and says so.
+            pg.click("#cal-part-panel button[aria-label='Close']")
+            _open_view(pg, 0)
+            pg.evaluate(f"(()=>{{const o={OV};o.ann.items=o.ann.items.filter(a=>!(a.type==='polyline'&&a.closed));o.requestDraw();}})()")
+            pg.click("#cal-tb-part")
+            pg.wait_for_function("document.getElementById('cal-part-row-top').innerText.includes('outline was deleted')",
+                                 timeout=8000)
+            assert pg.evaluate("!!window.CalibJob.part().views.top.points.length"), "orphaned view lost its copy"
+
             # The views survive a reload, as the job does.
             pg.reload(wait_until="networkidle")
             pg.wait_for_function("window.CalibJob", timeout=15000)
@@ -351,7 +372,7 @@ def main():
             browser.close()
         print("E2E_RESULT: PASS (top/side/end/cavity assigned across 3 photos; part {:.1f}x{:.1f}x{:.1f} mm, "
               "cavity as traced; mirrored STL downloaded, {} triangles; End/Side moved and back; one-end side sent; "
-              "STEP downloaded; views survive reload; "
+              "STEP downloaded; views follow their outlines (and say when one is deleted); views survive reload; "
               "landing offers a new part; scale notice steps aside)".format(
                   size[0], size[1], size[2], n))
         return 0

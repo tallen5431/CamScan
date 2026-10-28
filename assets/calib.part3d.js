@@ -95,6 +95,38 @@
     document.body.appendChild(box);
   }
 
+  // ---- views follow their outlines -------------------------------------------------------
+  // A view used to be a copy taken when it was assigned, so Refine, Square up, a dragged dot or
+  // a new scale on its photo afterwards never reached the part unless the outline was assigned
+  // again — easy to forget, and nothing said so. Now each view remembers its outline; whenever
+  // that outline's photo is open, the view is brought up to date from it. If the outline was
+  // deleted, the view keeps its last copy and says so.
+  function sync(){
+    var o = overlay(), job = J();
+    if(!o || !o.partProfile || !job || !job.part || !job.photoId) return 0;
+    var p = job.part(), here = job.photoId(), n = 0;
+    ['top', 'side', 'end', 'cavity'].forEach(function(r){
+      var v = p.views[r];
+      if(!v || v.ann_id == null || v.source !== here) return;
+      var alive = (o.ann && o.ann.items || []).some(function(a){ return a.id === v.ann_id && a.type === 'polyline' && a.closed; });
+      if(!alive){ if(!v.orphan){ v.orphan = true; n++; } return; }
+      var prof = o.partProfile(v.ann_id);
+      if(!prof) return;
+      if(JSON.stringify([prof.points, prof.mm_per_px, prof.image_height]) !== JSON.stringify([v.points, v.mm_per_px, v.image_height])){
+        v.points = prof.points; v.mm_per_px = prof.mm_per_px; v.image_height = prof.image_height;
+        v.size_mm = prof.size_mm; v.updated = new Date().toISOString(); n++;
+      }
+      if(v.orphan){ delete v.orphan; n++; }
+    });
+    if(n){
+      job.savePart();
+      if(document.getElementById('cal-part-panel')) render();
+    }
+    return n;
+  }
+  var syncTimer = null;
+  function syncSoon(){ if(syncTimer) clearTimeout(syncTimer); syncTimer = setTimeout(function(){ syncTimer = null; sync(); }, 600); }
+
   // ---- the request ---------------------------------------------------------------------
   function viewSpec(v, role){
     var s = { points: v.points, mm_per_px: v.mm_per_px, image_height: v.image_height,
@@ -118,6 +150,7 @@
     try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){}   // top-bar 🧩 count
   }
   function body(preview){
+    sync();
     var p = J().part(), o = p.opts, views = {};
     ['top', 'side', 'end'].forEach(function(r){ if(p.views[r]) views[r] = viewSpec(p.views[r], r); });
     if(p.views.cavity){
@@ -136,6 +169,7 @@
 
   function open(){
     var prev = document.getElementById('cal-part-panel'); if(prev) prev.remove();
+    sync();                                   // views from this photo: bring them up to date first
     // The trace's Detail slider and the last message sit above everything; with the dialog
     // open they only cover it.
     var ov = overlay();
@@ -209,7 +243,10 @@
       var meta = document.createElement('div'); meta.style.cssText = 'flex:1 1 150px;min-width:0;';
       meta.innerHTML = '<b>' + esc(r[1]) + '</b> <span style="font-size:12px;color:' + (v ? '#9fe6c2' : '#7f8f98') + ';">' +
         (v ? ((v.size_mm ? v.size_mm[0].toFixed(1) + ' × ' + v.size_mm[1].toFixed(1) + ' mm' : 'set') +
-              ((v.rot || v.flip_h || v.flip_v) ? ' · turned' : '')) : 'not set — ' + esc(r[2])) + '</span>';
+              ((v.rot || v.flip_h || v.flip_v) ? ' · turned' : '')) : 'not set — ' + esc(r[2])) + '</span>' +
+        (v && v.orphan ? '<br><span style="font-size:12px;color:#f3c969;">⚠ its outline was deleted — using the last copy</span>'
+         : (v && v.ann_id != null ? '<br><span style="font-size:11.5px;color:#7f9aa5;">follows its outline' +
+            (v.updated ? ' · updated ' + esc(new Date(v.updated).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})) : '') + '</span>' : ''));
       row.appendChild(meta);
       if(v){
         [['rot', '⟲', 'Rotate a quarter turn'], ['fliph', '⇋', 'Flip end for end'], ['flipv', '⇵', 'Flip upside down'],
@@ -259,7 +296,7 @@
 
     var opts = document.createElement('div'); opts.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 4px;';
     var fDepth = field('Depth if a view is missing (mm)', 'cal-part-depth', o.depth, { placeholder: 'from views' });
-    var fWall = field('Uniform wall (mm) — Top only', 'cal-part-wall', o.wall, { placeholder: 'none' });
+    var fWall = field('Hollow — wall (mm), open underneath', 'cal-part-wall', o.wall, { placeholder: 'solid' });
     opts.append(fDepth.wrap, fWall.wrap);
     var cav = null;
     if(p.views.cavity){
@@ -429,5 +466,6 @@
       .catch(function(e){ setStatus(esc(e.message), true); });
   }
 
-  window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body, assigned: assigned, move: move };
+  window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body, assigned: assigned, move: move,
+                         sync: sync, syncSoon: syncSoon };
 })();
