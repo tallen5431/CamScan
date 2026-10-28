@@ -27,6 +27,16 @@ window.CalibDraw = (function(){
   // at the start of every frame (live redraw and PNG export) before any boxLabel call.
   let _placed = [];
   function resetLabels(){ _placed = []; }
+  // Screen chips fixed over the top of the live canvas (the Sides bar, "◂ Simple view"), in
+  // the same image coords as the labels: a label is kept off them as off another label. On a
+  // phone an outline's label ran under them and read "8754 m" between the two. Set by the
+  // live redraw for its own frame and cleared after it, so an export never sees them. Each
+  // also blocks everything above it: the chips sit along the top of the canvas, so a label
+  // stacked up past one would only land off screen, or squeezed between it and the edge.
+  let _reserved = [];
+  function setReserved(rects){
+    _reserved = (Array.isArray(rects) ? rects : []).map(r => ({ x: r.x, y: -1e9, w: r.w, h: r.y + r.h + 1e9 }));
+  }
   let _alpha = 1;
   function setLabelAlpha(a){ _alpha = (a > 0 && a <= 1) ? a : 1; }
   function _overlaps(a, b){
@@ -93,10 +103,12 @@ window.CalibDraw = (function(){
     // Desired position: centered above the anchor. Then nudge to avoid earlier labels.
     let box = { x: cx - boxW/2, y: cy - boxH - 9*scale, w: boxW, h: boxH };
     let moved = false, guard = 0;
-    while(_placed.some(p => _overlaps(box, p)) && guard++ < 60){ box.y -= (boxH + gap); moved = true; }
-    // If stacking pushed it off the top, drop below the anchor and walk downward.
-    if(box.y < 2){ box.y = cy + 9*scale; moved = true; guard = 0;
-      while(_placed.some(p => _overlaps(box, p)) && guard++ < 60){ box.y += (boxH + gap); }
+    const taken = b => _placed.some(p => _overlaps(b, p)) || _reserved.some(p => _overlaps(b, p));
+    while(taken(box) && box.y >= 2 && guard++ < 60){ box.y -= (boxH + gap); moved = true; }
+    // If stacking pushed it off the top (or under a chip at the top), drop below the anchor
+    // and walk downward.
+    if(box.y < 2 || taken(box)){ box.y = cy + 9*scale; moved = true; guard = 0;
+      while(taken(box) && guard++ < 60){ box.y += (boxH + gap); }
     }
     _placed.push({ x: box.x, y: box.y, w: boxW, h: boxH });
 
@@ -119,5 +131,5 @@ window.CalibDraw = (function(){
     ctx.restore();
   }
 
-  return { px, font, drawGrid, drawMarkers, boxLabel, colors, resetLabels, setLabelAlpha };
+  return { px, font, drawGrid, drawMarkers, boxLabel, colors, resetLabels, setReserved, setLabelAlpha };
 })();

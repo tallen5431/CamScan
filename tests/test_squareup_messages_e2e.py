@@ -165,7 +165,7 @@ def main():
             text = pg.evaluate("window.__calLastToast.innerText")
             for want in ("Couldn't find the ruler's edges along your scale line (left edge unclear)",
                          "assumes the part is a true rectangle",
-                         "redraw the scale line down its middle, end to end",
+                         "redraw the scale line down the ruler's middle, between two numbered marks far apart",
                          "no camera data"):
                 assert want in text, f"missing {want!r} in {text!r}"
             btns = {b["t"]: b for b in _buttons(pg)}
@@ -178,7 +178,7 @@ def main():
             pg.locator(".cal-toast-action", has_text="Redraw scale line").click()
             pg.wait_for_function(f"{O}.opts.mode==='setscale' && !{O}.opts.manualHomography && {O}.opts.manualMmPerPx>0",
                                  timeout=5000)
-            pg.wait_for_function("document.body.innerText.includes('Tap one end of the ruler, then the other')", timeout=5000)
+            pg.wait_for_function("document.body.innerText.includes('Tap two numbered marks far apart')", timeout=5000)
 
             # 1b) Edges found, but they would not square up: not called "couldn't find".
             pg.evaluate(f"(()=>{{const o={O};o.setMode('select');o.ann.selectedId={oid};}})()")

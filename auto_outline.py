@@ -155,13 +155,22 @@ def auto_outline_full(
         holes = [_offset_hole(h, ox, oy) for h in holes]
     H, W = img_bgr.shape[:2]
     cov, border = trace_extent(outer, W, H)
+    # Without an Area box, an outline out to all four edges of the photo is the photo, not a
+    # part in it: a centre tap on a customer's top photo came back as 2..1199 x -3..1601 on
+    # its 1200 x 1600 frame — about 40% of the perimeter on the edge, under the border bar.
     res = {"outer": outer, "holes": holes, "coverage": cov, "border": border,
-           "runaway": is_runaway_trace(cov, border)}
+           "runaway": is_runaway_trace(cov, border) or (roi is None and spans_frame(outer, W, H))}
     jogs = _jog_warnings(img_bgr, outer)
     if jogs:
         res["jogs"] = jogs
         warnings.extend(f"The {j['side']} side steps out {j['px']:.0f} px near the {j['end']} end "
                         f"— shadow? Tap ✖ Not the part there, or use Straighten." for j in jogs)
+    proud = [s for s in proud_stretches(outer) if s["side"] not in {j["side"] for j in (jogs or ())}]
+    if proud:
+        res["proud"] = proud
+        warnings.extend(f"The {s['side']} side stands out {s['px']:.0f} px (about {s['pct_w']:.0f}% of the "
+                        f"width) over {s['pct_l']:.0f}% of the length {s['where']} — shadow? Tap ✖ Not "
+                        f"the part there, or use Straighten." for s in proud)
     if hint:
         res["hint"] = hint
     if warnings:
@@ -260,6 +269,123 @@ def _background_as_part(mask, seed, scale, sh, sw, box, img=None):
         if not d_hole < 0.5 * d_trace:
             return "hint"
     return part
+
+
+# A stretch of a long side standing proud of the rest, judged from the outline alone. The
+# step check above (outline_cleanup._pull_jogs) needs the photo to show the part's edge
+# carrying on through the step, and only takes a step over less than 20% of the side. On a
+# customer's top photo, posted the way the page posts it (JPEG q85), the cover's right side
+# stood out 26-29 px (x=906 against 877-880) over about 19% of its length near the bottom
+# end and neither held, so nothing was said and the part was built 175 mm wide for a cover
+# of ~157. This is the softer note for that: the user looks and decides.
+_PROUD_MIN_ASPECT = 2.0       # long parts only: on a squarish one "the long side" is a guess
+_PROUD_STATIONS = 200
+_PROUD_END_SKIP = 0.05        # of the length at each end: rounded or sloped ends narrow there
+_PROUD_MIN_FRAC = 0.05        # of the length: shorter is a corner or wobble (or the step check's)
+_PROUD_MAX_FRAC = 0.35        # of the length: longer is how wide the part is there
+_PROUD_MIN_STEP = 0.04        # of the usual width (and >= 3 px): the cover's was ~8%
+_PROUD_MAX_STEP = 0.35        # of the usual width: more is a flange or a tab, not a shadow
+
+
+def spans_frame(pts, frame_w, frame_h):
+    """True when the outline reaches all four edges of the frame (within 0.5% of its size)."""
+    if not pts or len(pts) < 3 or frame_w <= 0 or frame_h <= 0:
+        return False
+    P = np.asarray(pts, float)[:, :2]
+    tx, ty = max(2.0, 0.005 * frame_w), max(2.0, 0.005 * frame_h)
+    return bool(P[:, 0].min() <= tx and P[:, 1].min() <= ty
+                and P[:, 0].max() >= frame_w - 1 - tx and P[:, 1].max() >= frame_h - 1 - ty)
+
+
+def proud_stretches(outer):
+    """Stretches of a long part's sides that stand out from the side's usual line.
+
+    The outline is measured across its long axis at evenly spaced stations; each side's usual
+    line is a Theil-Sen fit through its positions there (a median of slopes, so neither the
+    stretch itself nor a gentle taper tilts it, and the long axis need not be exact). A run of stations where one side stands out by 4-35% of
+    the usual width, over 5-35% of the length, is returned as {"side", "where", "px",
+    "pct_w", "pct_l"} (px in the outline's own pixels). Pure geometry, so a JPEG round trip
+    that moves the photo's edges does not hide it. [] for a squarish outline or none."""
+    try:
+        P = np.asarray(outer, float)[:, :2]
+    except (TypeError, ValueError, IndexError):
+        return []
+    if len(P) < 4 or not np.all(np.isfinite(P)):
+        return []
+    c = P.mean(axis=0)
+    _w, vec = np.linalg.eigh(np.cov((P - c).T))
+    u = vec[:, 1]
+    v = np.array([-u[1], u[0]])
+    t, s = (P - c) @ u, (P - c) @ v
+    t0, t1 = float(t.min()), float(t.max())
+    length, width = t1 - t0, float(s.max() - s.min())
+    if width <= 0 or length < _PROUD_MIN_ASPECT * width:
+        return []
+    st = np.linspace(t0, t1, _PROUD_STATIONS)
+    lo = np.full(st.shape, np.inf)
+    hi = np.full(st.shape, -np.inf)
+    ta, sa = t, s
+    tb, sb = np.roll(t, -1), np.roll(s, -1)
+    for k in range(len(P)):
+        a, b = ta[k], tb[k]
+        if a == b:
+            continue
+        m = (st >= min(a, b)) & (st <= max(a, b))
+        if not m.any():
+            continue
+        y = sa[k] + (st[m] - a) / (b - a) * (sb[k] - sa[k])
+        lo[m] = np.minimum(lo[m], y)
+        hi[m] = np.maximum(hi[m], y)
+    keep = np.isfinite(lo) & np.isfinite(hi)
+    n_skip = int(round(_PROUD_END_SKIP * _PROUD_STATIONS))
+    keep[:n_skip] = False
+    keep[len(st) - n_skip:] = False
+    if keep.sum() < _PROUD_STATIONS // 2:
+        return []
+    hi_line, lo_line = _theil_sen(st[keep], hi[keep], st), _theil_sen(st[keep], lo[keep], st)
+    usual = float(np.median((hi_line - lo_line)[keep]))
+    if usual <= 0:
+        return []
+    thr = max(3.0, _PROUD_MIN_STEP * usual)
+    out = []
+    for name_vec, proud in ((v, hi - hi_line), (-v, lo_line - lo)):
+        bad = keep & (proud > thr)
+        k = 0
+        while k < len(st):
+            if not bad[k]:
+                k += 1
+                continue
+            e = k
+            while e + 1 < len(st) and bad[e + 1]:
+                e += 1
+            frac = (e - k + 1) / float(_PROUD_STATIONS)
+            peak = float(proud[k:e + 1].max())
+            if _PROUD_MIN_FRAC <= frac <= _PROUD_MAX_FRAC and peak <= _PROUD_MAX_STEP * usual:
+                mid = 0.5 * (st[k] + st[e])
+                rel = (mid - t0) / length
+                if rel < 0.3 or rel > 0.7:
+                    where = f"near the {_dir_name(u if rel > 0.5 else -u)} end"
+                else:
+                    where = "in the middle"
+                out.append({"side": _dir_name(name_vec), "where": where, "px": round(peak, 1),
+                            "pct_w": round(100.0 * peak / usual, 1), "pct_l": round(100.0 * frac, 1)})
+            k = e + 1
+    return out
+
+
+def _theil_sen(x, y, at):
+    """The Theil-Sen line through (x, y), evaluated at `at`."""
+    i, j = np.triu_indices(len(x), 1)
+    dx = x[j] - x[i]
+    ok = dx != 0
+    slope = float(np.median((y[j] - y[i])[ok] / dx[ok])) if ok.any() else 0.0
+    icpt = float(np.median(y - slope * x))
+    return icpt + slope * at
+
+
+def _dir_name(vec):
+    """The image direction a vector points: left / right / top / bottom (as the step check)."""
+    return ("right" if vec[0] > 0 else "left") if abs(vec[0]) >= abs(vec[1]) else ("bottom" if vec[1] > 0 else "top")
 
 
 def _jog_warnings(img_bgr, outer):

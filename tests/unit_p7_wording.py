@@ -27,7 +27,7 @@ def main():
     present = {
         "coach title": "Photo to 3D part",
         "coach step 1 (ruler)": "along the ruler",
-        "coach step 2 (box, tap, Tidy)": "draw a box round the part, then tap it",
+        "coach step 2 (tap, box, Tidy)": "tap the part (if it misses part of it, draw a ▭ box round it first)",
         "coach step 3 (Build)": "then <b>Build 3D part</b>",
         "chooser ruler option": "Ruler or tape on the part",
         "chooser ruler hint": "Tap two numbered marks along its middle",
@@ -50,6 +50,8 @@ def main():
         "old coach title": "Measure in three steps",
         "old Depth prompt": "How far does this profile run?",
         "old Depth label": "'⇥ Depth'",
+        # Trace outline arms a tap; the box is the fallback the failed trace offers.
+        "coach: box before the tap": "draw a box round the part, then tap it",
         "old chip 'manual'": "text = 'manual'",
         "old chip 'paper'": "text = 'paper'",
         "old Square up subtitle": "tilt from the two long sides'",
@@ -80,9 +82,46 @@ def main():
     check("coach skipped in simple mode", bool(m and "camscan-simple" in m.group(1)),
           "guarded" if m else "function not found")
 
+    ruler_wording()
+    stale_button_names()
+
     ok = all(results)
     print("UNIT_RESULT: PASS" if ok else "UNIT_RESULT: FAIL")
     return 0 if ok else 1
+
+
+def ruler_wording():
+    """One ruler instruction everywhere: two numbered marks far apart, down its middle.
+
+    The set-scale status bar and every Square up redraw message used to say "one end of the
+    ruler, then the other ... end to end" while the length box said "numbered marks, not the
+    physical ends"; a line end to end called "30 cm" read every size 4.7-6.3% small.
+    """
+    root = JS.parent.parent
+    files = [root / "assets" / "calibrationOverlay.js", JS, root / "assets" / "calib.simple.js",
+             root / "assets" / "calib.job.js", root / "app.py", root / "README.txt"]
+    bad = ("one end of the ruler", "end, then the other", "middle, end to end")
+    hits = []
+    for f in files:
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            low = line.lower()
+            hits += [f"{f.name}:{i}: {b!r}" for b in bad if b in low]
+    check("no 'end to end' ruler instruction", not hits, "; ".join(hits) or "none")
+    ov = files[0].read_text(encoding="utf-8")
+    check("set-scale status names numbered marks", "tap two numbered marks far apart, along the ruler's middle" in ov,
+          "present" if "tap two numbered marks far apart" in ov else "missing")
+
+
+def stale_button_names():
+    """A button renamed in one file must not live on in another file's hint text."""
+    root = JS.parent.parent
+    hits = []
+    for f in sorted((root / "assets").glob("*.js")):
+        src = f.read_text(encoding="utf-8")
+        for old in ("⬅ New", "⬅️ New"):
+            if old in src:
+                hits.append(f"{f.name}: {old!r}")
+    check("no hint names the old '⬅ New' button", not hits, "; ".join(hits) or "none")
 
 
 if __name__ == "__main__":

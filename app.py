@@ -358,8 +358,9 @@ app.layout = html.Div([
                 "Shoot square-on from about 0.5 m with the whole part in frame.",
             ], className="landing-how"),
             html.Div(
-                "Then, on each photo: set the scale along the ruler, box the part and tap it "
-                "to trace it, and use it in the 3D part as Top, Side or End. Build, then "
+                "Then, on each photo: set the scale between two numbered marks along the "
+                "ruler, trace the part with a tap (a box round it if the tap misses), and use "
+                "it in the 3D part as Top, Side or End. Build, then "
                 "download STL to print or STEP for CAD. A printed calibration square works "
                 "too and scales automatically.",
                 className="landing-note",
@@ -1439,7 +1440,7 @@ def api_square_up():
         if want == "ruler" and res_r is None:
             raise err_r or SquareUpError("Could not find the ruler's edges along the scale line" +
                                          (f" ({ruler_reason})" if ruler_reason else "") +
-                                         " — draw it down the middle of the ruler, end to end.")
+                                         " — draw it down the middle of the ruler, between two numbered marks far apart.")
         if want == "part" and res_p is None:
             raise SquareUpError("This outline has no two long parallel sides to square up from.")
         if res_r is None and res_p is None:
