@@ -218,6 +218,9 @@
         if(this._undoStack.length){
           this._redoStack.push(this._snapshot());
           this.ann.items=this._undoStack.pop();
+          // The snapshot froze each item's mm/px as it was then; the scale may have changed
+          // since (undo history holds the items, not the scale), so read the current one.
+          this._rescaleAnnotations();
           this.ann.selectedId=null; this.hover=null; this._invalidateTraceAnchor(); this.requestDraw();
         }
       }
@@ -225,6 +228,7 @@
         if(this._redoStack.length){
           this._undoStack.push(this._snapshot());
           this.ann.items=this._redoStack.pop();
+          this._rescaleAnnotations();
           this.ann.selectedId=null; this.hover=null; this._invalidateTraceAnchor(); this.requestDraw();
         }
       }
@@ -1125,7 +1129,11 @@
             homography:(this.opts.manualHomography ? this._scaleHomography(this.opts.manualHomography, s) : null),
             ref:this._scaleRef(this._manualRef, s),
             line:(this._scaleLine ? { a:[this._scaleLine.a[0]*s, this._scaleLine.a[1]*s],
-                                      b:[this._scaleLine.b[0]*s, this._scaleLine.b[1]*s], mm:this._scaleLine.mm } : null)
+                                      b:[this._scaleLine.b[0]*s, this._scaleLine.b[1]*s], mm:this._scaleLine.mm } : null),
+            // A marker the user confirmed by hand, and the reference's size for the
+            // too-small-reference warning: neither is in the calibration JSON.
+            markerConfirmed:!!this._markerConfirmed,
+            extentPx:(this._refExtentPx>0 ? this._refExtentPx*s : null)
           }
         };
       }
@@ -1144,6 +1152,8 @@
           this.opts.manualHomography=(m.homography||null);
           this._manualRef=(m.ref||null);
           this._scaleLine=(m.line && Array.isArray(m.line.a) && Array.isArray(m.line.b) && m.line.mm>0) ? m.line : null;
+          this._markerConfirmed=!!m.markerConfirmed;
+          this._refExtentPx=(m.extentPx>0 ? m.extentPx : null);
           if(Array.isArray(state.ann)){
             this.ann.items=state.ann.map(a=>JSON.parse(JSON.stringify(a)));
             Ann.reserveIds(this.ann.items);   // advance the id counter past restored ids (no collisions)
@@ -1358,7 +1368,9 @@
         place();
         // The buttons it must clear can appear a moment later (a trace finishing selects
         // the new outline): look again.
-        const placer=setInterval(()=>{ if(!el.parentNode) clearInterval(placer); else place(); }, 400);
+        let placer=null;
+        const follow=()=>{ clearInterval(placer); placer=setInterval(()=>{ if(!el.parentNode) clearInterval(placer); else place(); }, 400); };
+        follow();
         const self=this;
         let gone=false;
         const api={
@@ -1367,6 +1379,7 @@
             if(!gone && !el.parentNode){
               if(window.__calLastToast && window.__calLastToast.parentNode) window.__calLastToast.parentNode.removeChild(window.__calLastToast);
               document.body.appendChild(el); window.__calLastToast=el;
+              follow();
             }
             place();
             text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
@@ -1729,14 +1742,27 @@
         const len=mm=>u.fromMM(mm).toFixed(dp)+' '+u.label;
         const r1=v=>Math.round(v*10)/10;
         const toast=this._toast('Squaring up…');
+        // The scale as it was asked about. A new scale set while the request is out (it can
+        // take a second or two) must not be overwritten by a result built from the old one.
+        const sent={ line:line, mm:this.opts.manualMmPerPx, H:this.opts.manualHomography };
+        const unchanged=()=>self._scaleLine===sent.line && self.opts.manualMmPerPx===sent.mm && self.opts.manualHomography===sent.H;
         return fetch(this._apiUrl('api/square_up'), { method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify({ outline:a.pts, ruler:[line.a, line.b], ruler_mm:line.mm, image_w:W, image_h:H, focal_px:focal,
                                   ruler_image:rulerImage, ruler_box:rulerBox, reference:reference||'auto' }) })
           .then(r=>r.json())
           .then(function(j){
             if(!j || !j.ok){ toast.update((j && j.error) || 'Could not square up this photo.', 'err'); setTimeout(toast.dismiss, 5000); return false; }
+            if(!unchanged()){ toast.update('The scale changed while squaring up — press Square up again to use the new one.', 'err'); setTimeout(toast.dismiss, 5000); return false; }
             const prev={ mm:self.opts.manualMmPerPx, H:self.opts.manualHomography, ref:self._manualRef, ext:self._refExtentPx };
+            // Undo and the switch button act only while this result is still the scale: once
+            // another scale is set, "undo" would put back a scale from before that one.
+            const stillMine=function(){
+              if(self.opts.manualHomography===j.H) return true;
+              self._toast('The scale has been set again since — this Square up can no longer be undone from here.', {autoMs:3500});
+              return false;
+            };
             const undo=function(){
+              if(!stillMine()) return;
               if(prev.H) self.setManualRectScale(prev.H, prev.mm, prev.ref, prev.ext);
               else { self.opts.manualHomography=null; self._manualRef=prev.ref; self.opts.manualMmPerPx=prev.mm; self._rescaleAnnotations(); self.requestDraw(); }
             };
@@ -1771,7 +1797,7 @@
             }
             if(j.focal_source==='assumed' && j.tilt_deg>3) msg+=' The camera\'s focal length was assumed — the original photo from the phone carries the exact one.';
             const alt=j.other ? { label: j.other==='ruler' ? 'Use the ruler instead' : 'Use the part\'s sides instead',
-                                   fn:function(){ self.ann.selectedId=a.id; self.squareUp(j.other); } } : null;
+                                   fn:function(){ if(!stillMine()) return; self.ann.selectedId=a.id; self.squareUp(j.other); } } : null;
             self._toast(msg, { autoMs:16000, actions: alt ? [alt, { label:'Undo', fn:undo }] : [{ label:'Undo', fn:undo }] });
             return true;
           })
@@ -2027,6 +2053,9 @@
         this.opts.manualHomography=H;
         if(mmPerPx>0) this.opts.manualMmPerPx=mmPerPx;   // wins over any detected marker
         this._manualRef=ref||null;
+        // A rectangle replaces the ruler line as the scale; keeping the line let a later
+        // Square up silently rebuild the scale from it. Square up's own result keeps it.
+        if(!(ref && ref.kind==='squared')) this._scaleLine=null;
         this._rescaleAnnotations();
         this.requestDraw();
       }

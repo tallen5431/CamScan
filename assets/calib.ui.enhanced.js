@@ -806,7 +806,7 @@ window.CalibUI = (function(){
       partChip.setAttribute('data-tooltip', label); partChip.setAttribute('aria-label', label);
     }
     reflectPartChip();
-    document.addEventListener('camscan-job-changed', reflectPartChip);
+    document.addEventListener('camscan-job-changed', reflectPartChip);   // removed in _uiCleanup
 
     left.append(newImage, calChip, partChip);
 
@@ -1094,7 +1094,8 @@ window.CalibUI = (function(){
       tidyMenu.style.top = Math.max(8, r.top - m.height - 8) + 'px';
       ctxTidy.setAttribute('aria-expanded', 'true');
     };
-    document.addEventListener('click', (e) => { if (!tidyMenu.contains(e.target) && e.target !== ctxTidy && !ctxTidy.contains(e.target)) closeTidy(); });
+    const onDocClickCloseTidy = (e) => { if (!tidyMenu.contains(e.target) && e.target !== ctxTidy && !ctxTidy.contains(e.target)) closeTidy(); };
+    document.addEventListener('click', onDocClickCloseTidy);   // removed in _uiCleanup
     tidyMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeTidy(); ctxTidy.focus(); } });
     ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxTidy, ctxDepth, ctx3d, ctxFinish);
     rootEl.appendChild(ctx);
@@ -1152,9 +1153,14 @@ window.CalibUI = (function(){
       setTimeout(() => { try { goBtn.focus(); } catch (e) {} }, 0);
     }
 
-    // Deterministic teardown of the document listener this build() attached (the overlay's
-    // destroy() calls this when the #viewer subtree is swapped on a new upload).
-    overlay._uiCleanup = () => { document.removeEventListener('click', onDocClickCloseSave); };
+    // Deterministic teardown of the document listeners this build() attached (the overlay's
+    // destroy() calls this when the #viewer subtree is swapped on a new upload, or another
+    // side is opened). Each one left behind kept a dead overlay — photo and all — alive.
+    overlay._uiCleanup = () => {
+      document.removeEventListener('click', onDocClickCloseSave);
+      document.removeEventListener('click', onDocClickCloseTidy);
+      document.removeEventListener('camscan-job-changed', reflectPartChip);
+    };
     // Let overlay-owned chrome (the KPI "Set a scale" chip) route through the one chooser.
     overlay._openScalePanel = openScalePanel;
 
