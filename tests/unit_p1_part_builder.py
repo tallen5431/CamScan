@@ -12,7 +12,10 @@ the running-board step-pad cover came out wrong:
   * noise on the bottom edge floated the deck 0.4 mm off the bed and was read as a thin rim;
   * the status said "turned plate-down" for a file that was open side down;
   * STEP files for CAD came in upside down;
-  * with no Side photo the sloped ends came out square.
+  * with no Side photo the sloped ends came out square;
+  * a crowned End deck was called "ready to print" under a bed-contact warning;
+  * a lone Top's shadow bulge set the width with no warning;
+  * "Use End" for the width moved the Top's ruler-measured length 700 -> 742 mm.
 
 Prints one [PASS]/[FAIL] line per check and UNIT_RESULT: PASS|FAIL; exits non-zero on failure.
 """
@@ -408,6 +411,100 @@ def main():
     }.items()}
     check("/api/export/part: junk in the new fields is a clean 400/422",
           all(c in (400, 422) for c in junk.values()), str(junk))
+
+    # 12) The integration review's cover-flow findings.
+    #     An End photo taken at an angle: its top edge (the far side of the deck) is a crown
+    #     the flattening cannot level. The status said "ready to print" under "Only 29% of the
+    #     deck lies on the bed".
+    xs = np.linspace(175, 0, 60)
+    crown = np.vstack([[0, 0], [175, 0], np.c_[xs, 40 + 10 * np.sin(np.pi * xs / 175)]]).tolist()
+    i = build_part({"top": {"points": TOP.tolist()}, "end": {"points": crown}}, wall_mm=3, preview=True)["info"]
+    said = " ".join([i["orientation"], i.get("note") or ""] + i["warnings"])
+    check("a crowned End deck: warned, never 'ready to print', and told to retake the photo square-on",
+          any("of the deck lies on the bed" in w and "square-on" in w and "End" in w for w in i["warnings"])
+          and "ready to print" not in said.replace("not ready to print", "")
+          and "not ready to print" in i["orientation"] and i.get("bed_contact", 1) < pb.BED_CONTACT_MIN, said)
+
+    #     A typed width pins the Top: the refusal names the typed number and marks the setter as
+    #     pinned, so the dialog does not offer to scale the Top (the typed size undoes it).
+    try:
+        build_part({"top": {"points": rect(620, 155).tolist()}, "end": {"points": rect(155, 60).tolist()}},
+                   known_mm={"length": 700, "width": 175}, wall_mm=3)
+        check("a refusal against a typed-size view marks the setter pinned", False, "accepted")
+    except PartError as e:
+        d = e.detail or {}
+        check("a refusal against a typed-size view marks the setter pinned",
+              d.get("setter_pinned") is True and d.get("setter") == "known" and d.get("setter_view") == "top"
+              and "the width you typed (155.0 vs 175.0 mm)" in str(e), f"{e} {d}")
+    i = build_part({"top": {"points": rect(620, 155).tolist(), "scale": 0.88}, "end": {"points": rect(175, 60).tolist()}},
+                   known_mm={"length": 700, "width": 175}, preview=True)["info"]
+    tf = {f["axis"]: f for f in i["fits"] if f["view"] == "top"}
+    check("a Match factor on a typed-size view is reported as having no effect, and fits read the photo",
+          abs(tf["length"]["have_mm"] - 620) < 0.01 and abs(tf["width"]["pct"] + 11.43) < 0.01
+          and any("Match ×0.880 has no effect" in w for w in i["warnings"]) and i["size_mm"][:2] == [700, 175],
+          f"{i['fits']} {i['warnings']}")
+
+    #     A turned view: the refusal says it was turned, and carries what was measured.
+    try:
+        build_part({"top": {"points": rect(700, 155).tolist()}, "end": {"points": turned(rect(185, 59), 9.9)}})
+        check("a refusal about a turned view says so and carries the measured sizes", False, "accepted")
+    except PartError as e:
+        m = (e.info or {}).get("measured_mm", {})
+        check("a refusal about a turned view says so and carries the measured sizes",
+              "turned 9.9° to square it" in str(e) and abs(m.get("end", [0])[0] - 185) < 0.05
+              and (e.info or {}).get("deskew") == [{"view": "end", "deg": 9.9}]
+              and (e.detail or {}).get("deskew_deg") == 9.9, f"{e} {e.info} {e.detail}")
+    j = cli.post("/api/export/part", json={"views": {"top": {"points": rect(700, 155).tolist(), "mm_per_px": 1},
+                                                     "end": {"points": turned(rect(185, 59), 9.9), "mm_per_px": 1}},
+                                           "preview": True}).get_json() or {}
+    check("/api/export/part: a refused preview returns the deskew and measured sizes",
+          j.get("ok") is False and j.get("deskew") and abs((j.get("measured_mm") or {}).get("end", [0])[0] - 185) < 0.05,
+          str({k: j.get(k) for k in ("deskew", "measured_mm")}))
+
+    #     A typed length the views trim (30° ends meeting an End with rounded bottom corners
+    #     under a Top whose far corner is a point): said, and marked on the fit.
+    i = build_part({"top": {"points": [[0, 0], [700, 0], [690, 175], [10, 175]]},
+                    "end": {"points": rounded_bottom(175, 50, 10)}},
+                   known_mm={"length": 700}, ends={"slope_deg": 30}, preview=True)["info"]
+    kf = [f for f in i["fits"] if f["setter"] == "known"]
+    check("a typed length the ends trim is reported, not called 'using your number' alone",
+          i["size_mm"][0] < 699.7 and kf and abs(kf[0].get("final_mm", 0) - i["size_mm"][0]) < 0.01
+          and "not the 700.0 mm you typed" in (i.get("note") or "") and "30° ends" in (i.get("note") or "")
+          and "0 mm" not in (i.get("note") or "").split("Ends:")[1].split(".")[0], f"{i['size_mm']} {i.get('note')}")
+
+    #     One rounding for a fit's line and its warning: 170.649 is 170.7 in both.
+    i = build_part({"top": {"points": rect(700, 158.5).tolist()}, "end": {"points": rect(170.649, 50).tolist()}},
+                   preview=True)["info"]
+    f = i["fits"][0]
+    check("a fit's warning is linked to it and uses the dialog's rounding",
+          f.get("warning") in i["warnings"] and "7.7% off" in f["warning"] and "(170.7 vs 158.5 mm)" in f["warning"]
+          and pb._fmt1(0.25) == "0.3" and pb._fmt1(170.65) == "170.7", f.get("warning", ""))
+
+    #     A Top with a shadow bulge and a typed height sets the width alone: warned, not trimmed.
+    bad = []
+    for frac in (0.08, 0.19):
+        a = 650 - 700 * frac
+        bulge = [[0, 0], [700, 0], [700, 155], [650, 155], [650, 173], [a, 173], [a, 155], [0, 155]]
+        for kw in ({"depth_mm": 50}, {"depth_mm": 50, "wall_mm": 3}, {"depth_mm": 50, "known_mm": {"length": 700}}):
+            i = build_part({"top": {"points": bulge}}, preview=True, **kw)["info"]
+            if not (abs(i["size_mm"][1] - 173) < 0.01 and any("18 mm wider" in w and "Straighten" in w
+                                                                for w in i["warnings"])):
+                bad.append(f"{frac} {kw}: {i['size_mm']} {i['warnings']}")
+    for nm, pts in (("taper", [[0, 0], [700, 0], [700, 175], [0, 155]]),
+                    ("noisy", jittered_ring(700, 175, 0.5, np.random.default_rng(4)))):
+        i = build_part({"top": {"points": pts}}, depth_mm=50, preview=True)["info"]
+        if i["warnings"]:
+            bad.append(f"{nm}: {i['warnings']}")
+    check("a lone Top's shadow bulge (8%, 19% of the length) is warned with a typed height; a taper or noise is not",
+          not bad, "; ".join(bad) or "warned at 173 mm, built at the full width")
+
+    #     'Use End' for the width moves only the width: the Top is stretched, its length stays.
+    i = build_part({"top": {"points": rect(700, 165).tolist()}, "end": {"points": rect(175, 50).tolist()}},
+                   axis_source={"width": "end"}, wall_mm=3, preview=True)["info"]
+    tf = [f for f in i["fits"] if f["view"] == "top"]
+    check("axis_source width=end stretches the Top on width only: 700 x 175 x 50",
+          np.allclose(i["size_mm"], [700, 175, 50], atol=0.01) and tf and tf[0]["kind"] == "stretch",
+          f"{i['size_mm']} {i['fits']}")
 
 
 if __name__ == "__main__":

@@ -879,7 +879,8 @@ def export_part():
     is how a CAD user expects to find the part. 400 for malformed input, 422 with a reason for
     a part that cannot be built — and, when views disagree, `detail` {view, axis, have_mm,
     want_mm, setter} so the dialog can offer the fix (JSON for a preview, the
-    X-CamScan-Detail header for a download).
+    X-CamScan-Detail header for a download). A refused preview also carries `deskew` and
+    `measured_mm` ({view: [w, h]} after squaring), the sizes its message quotes.
     """
     from flask import Response, jsonify
     try:
@@ -972,7 +973,11 @@ def export_part():
     except PartError as e:
         detail = getattr(e, "detail", None)
         if preview:
-            return jsonify(ok=False, error=str(e), detail=detail), 422
+            # What the builder measured (after the deskew), so a refusal quoting 185.2 mm for an
+            # End whose row reads 181.4 mm can show where its number came from.
+            meas = getattr(e, "info", None) or {}
+            return jsonify(ok=False, error=str(e), detail=detail, deskew=meas.get("deskew") or [],
+                           measured_mm=meas.get("measured_mm") or {}), 422
         return Response(str(e), status=422, mimetype="text/plain", headers=(
             {"X-CamScan-Detail": _json.dumps(detail, ensure_ascii=True)} if detail else {}))
     except Exception as e:

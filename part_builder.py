@@ -29,12 +29,14 @@ sets height, unless the request says which view to trust for an axis. A view's w
 height is read across its length, ignoring the widest tenth, so one blob of shadow in a
 trace does not set the size of the whole part. A view that disagrees with the one setting an
 axis by up to FIT_TOLERANCE is fitted to it and the fit is reported. A photo has one scale,
-so when its other axis is its own the whole view is rescaled, not just the shared axis;
-beyond FIT_TOLERANCE the build is refused and the message names both views.
+so when its other axis is its own the whole view is rescaled, not just the shared axis —
+except on an axis the user chose a view for, which moves only that size; beyond
+FIT_TOLERANCE the build is refused and the message names both views.
 
 The booleans are done by manifold3d, which keeps every result a closed, consistently wound
 solid. Every mesh is still checked with solid_export.mesh_report before it is returned.
 """
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional
 import math
 
@@ -78,11 +80,14 @@ _RIM_SCAN_MM = 3.0            # a ragged rim closes within this: 0.5 mm of trace
 class PartError(ValueError):
     """A reason the part cannot be built, worded for the person building it. `detail`, when
     set, is the same reason as data ({view, axis, have_mm, want_mm, setter}), so the dialog
-    can offer to fix it without reading the sentence."""
+    can offer to fix it without reading the sentence. `info`, set by build_part once the views
+    are read, holds what it measured ({deskew, measured_mm}): a refusal quoting 185.2 mm for an
+    End whose row says 181.4 mm has to be able to show where the other number came from."""
 
     def __init__(self, message: str, detail: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.detail = detail
+        self.info: Optional[Dict[str, Any]] = None
 
 
 def available() -> bool:
@@ -256,21 +261,15 @@ class View:
         self.shift[axis_index] += by
 
 
-def _band(pts: np.ndarray, n: int = 256):
-    """How far an outline usually reaches across, read at n stations along it.
-
-    Returns (lo, hi, where, at): lo is the 10th percentile of the lowest edge over the
-    stations and hi the 90th percentile of the highest, so a stray blob over less than a
-    tenth of the length moves neither; `where` is the fraction of the length at which the
-    outline sticks out furthest past [lo, hi], and `at` is that station's u."""
-    p = np.asarray(pts, float)
+def _stations(p: np.ndarray, n: int = 256):
+    """The outline's lowest and highest v at n stations along u: (xs, lo_s, hi_s, ok, u0,
+    span), or None for an outline with no length. `ok` marks the stations it crosses."""
     a, b = p, np.roll(p, -1, axis=0)
     ua, ub, va, vb = a[:, 0], b[:, 0], a[:, 1], b[:, 1]
     u0, u1 = float(p[:, 0].min()), float(p[:, 0].max())
     span = u1 - u0
     if span <= 0:
-        v = p[:, 1]
-        return float(v.min()), float(v.max()), 0.0, u0
+        return None
     du = np.where(ub != ua, ub - ua, 1.0)
     xs = u0 + (np.arange(n) + 0.5) / n * span
     lo_s = np.full(n, np.nan)
@@ -280,7 +279,57 @@ def _band(pts: np.ndarray, n: int = 256):
         if hit.any():
             vv = va[hit] + (x - ua[hit]) * (vb[hit] - va[hit]) / du[hit]
             lo_s[i], hi_s[i] = vv.min(), vv.max()
-    ok = np.isfinite(lo_s)
+    return xs, lo_s, hi_s, np.isfinite(lo_s), u0, span
+
+
+# A stretch of an outline wider than its median by BULGE_WARN, over no more than this much of
+# its length, is a blob, not the part's shape: a shadow 18 mm proud of a 155 mm top over 19% of
+# its length passed the 90th-percentile band unseen, while a part that is simply wider at one
+# end (a taper) is wide over half its length or more.
+_BULGE_SPAN_MAX = 0.35
+
+
+def _lone_bulge(pts: np.ndarray):
+    """For a view that sets its cross size with nothing to check it against: (box, median,
+    where) when the outline is a blob wider than its usual width, else None. `median` is the
+    median of the per-station widths; `where` the fraction of the length at the widest."""
+    p = np.asarray(pts, float)
+    st = _stations(p)
+    if st is None:
+        return None
+    xs, lo_s, hi_s, ok, u0, span = st
+    if ok.sum() < 8:
+        return None
+    w = (hi_s - lo_s)[ok]
+    med = float(np.median(w))
+    box = float(np.ptp(p[:, 1]))
+    if med <= 0 or box - med <= BULGE_WARN * med:
+        return None
+    wide = w > med * (1.0 + BULGE_WARN / 2.0)
+    if not wide.any() or float(np.mean(wide)) > _BULGE_SPAN_MAX:     # a spike between stations
+        return None
+    # A blob stands proud as a plateau: most of the wide stations reach near the box. A part
+    # that tapers 155 -> 175 mm passes through every width on the way (42% of them in the top
+    # quarter of the excess, against all of them for a shadow step).
+    if float(np.mean(w[wide] >= box - 0.25 * (box - med))) < 0.5:
+        return None
+    i = int(np.argmax(np.where(ok, hi_s - lo_s, -np.inf)))
+    return box, med, float((xs[i] - u0) / span)
+
+
+def _band(pts: np.ndarray, n: int = 256):
+    """How far an outline usually reaches across, read at n stations along it.
+
+    Returns (lo, hi, where, at): lo is the 10th percentile of the lowest edge over the
+    stations and hi the 90th percentile of the highest, so a stray blob over less than a
+    tenth of the length moves neither; `where` is the fraction of the length at which the
+    outline sticks out furthest past [lo, hi], and `at` is that station's u."""
+    p = np.asarray(pts, float)
+    st = _stations(p, n)
+    if st is None:
+        v = p[:, 1]
+        return float(v.min()), float(v.max()), 0.0, float(p[:, 0].min())
+    xs, lo_s, hi_s, ok, u0, span = st
     if not ok.any():
         v = p[:, 1]
         return float(v.min()), float(v.max()), 0.0, u0
@@ -340,10 +389,16 @@ def _shell_note(wall: float) -> str:
     return "Hollow, {:.1f} mm walls, open underneath".format(wall)
 
 
-def _orientation(shell: bool, turned: bool, for_print: bool) -> str:
-    """Which way up the file is, in words — the same words whatever made it that way."""
+def _orientation(shell: bool, turned: bool, for_print: bool, flat_ok: bool = True) -> str:
+    """Which way up the file is, in words — the same words whatever made it that way.
+
+    `flat_ok` False: the deck does not sit on the bed (see the bed-contact check). The status
+    said "ready to print (no supports)" right under "Only 2% of the deck lies on the bed",
+    and a 700 mm print started on that comes loose."""
     if shell:
         if turned:
+            if for_print and not flat_ok:
+                return "plate-down, open side up — but the deck is not flat on the bed, not ready to print"
             return ("plate-down, open side up — ready to print (no supports)" if for_print
                     else "plate-down, open side up")
         if for_print:
@@ -607,6 +662,12 @@ def _tris(man) -> np.ndarray:
 # ---------------------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------------------
+def _fmt1(x: float) -> str:
+    """x to one decimal exactly as JavaScript's toFixed(1) gives it (half up on the binary
+    value), so a number the server writes and the dialog writes reads the same."""
+    return str(Decimal(float(x)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
 def _known(known_mm) -> Dict[int, float]:
     """{axis: mm} from the sizes the user typed as already measured on the part."""
     out: Dict[int, float] = {}
@@ -629,10 +690,14 @@ def _known(known_mm) -> Dict[int, float]:
 
 
 def _axis_order(axis_source, vs: Dict[str, "View"], info: Dict[str, Any]):
-    """AXIS_SOURCES, with the views the user chose to trust put first."""
+    """AXIS_SOURCES, with the views the user chose to trust put first, and the set of axes
+    the user chose that way. A choice is for that one size: 'Use End' on a width line
+    rescaled the whole Top under one-scale-per-photo, so its ruler-measured length jumped
+    700 -> 742 mm when the user had asked only about the width."""
     order = {a: tuple(r) for a, r in AXIS_SOURCES.items()}
+    chosen = set()
     if not axis_source:
-        return order
+        return order, chosen
     if not isinstance(axis_source, dict):
         raise PartError("Which view sets each size must be given as {length|width|height: view}.")
     for nm, role in axis_source.items():
@@ -648,24 +713,53 @@ def _axis_order(axis_source, vs: Dict[str, "View"], info: Dict[str, Any]):
                                     f"no {role} view; it comes from the usual one.")
             continue
         order[a] = (role,) + tuple(r for r in order[a] if r != role)
-    return order
+        chosen.add(a)
+    return order, chosen
 
 
-def _mismatch(role: str, axis: int, have: float, want: float, setter: str, off: float) -> PartError:
-    head = "The {} view's {} is {:.0f}% {} than the {} view's ({:.1f} vs {:.1f} mm). ".format(
-        role, AXIS_NAMES[axis], abs(off) * 100, "longer" if off > 0 else "shorter", setter, have, want)
+def _mismatch(role: str, axis: int, have: float, want: float, setter: str, off: float,
+              tilt: Dict[str, float], pinned_by: Optional[List[int]] = None) -> PartError:
+    """`tilt`: {role: degrees} each view was turned to square it. `pinned_by`: the typed axes
+    that fix the setter's scale, when they do — then the setter cannot be matched to this view
+    (the typed number rescales it straight back), and the message names the typed number."""
+    if pinned_by and axis in pinned_by:
+        src = "the {} you typed".format(AXIS_NAMES[axis])
+    else:
+        src = "the {} view's".format(setter)
+    head = "The {} view's {} is {:.0f}% {} than {} ({:.1f} vs {:.1f} mm). ".format(
+        role, AXIS_NAMES[axis], abs(off) * 100, "longer" if off > 0 else "shorter", src, have, want)
+    # The row in the dialog shows the photo's bounding box; this number is after the deskew, so
+    # an End on the row at 181.4 mm was refused at 185.2 mm with nothing to say why.
+    turned = [(r, tilt[r]) for r in (role, setter) if tilt.get(r)]
+    if turned:
+        head += " ".join("The {} view was turned {:.1f}° to square it before it was measured.".format(r, abs(d))
+                         for r, d in turned) + " "
+    if pinned_by and axis not in pinned_by:
+        head += "The {} view's size is set by the {} you typed. ".format(
+            setter, " and ".join(AXIS_NAMES[a] for a in pinned_by))
     if abs(off) > LARGE_MISMATCH:
         # A 76% gap was reported as "scaled wrong" when the photo was a top view assigned as
         # Side; at this size a scale slip is the least likely cause.
         tail = ("That is too far apart for a scale slip: the {0} photo may not be a straight-on "
                 "{0} view (taken at an angle, or of a different face), a trace may have a stray "
                 "blob, or one photo's scale is wrong.".format(role))
+    elif pinned_by:
+        tail = ("Check the {0} photo's reference (or its trace for a stray blob), or match the "
+                "{0} view to that size.".format(role))
     else:
         tail = ("One of those photos is scaled wrong, or a trace has a stray blob — check its "
                 "reference, or match one view to the other.")
-    return PartError(head + tail, detail={"view": role, "axis": AXIS_NAMES[axis],
-                                          "have_mm": round(have, 2), "want_mm": round(want, 2),
-                                          "setter": setter})
+    detail = {"view": role, "axis": AXIS_NAMES[axis], "have_mm": round(have, 2),
+              "want_mm": round(want, 2), "setter": setter}
+    if pinned_by:
+        # The dialog must not offer "Scale Top to match End" here: pressing it stored x0.888 on
+        # the Top, the typed size cancelled it, and the same refusal came straight back.
+        detail.update(setter_pinned=True, setter_view=setter)
+        if axis in pinned_by:
+            detail["setter"] = "known"
+    if tilt.get(role):
+        detail["deskew_deg"] = round(tilt[role], 2)
+    return PartError(head + tail, detail=detail)
 
 
 def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = None,
@@ -697,6 +791,18 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     if mf is None:
         raise PartError("3D part building needs the manifold3d package on the server.")
     info: Dict[str, Any] = {"fits": [], "warnings": [], "kind": None, "deskew": []}
+    try:
+        return _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror,
+                           upside_down, preview, known_mm, axis_source, ends, for_print)
+    except PartError as e:
+        # What was measured goes back with a refusal too, so the dialog can show it.
+        if e.info is None:
+            e.info = {"deskew": info["deskew"], "measured_mm": info.get("measured_mm") or {}}
+        raise
+
+
+def _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror, upside_down,
+                preview, known_mm, axis_source, ends, for_print) -> Dict[str, Any]:
     notes: List[str] = []
 
     vs: Dict[str, View] = {}
@@ -710,6 +816,10 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                         keep_tilt=bool(spec.get("keep_tilt")))
         if vs[role].tilt:
             info["deskew"].append({"view": role, "deg": round(vs[role].tilt, 2)})
+    # Each view's size as the builder reads it — after the deskew, before any fit — which is
+    # not the photo's bounding box the dialog's rows show when a view was turned.
+    info["measured_mm"] = {r: [round(float(x), 2) for x in v.extent] for r, v in vs.items()}
+    tilt = {r: v.tilt for r, v in vs.items() if v.tilt}
     if not vs:
         raise PartError("Assign at least one outline to a view (Top, Side or End).")
 
@@ -724,7 +834,7 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         raise PartError("A side view of one end needs a Top view for the part's full length.")
 
     known = _known(known_mm)
-    order = _axis_order(axis_source, vs, info)
+    order, chosen = _axis_order(axis_source, vs, info)
 
     # Who sets each axis, and how long it is.
     size = [None, None, None]
@@ -753,18 +863,21 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         setter[missing[0]] = "depth"
 
     def _fit_entry(role, axis, have, want, by, kind, off):
-        info["fits"].append({"view": role, "axis": AXIS_NAMES[axis], "pct": round(off * 100, 2) + 0.0,
-                             "have_mm": round(have, 2), "want_mm": round(want, 2),
-                             "setter": by, "kind": kind})
+        entry = {"view": role, "axis": AXIS_NAMES[axis], "pct": round(off * 100, 2) + 0.0,
+                 "have_mm": round(have, 2), "want_mm": round(want, 2), "setter": by, "kind": kind}
+        info["fits"].append(entry)
         if abs(off) > FIT_WARN:
             what = ("the whole {} view was rescaled to match, so its other size moved with it"
                     .format(role) if kind == "rescale" else
                     "the {} view was stretched in {} to match".format(role, AXIS_NAMES[axis]))
             src = "the {} you typed".format(AXIS_NAMES[axis]) if by == "known" else "the {} view's".format(by)
-            info["warnings"].append(
-                "The {} view's {} is {:.1f}% off {} ({:.1f} vs {:.1f} mm); {}. Check that "
-                "photo's reference.".format(role, AXIS_NAMES[axis], abs(off) * 100, src,
-                                            have, want, what))
+            # From the entry's own rounded numbers, rounded as the dialog's toFixed(1) does: the
+            # same fit read "170.7 mm, 7.7%" on its fit line and "170.6 mm, 7.6%" here.
+            text = ("The {} view's {} is {}% off {} ({} vs {} mm); {}. Check that photo's "
+                    "reference.".format(role, AXIS_NAMES[axis], _fmt1(abs(entry["pct"])), src,
+                                        _fmt1(entry["have_mm"]), _fmt1(entry["want_mm"]), what))
+            info["warnings"].append(text)
+            entry["warning"] = text            # the dialog shows the fit line once, not both
 
     # Sizes typed as already measured on the part come first: the view that sets each is
     # scaled to it — the whole view, as a photo has one scale, unless it sets two of them.
@@ -789,6 +902,10 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     for role, axes in governs.items():
         view = vs[role]
         rows = []
+        # A typed size sets this view's scale outright, so a Match factor on it is cancelled.
+        # The fit is reported against the photo's own reading: a stale x0.888 left from a
+        # Match button inflated a 13% stretch to 28%, near KNOWN_TOLERANCE, for no reason.
+        f0 = view.factor
         for axis in axes:
             kk = AXES[role].index(axis)
             have, want = float(view.extent[kk]), known[axis]
@@ -800,24 +917,30 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                 if usual > 0 and have - usual > BULGE_WARN * usual and abs(want - usual) < abs(want - have):
                     _bulge_note(role, axis, have, usual, where)
                     have = usual
-            off = have / want - 1.0
+            photo = have / f0
+            off = photo / want - 1.0
             if abs(off) > KNOWN_TOLERANCE:
                 raise PartError(
                     "The {} view's {} is {:.0f}% off the {:.1f} mm you typed ({:.1f} mm). Check "
                     "the number, or that photo's scale.".format(
-                        role, AXIS_NAMES[axis], abs(off) * 100, want, have),
-                    detail={"view": role, "axis": AXIS_NAMES[axis], "have_mm": round(have, 2),
+                        role, AXIS_NAMES[axis], abs(off) * 100, want, photo),
+                    detail={"view": role, "axis": AXIS_NAMES[axis], "have_mm": round(photo, 2),
                             "want_mm": round(want, 2), "setter": "known"})
-            rows.append((kk, axis, have, want, off))
+            rows.append((kk, axis, have, want, off, photo))
         if len(rows) == 1:
             view.rescale(rows[0][3] / rows[0][2])
             kind = "rescale"
         else:
-            for kk, axis, have, want, off in rows:
+            for kk, axis, have, want, off, photo in rows:
                 view.stretch(kk, want / have)
             kind = "stretch"
-        for kk, axis, have, want, off in rows:
-            _fit_entry(role, axis, have, want, "known", kind, off)
+        for kk, axis, have, want, off, photo in rows:
+            _fit_entry(role, axis, photo, want, "known", kind, off)
+        if abs(f0 - 1.0) > 1e-6:
+            info["warnings"].append(
+                "The {} view's Match ×{:.3f} has no effect: the {} you typed {} its size. Undo "
+                "it (↶ on its row) — to fit another view, match that view instead.".format(
+                    role, f0, " and ".join(AXIS_NAMES[a] for a in axes), "sets" if len(axes) == 1 else "set"))
         for kk, axis in enumerate(AXES[role][:2]):
             if setter[axis] == role:
                 size[axis] = float(view.extent[kk])
@@ -866,14 +989,17 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
             want, start = target(axis, have)
             off = have / want - 1.0
             if abs(off) > FIT_TOLERANCE:
-                raise _mismatch(role, axis, have, want, setter[axis], off)
+                raise _mismatch(role, axis, have, want, setter[axis], off, tilt,
+                                governs.get(setter[axis]))
             rows.append((k, axis, have, want, start, off))
         own = [(k, a) for k, a in enumerate(AXES[role][:2]) if setter[a] == role]
         # One photo has one scale: when a view meets another on one axis and its other axis
         # is its own, the gap on the shared axis is that photo's scale error on both. Fitting
         # only the shared axis left the other with the whole error (End at x1.05: 47.25 mm
-        # tall for a 45 mm part, reported only as a width stretch).
-        uniform = rescale_ok and len(rows) == 1 and len(own) == 1 and own[0][1] not in pinned
+        # tall for a 45 mm part, reported only as a width stretch). Not when the user chose
+        # the other view for that axis: that choice is about the one size (see _axis_order).
+        uniform = (rescale_ok and len(rows) == 1 and len(own) == 1 and own[0][1] not in pinned
+                   and rows[0][1] not in chosen)
         if uniform:
             k, axis, have, want, start, off = rows[0]
             view.rescale(want / have)
@@ -900,6 +1026,29 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         fit(ready[0], True)
         done.add(ready[0])
         todo.remove(ready[0])
+
+    # A view that sets its cross size (a Top's width, a Side's or End's height) with no other
+    # view and no typed number to check it is never read across its length above, so a shadow
+    # bulge set the size unseen: a 700 x 155 Top with an 18 mm bulge over 8-19% of its length,
+    # built with a typed height, came out 173 mm wide with no warning. Warn only — nothing
+    # corroborates the bulge either way, and a part that really is wider must not be trimmed.
+    for axis in range(3):
+        s = setter[axis]
+        if s not in vs or s in bulged or axis in known or AXES[s].index(axis) != 1:
+            continue
+        if any(r != s and axis in AXES[r][:2] for r in vs):
+            continue
+        bump = _lone_bulge(vs[s].pts)
+        if bump:
+            box, usual, where = bump
+            bulged.add(s)
+            info["warnings"].append(
+                "The {} outline is {:.0f} mm {} near {:.0f}% of its {} than along the rest "
+                "({:.1f} vs a usual {:.1f} mm) — the trace may include shadow, and nothing else "
+                "measures the {}. The part was built at the full {:.1f} mm; if that stretch is "
+                "shadow, use Tidy → 📏 Straighten or ✖ Not the part on it, or type the known {}."
+                .format(s, box - usual, "taller" if axis == 2 else "wider", where * 100,
+                        AXIS_NAMES[AXES[s][0]], box, usual, AXIS_NAMES[axis], box, AXIS_NAMES[axis]))
 
     shell_wall = None
     if wall_mm is not None and float(wall_mm) > 0:
@@ -948,8 +1097,9 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     if end_shape is not None:
         vs["side"] = View("side", _ends_profile(size[0], size[2], *end_shape), auto=False)
         info["ends"] = {"slope_deg": end_shape[0], "radius_mm": end_shape[1]}
-        notes.append("Ends: {:.0f}° slope, {:.0f} mm round (typed — there is no Side view)."
-                     .format(*end_shape))
+        notes.append("Ends: {} (typed — there is no Side view).".format(", ".join(
+            t for t in ("{:.0f}° slope".format(end_shape[0]) if end_shape[0] > 0 else "",
+                        "{:.0f} mm edge radius".format(end_shape[1]) if end_shape[1] > 0 else "") if t)))
 
     X, Y, Z = size
     info["size_mm"] = [round(X, 3), round(Y, 3), round(Z, 3)]
@@ -1103,6 +1253,25 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     # The size is the part's, not the box's: a blob the other views cut away is not in it.
     bb = solid.bounding_box()
     info["size_mm"] = [round(bb[3] - bb[0], 3), round(bb[4] - bb[1], 3), round(bb[5] - bb[2], 3)]
+    # A typed size is applied to the view that sets it, before the views are intersected; the
+    # intersection can still trim it. 30° ends on real traces gave 698.7 mm for a typed 700
+    # while the fit line said "using your number". Said, not rescaled away: rescaling after
+    # the fact would change the typed slope and every view's fit.
+    for axis, k in sorted(known.items()):
+        final = float(bb[3 + axis] - bb[axis])
+        if abs(final - k) <= 0.3:
+            continue
+        for f in info["fits"]:
+            if f["setter"] == "known" and f["axis"] == AXIS_NAMES[axis]:
+                f["final_mm"] = round(final, 2)
+        why = (" (here the {:.0f}° ends)".format(end_shape[0])
+               if end_shape is not None and end_shape[0] > 0 and axis in (0, 2) else "")
+        notes.append("The built part's {0} is {1:.1f} mm, not the {2:.1f} mm you typed — where the "
+                     "views meet they trim it{3}. If {2:.1f} mm must hold, add the {4:.1f} mm to the "
+                     "typed {0}.".format(AXIS_NAMES[axis], final, k, why, k - final)
+                     if final < k else
+                     "The built part's {} is {:.1f} mm, not the {:.1f} mm you typed — check the "
+                     "views line up in the preview.".format(AXIS_NAMES[axis], final, k))
 
     # The preview draws the part as traced — before mirroring or turning — so its silhouettes
     # sit on the outlines they came from, which is what the preview is for: checking that
@@ -1122,22 +1291,33 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
         solid = solid.mirror([1.0, 0.0, 0.0]).translate([X, 0.0, 0.0])
     info["mirrored"] = bool(mirror)
     info["plate_down"] = bool(is_shell and turned)
-    info["orientation"] = _orientation(is_shell, turned, for_print)
+    # The bed check comes before the orientation is put into words, so the two cannot disagree.
+    flat_ok = True
+    if info["plate_down"]:
+        # What a slicer's first layer gets: the part within 0.2 mm of the bed, against the deck.
+        deck = abs(signed_area(vs["top"].pts)) if "top" in vs else shape.project().area()
+        on_bed = solid.slice(0.2).area()
+        if deck > 0:
+            info["bed_contact"] = round(on_bed / deck, 3)
+        if deck > 0 and on_bed < BED_CONTACT_MIN * deck:
+            flat_ok = False
+            # The traced profile views, not a typed end shape (that one is flat by construction).
+            prof = [r for r in ("side", "end") if r in vs and not (r == "side" and end_shape is not None)]
+            nm = " / ".join(r.capitalize() for r in prof) or "Side/End"
+            # Straighten did not help the case that found this: an End photo taken at an angle
+            # has the far side of the deck as its top edge — a crown, not a noisy straight line.
+            info["warnings"].append(
+                "Only {:.0f}% of the deck lies on the bed — the top edge of the {} trace is curved "
+                "or sloped, so the print may come loose. That usually means the {} photo was taken "
+                "at an angle (its top edge is then the far side of the deck). Retake it square-on, "
+                "or remove that view and type the height instead.".format(100.0 * on_bed / deck, nm, nm))
+    info["orientation"] = _orientation(is_shell, turned, for_print, flat_ok)
     if is_shell:
         notes.insert(0, "{}; downloads {}.".format(_shell_note(shell_wall), info["orientation"]))
         if for_print and not turned:
             info["warnings"].append("This cover downloads open side down, so its deck spans the "
                                     "opening and needs supports. Turn it back over to print it "
                                     "plate-down.")
-    if info["plate_down"]:
-        # What a slicer's first layer gets: the part within 0.2 mm of the bed, against the deck.
-        deck = abs(signed_area(vs["top"].pts)) if "top" in vs else shape.project().area()
-        on_bed = solid.slice(0.2).area()
-        if deck > 0 and on_bed < BED_CONTACT_MIN * deck:
-            info["warnings"].append(
-                "Only {:.0f}% of the deck lies on the bed — the top edge of the Side/End trace is "
-                "uneven or tilted. Straighten that edge, or the print may come loose.".format(
-                    100.0 * on_bed / deck))
     if notes:
         info["note"] = " ".join(notes)
 
