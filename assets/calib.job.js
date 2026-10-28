@@ -1,7 +1,7 @@
 // CamScan — multi-view submission ("job") flow.
 //
 // Turns the single-photo measuring tool into a customer INTAKE tool: the customer
-// captures several labelled views of one part (Top / Front / Side / detail), each measured
+// captures several labelled views of one part (Top / Side / End / detail), each measured
 // and scaled with the existing tools, then submits the whole set — annotated images,
 // measurements, and a short part brief — to Datum Laboratories in one go.
 //
@@ -12,14 +12,19 @@
 (function(){
   'use strict';
   var LS_KEY = 'camscan.job.v1';
-  // The orthographic views that let a modeller reconstruct a part without a 3D scan:
-  // top gives the outline + hole pattern, front/side give heights & depths.
+  // The orthographic views that let a modeller reconstruct a part without a 3D scan. They are
+  // the same three views 🧩 Use in 3D part assigns (calib.part3d.js), so "Top" means one thing
+  // everywhere: this list once said Top / Front / Side while the part wanted Top / Side / End,
+  // and the end view — the one that gives a cover its rounded edges — was never asked for.
+  // Each says where the ruler goes, because a ruler held under or beside the face it is meant
+  // to scale reads that face several percent wrong (see CAPTURE_RULES #1).
   var RECOMMENDED = [
-    { label:'Top',   why:'outline + hole pattern (part flat on the sheet)' },
-    { label:'Front', why:'height / thickness' },
-    { label:'Side',  why:'depth / profile' }
+    { label:'Top',  why:'from above, ruler on the top face (length × width)' },
+    { label:'Side', why:'square-on to the side, ruler against it (length × height)' },
+    { label:'End',  why:'square-on to the end, ruler against the end face (width × height)' }
   ];
   var EXTRA_LABELS = ['Detail', 'Other'];
+  var ROLE_LABEL = { top:'Top', side:'Side', end:'End', cavity:'Cavity' };
 
   function apiUrl(path){
     var base='/';
@@ -147,6 +152,9 @@
   function saveSoon(){ if(_saveTimer) clearTimeout(_saveTimer); _saveTimer=setTimeout(function(){ _saveTimer=null; save(); }, 400); }
   function flushSave(){ if(_saveTimer){ clearTimeout(_saveTimer); _saveTimer=null; } return save(); }
   function reset(){ job = blankJob();
+    // A reopened side's positional tag would now index the NEW job's views: the first photo
+    // added to it would be overwritten by whatever is on screen at the next sync.
+    var el=document.querySelector('.cal-view'); if(el) el.removeAttribute('data-view-index');
     try{ localStorage.removeItem(LS_KEY); }catch(e){}
     if(_idbOK) idbDel(); }
 
@@ -157,9 +165,9 @@
 
   function addView(label){
     var o=overlay();
-    if(!o || !o.img){ setStatus('Load a photo first, then add it.', true); return; }
+    if(!o || !o.img){ setStatus('Load a photo first, then add it.', true); return false; }
     var rec;
-    try{ rec=o.getViewRecord(label); }catch(e){ setStatus('Could not capture this view: '+e.message, true); return; }
+    try{ rec=o.getViewRecord(label); }catch(e){ setStatus('Could not capture this view: '+e.message, true); return false; }
     rec.capturedAt=new Date().toISOString();
     // Update-or-add, one entry per photo. A REOPENED saved side is identified by its
     // data-view-index (its rebuilt .cal-view carries no server sourceId, so sourceId dedup
@@ -180,9 +188,125 @@
     // Only claim success if it actually persisted; on quota failure save() already showed the
     // amber "storage full" warning — don't clobber it with a green "✓ Saved".
     if(ok) setStatus('✓ Saved “'+(label||rec.label||'view')+'”. Add another photo, or Send when done.');
+    return ok;
   }
+
+  // ---- keeping the photo on screen -------------------------------------------------------
+  // A fresh upload used to join the job only when a label chip was tapped. Everything else —
+  // 🧩 Use in 3D part, New, a tap on another side, a reload, the phone dropping the tab while
+  // the camera was open — left it out, so the part kept a Top view whose photo, scale and
+  // trace were gone: it could be built, but never reopened to fix. Now anything the user has
+  // put into a photo keeps it, through this one path.
+  //
+  // What counts as "something to keep": a scale, any annotation, or a 3D view taken from it.
+  // `manualOnly` narrows the scale to one the user set, for the automatic capture below: a
+  // printed marker found on upload is the server's work and comes back by itself on a
+  // re-upload, so it must not quietly add every photo that happens to show one.
+  function hasContent(o, manualOnly){
+    if(!o || !o.img) return false;
+    if(o.ann && o.ann.items && o.ann.items.length) return true;
+    if(o.opts && (o.opts.manualMmPerPx || o.opts.manualHomography)) return true;
+    if(!manualOnly && o.isCalibrated && o.isCalibrated()) return true;
+    return rolesOf(photoId()).length > 0;
+  }
+  // The 3D roles taken from the photo with this key, in build order.
+  function rolesOf(key){
+    if(!key || !job.part3d || !job.part3d.views) return [];
+    var pv = job.part3d.views;
+    return ['top', 'side', 'end', 'cavity'].filter(function(r){ return pv[r] && pv[r].source === key; });
+  }
+  // Every key a stored entry has answered to as photoId() — see photoId() for why both exist.
+  function entryKeys(v){
+    var out = [];
+    if(v && v.sourceId && String(v.sourceId).indexOf('data:') !== 0) out.push(v.sourceId);
+    if(v && v.photoKey) out.push(v.photoKey);
+    return out;
+  }
+  function entryRoles(v){
+    var out = [];
+    entryKeys(v).forEach(function(k){ rolesOf(k).forEach(function(r){ if(out.indexOf(r) < 0) out.push(r); }); });
+    return out;
+  }
+  // Dash swaps a new upload into the SAME .cal-view node, and the overlay reboots onto it a
+  // frame later. In between, the node already carries the new photo's id while the overlay
+  // still holds the old photo: capturing then would store the old photo under the new id.
+  function overlayIsCurrent(){
+    var el=document.querySelector('.cal-view');
+    if(!el || el.__bootedImg===undefined) return true;    // not booted by the loader (or a stub)
+    return el.__bootedImg===(el.getAttribute('data-img')||el.getAttribute('data-img-fallback'));
+  }
+  function isDefaultLabel(l){
+    return !l || /^View \d+$/.test(l) || /^(Top|Side|End|Cavity)$/.test(l);
+  }
+  // Store (or refresh) the photo on screen. `label` names a new entry; with none, the entry is
+  // named after the 3D view it holds ("Top"), else "View N". An entry already stored keeps the
+  // label the user gave it, but a default one ("View 2", or the role it held before) follows
+  // the role it is given now. `force` stores the photo even with nothing in it yet — for a tap
+  // on a label chip, which is the user asking for exactly that.
+  // Returns true when the photo is in the job afterwards.
+  function captureCurrent(label, force){
+    var o=overlay();
+    if(!o || !o.img || !overlayIsCurrent()) return false;
+    // A photo the user removed while it was on screen stays removed: its marks and its 3D
+    // view still read as "something to keep", so the next reload, New or edit used to store
+    // it again — while its view went on saying "photo removed". Only a label tap brings it back.
+    var gone = (o.__jobRemoved && o.__jobRemoved.img === o.img) ? o.__jobRemoved : null;
+    if(gone && !force) return false;
+    var idx=currentOpenIndex();
+    if(idx!=null){
+      if(label && label!==job.views[idx].label && isDefaultLabel(job.views[idx].label)) job.views[idx].label=label;
+      syncOpenView();
+      return true;
+    }
+    if(!force && !hasContent(o)) return false;
+    if(!label){
+      var roles=rolesOf(photoId());
+      label = roles.length ? ROLE_LABEL[roles[0]] : 'View '+(job.views.length+1);
+    }
+    // photoId() is the upload's own id both before and after this (the stored entry keeps it
+    // as its sourceId, and currentOpenIndex() finds the entry by it), so a 3D view assigned
+    // from this photo still points at it.
+    if(addView(label)===false) return false;
+    if(gone) restoreRemoved(gone);
+    return currentOpenIndex()!=null;
+  }
+  // Bring back a removed photo the user re-added: it answers to its old keys again, so the 3D
+  // views taken from it follow it and stop saying "photo removed".
+  function restoreRemoved(gone){
+    var o=overlay(); if(o) o.__jobRemoved=null;
+    var last=job.views.length-1, e=job.views[last];
+    if(!e || (currentOpenIndex()!=null && currentOpenIndex()!==last)) return;
+    if(gone.photoKey && !e.photoKey) e.photoKey=gone.photoKey;
+    // A reopened side's inline data: id is never matched (see currentOpenIndex), so it is
+    // found by position again, as when it was opened.
+    var el=document.querySelector('.cal-view');
+    if(currentOpenIndex()==null && el && String(e.sourceId||'').indexOf('data:')===0) el.setAttribute('data-view-index', String(last));
+    var keys=entryKeys(gone).concat(entryKeys(e));
+    var pv=job.part3d && job.part3d.views;
+    if(pv) ['top', 'side', 'end', 'cavity'].forEach(function(r){
+      if(pv[r] && keys.indexOf(pv[r].source)>=0) delete pv[r].photo_removed;
+    });
+    save(); changed();
+  }
+
   function removeView(i){
+    // A 3D view built from this photo keeps its last outline, but nothing can update it again
+    // once the photo is gone, and the Build dialog would go on saying it "follows its outline".
+    // Ask, then flag it (calib.part3d.js shows the flag).
+    var e=job.views[i];
+    var onScreen=(currentOpenIndex()===i);
+    var roles=entryRoles(e);
+    if(roles.length){
+      var names=roles.map(function(r){ return ROLE_LABEL[r]; }).join(' and ');
+      if(!window.confirm('This photo’s outline is the part’s '+names+' view. Remove the photo but keep its last outline?')) return false;
+      roles.forEach(function(r){ job.part3d.views[r].photo_removed=true; });
+    }
     job.views.splice(i,1);
+    // The overlay still holds the photo when it was the one on screen: remember it, or the
+    // next capture (reload, New, autosave) would quietly store it again. A new photo or
+    // another side boots a new overlay, which forgets this.
+    var o=overlay();
+    if(onScreen && o && o.img) o.__jobRemoved={ img: o.img, sourceId: e && e.sourceId || null, photoKey: e && e.photoKey || null };
     // A reopened side is tracked by a POSITIONAL data-view-index; the splice shifts every
     // later index, so re-sync the open overlay's tag — otherwise a later syncOpenView/addView
     // writes the open side's record over the WRONG (shifted) view and loses data.
@@ -194,6 +318,7 @@
       else if(oi>i) el.setAttribute('data-view-index', String(oi-1));
     }
     save(); changed();
+    return true;
   }
 
   // ---- embed / handoff -------------------------------------------------------
@@ -230,8 +355,11 @@
   function ensureButton(){
     if(btn) return;
     btn=document.createElement('button'); btn.type='button'; btn.id='cal-job-btn';
+    // Drawn as a secondary (outline) button, not in the accent fill: for someone making their
+    // own part, the way forward is 🧩 Build 3D part and Export; a filled "Submit to Datum" from
+    // the first photo on read as the next step and led to a vendor form.
     btn.style.cssText='position:fixed;z-index:38;left:12px;bottom:calc(var(--cal-kpi-h, 46px) + 14px);'+
-      'min-height:44px;padding:9px 15px;border-radius:22px;border:none;background:#00d4ff;color:#04222b;'+
+      'min-height:44px;padding:9px 15px;border-radius:22px;border:1px solid #2f5866;background:#12171c;color:#cfe6ee;'+
       'font:600 14px Segoe UI,system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.5);cursor:pointer;display:none;';
     _btnFloat=btn.style.cssText;
     btn.onclick=openPanel;
@@ -263,7 +391,7 @@
     if(host && btn.parentNode!==host){
       host.insertBefore(btn, host.firstChild);
       btn.style.cssText='display:none;align-items:center;gap:0;min-height:40px;padding:6px 12px;border-radius:999px;'+
-        'border:none;background:#00d4ff;color:#04222b;font:600 13px Segoe UI,system-ui,sans-serif;cursor:pointer;white-space:nowrap;';
+        'border:1px solid #2f5866;background:transparent;color:#cfe6ee;font:600 13px Segoe UI,system-ui,sans-serif;cursor:pointer;white-space:nowrap;';
     } else if(!host && btn.parentNode!==document.body){
       document.body.appendChild(btn);
       btn.style.cssText=_btnFloat;
@@ -323,11 +451,13 @@
     x.style.cssText='min-height:40px;min-width:40px;background:#1b2228;color:#dfe;border:1px solid #2a3a44;border-radius:8px;cursor:pointer;';
     x.onclick=closePanel; head.appendChild(h); head.appendChild(x); card.appendChild(head);
 
+    card.appendChild(partRow());
+
     // add current view
     var o=overlay();
     var addSec=document.createElement('div'); addSec.style.cssText='margin-top:16px;padding:12px;background:#0e1519;border:1px solid #22303a;border-radius:10px;';
     var addTitle=document.createElement('div'); addTitle.style.cssText='font-weight:600;margin-bottom:6px;';
-    addTitle.textContent='Add the view on screen as:';
+    addTitle.textContent='Keep the photo on screen as:';
     addSec.appendChild(addTitle);
     if(o && o.img){
       var uncal = !(o.isCalibrated && o.isCalibrated());
@@ -349,14 +479,21 @@
     var guide=document.createElement('div'); guide.style.cssText='margin-top:14px;';
     var gt=document.createElement('div'); gt.style.cssText='font-weight:600;margin-bottom:6px;'; gt.textContent='Suggested shots';
     guide.appendChild(gt);
+    // A shot is done when a photo carries its label OR its outline is the part's view of that
+    // name: assigning Top in 🧩 Use in 3D part is the user saying "this is the top shot".
+    var pv=part().views;
     RECOMMENDED.forEach(function(v){
-      var have=job.views.some(function(w){ return (w.label||'').toLowerCase()===v.label.toLowerCase(); });
+      var have=!!pv[v.label.toLowerCase()] ||
+        job.views.some(function(w){ return (w.label||'').toLowerCase()===v.label.toLowerCase(); });
       var r=document.createElement('div'); r.style.cssText='font-size:13px;color:'+(have?'#7fe0b0':'#9fb2bb')+';margin:2px 0;';
+      r.setAttribute('data-shot', v.label.toLowerCase()); r.setAttribute('data-have', have?'1':'0');
       r.innerHTML=(have?'✓ ':'○ ')+'<b>'+esc(v.label)+'</b> — '+esc(v.why);
       guide.appendChild(r);
     });
     var tip=document.createElement('div'); tip.style.cssText='font-size:12px;color:#7f8f98;margin-top:6px;';
-    tip.textContent='Keep the same reference (card/marker) flat in every shot, and measure features that sit flat on it.';
+    // "The same reference flat in every shot" put the ruler on the floor for the side and end
+    // views, below the face being measured — +5% on a 20 mm-high face (CAPTURE_RULES #1).
+    tip.textContent='In every photo, lay the ruler flat ON the face that photo shows. A ruler held below or beside the part gives the wrong size.';
     guide.appendChild(tip);
     guide.appendChild(captureGuide());
     card.appendChild(guide);
@@ -376,15 +513,17 @@
         var meta=document.createElement('div'); meta.style.cssText='flex:1 1 auto;min-width:0;';
         var mm=(v.measurements||[]).length;
         var sc=v.scale&&v.scale.calibrated ? (v.scale.source||'scaled')+(v.scale.perspective?' · tilt-corrected':'') : 'no scale';
+        var roles=entryRoles(v).map(function(r){ return ROLE_LABEL[r]; });
         meta.innerHTML='<div style="font-weight:600;">'+esc(v.label||'View '+(i+1))+'</div>'+
-          '<div style="font-size:12px;color:#9fb2bb;">'+mm+' measurement'+(mm===1?'':'s')+' · '+esc(sc)+'</div>';
+          '<div style="font-size:12px;color:#9fb2bb;">'+mm+' measurement'+(mm===1?'':'s')+' · '+esc(sc)+
+          (roles.length ? ' · 🧩 '+esc(roles.join(', ')) : '')+'</div>';
         var btns=document.createElement('div'); btns.style.cssText='display:flex;gap:6px;flex:0 0 auto;';
         if(v.restore && v.restore.raw){
           var open=chip('Open', function(){ openViewForEditing(i); }, false);
           open.style.minHeight='36px'; open.style.padding='5px 10px'; open.title='Re-open this side in CamScan to model it';
           btns.appendChild(open);
         }
-        var del=chip('Remove', function(){ removeView(i); openPanel(); }, false);
+        var del=chip('Remove', function(){ if(removeView(i)) openPanel(); }, false);
         del.style.minHeight='36px'; del.style.padding='5px 10px';
         btns.appendChild(del);
         vr.appendChild(im); vr.appendChild(meta); vr.appendChild(btns); card.appendChild(vr);
@@ -429,6 +568,32 @@
     card.appendChild(statusEl);
 
     back.appendChild(card); document.body.appendChild(back);
+  }
+  // The 3D part at a glance, with the way to build it. This panel was the only place that
+  // listed the photos, yet it said nothing about the part being made from them: a user making
+  // their own STL had to find the 🧩 chip in the top bar, and the panel's one filled button
+  // sent the photos to Datum instead.
+  function partRow(){
+    var pv=part().views;
+    var row=document.createElement('div'); row.id='cal-job-part';
+    row.style.cssText='margin-top:14px;padding:10px 12px;background:#13202a;border:1px solid #29414c;border-radius:10px;'+
+      'display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+    var t=document.createElement('div'); t.style.cssText='flex:1 1 220px;font-size:13.5px;';
+    t.innerHTML='<b>3D part:</b> '+['top','side','end'].map(function(r){
+      return '<span data-role="'+r+'" style="color:'+(pv[r]?'#7fe0b0':'#8aa0aa')+';">'+ROLE_LABEL[r]+' '+(pv[r]?'✓':'—')+'</span>';
+    }).join(' &nbsp;')+(pv.cavity ? ' &nbsp;<span data-role="cavity" style="color:#7fe0b0;">Cavity ✓</span>' : '');
+    row.appendChild(t);
+    var n=['top','side','end','cavity'].filter(function(r){ return pv[r]; }).length;
+    var P=window.CalibPart3D;
+    if(n && P && typeof P.open==='function'){
+      var b=chip('🧩 Build 3D part', function(){ closePanel(); P.open(); }, true); b.id='cal-job-build';
+      row.appendChild(b);
+    } else {
+      var h=document.createElement('div'); h.style.cssText='flex:1 1 100%;font-size:12px;color:#8aa0aa;';
+      h.textContent='Trace a photo’s outline, then 🧩 Use in 3D part → Top, Side or End.';
+      row.appendChild(h);
+    }
+    return row;
   }
   function closePanel(){ var p=document.getElementById('cal-job-panel'); if(p) p.remove(); statusEl=null; }
   function setStatus(msg, warn){
@@ -532,8 +697,10 @@
     var viewer=document.getElementById('viewer');
     if(!viewer){ setStatus('Viewer is not ready — reload the page and try again.', true); return; }
     // Persist any edits made to the side currently open BEFORE we swap it away, so flipping
-    // between sides never loses work.
-    syncOpenView();
+    // between sides never loses work. A fresh photo on screen is stored first if anything was
+    // done to it: tapping a side used to drop it silently, with its End view left pointing
+    // at a photo no side could open.
+    if(currentOpenIndex()==null) captureCurrent(); else syncOpenView();
     // Re-read AFTER syncing: re-opening the side you're already on makes syncOpenView REPLACE
     // job.views[i] with the freshly-captured record — the pre-sync `v` would reboot from the
     // stale snapshot and drop the just-made edits.
@@ -549,6 +716,7 @@
     view.setAttribute('data-img', st.raw);
     view.setAttribute('data-json', calibUrl);
     view.setAttribute('data-view-index', String(i));   // which stored view this overlay IS
+    view.setAttribute('data-job-reopened', '1');       // built here, not by Dash: see reapReopened
     view.setAttribute('style','text-align:center;');
     view.__restore={ ann:(st.ann||[]), units:(st.units||'mm'), manual:(st.manual||null) };
     var canvas=document.createElement('canvas'); canvas.id='cal-canvas';
@@ -564,13 +732,24 @@
     setStatus('Opened “'+(v.label||('View '+(i+1)))+'” for editing.');
   }
 
-  // Which stored view the on-screen overlay currently IS (a normal upload has no such tag,
-  // so this reads null and syncing/highlighting safely no-op for freshly-shot photos).
+  // Which stored view the on-screen overlay currently IS. A reopened side carries a positional
+  // data-view-index. A fresh upload that has been stored is found by its upload id instead,
+  // so autosave, syncOpenView and the pagehide flush cover it too — before this, its edits
+  // after the first capture were never saved. (It is not tagged with data-view-index: Dash
+  // reuses the same .cal-view node for the next upload, and the tag would carry over to the
+  // new photo and make it overwrite this one.) Upload ids are unique; a reopened side's
+  // inline data: URL is not (two photos with the same size and scale share it), so only the
+  // former is matched.
   function currentOpenIndex(){
     var el=document.querySelector('.cal-view');
     var a=el && el.getAttribute('data-view-index');
-    if(a==null) return null;
-    var n=parseInt(a,10); return (isNaN(n)||n<0||n>=job.views.length) ? null : n;
+    if(a!=null){
+      var n=parseInt(a,10); return (isNaN(n)||n<0||n>=job.views.length) ? null : n;
+    }
+    var sid=currentSourceId();
+    if(!sid || sid.indexOf('data:')===0) return null;
+    for(var i=0;i<job.views.length;i++){ if(job.views[i].sourceId===sid) return i; }
+    return null;
   }
   // Capture edits to the currently-open side back into the job (annotations, measurements,
   // geometry, and the reloadable snapshot) so switching sides / saving keeps the work.
@@ -598,12 +777,17 @@
     var views=reloadableViews();
     var viewer=document.querySelector('.cal-view');
     var simple=false; try{ simple=document.body.classList.contains('camscan-simple'); }catch(e){}
-    // Only while modelling a multi-side job: a viewer is open, full tools (not simple mode),
-    // and there is more than one reloadable side to move between.
-    var show = !!viewer && !simple && views.length>=2;
-    if(!show){ if(_switcher){ _switcher.remove(); _switcher=null; _switchSig=null; } return; }
     var active=currentOpenIndex();
-    var sig=views.map(function(o){ return (o.v.label||'')+o.i; }).join('|')+'|'+active;
+    // A photo on screen that is not in the job gets its own entry, so it is plain that it is
+    // not stored yet — and that tapping another side will store it (openViewForEditing).
+    var ov=overlay();
+    var unsaved = !!viewer && active==null && !!(ov && ov.img);
+    // Only while modelling a multi-side job: a viewer is open, full tools (not simple mode),
+    // and there is more than one side (stored or on screen) to move between.
+    var show = !!viewer && !simple && (views.length + (unsaved?1:0))>=2;
+    if(!show){ if(_switcher){ _switcher.remove(); _switcher=null; _switchSig=null; } return; }
+    // Each side's 3D role is shown on its button, so the redraw has to follow the roles too.
+    var sig=views.map(function(o){ return (o.v.label||'')+o.i+':'+entryRoles(o.v).join(','); }).join('|')+'|'+active+'|'+unsaved;
     if(_switcher && sig===_switchSig) return;   // nothing shown changed → no rebuild (observer-safe)
     _switchSig=sig;
     if(!_switcher){
@@ -620,12 +804,27 @@
     _switcher.appendChild(lab);
     views.forEach(function(o){
       var on=(o.i===active);
-      var b=document.createElement('button'); b.type='button'; b.textContent=o.v.label||('View '+(o.i+1));
+      var name=o.v.label||('View '+(o.i+1));
+      // The role is what the user picked the photo for ("Top · 🧩"); when the label already
+      // says it, only the 🧩 is added.
+      var roles=entryRoles(o.v).map(function(r){ return ROLE_LABEL[r]; });
+      var tag=roles.length ? (roles.join('/')===name ? ' · 🧩' : ' · '+roles.join('/')+' 🧩') : '';
+      var b=document.createElement('button'); b.type='button'; b.textContent=name+tag;
+      if(roles.length) b.setAttribute('data-roles', roles.join(',').toLowerCase());
       b.style.cssText='min-height:34px;padding:5px 11px;border-radius:8px;cursor:pointer;font:600 13px Segoe UI,system-ui,sans-serif;'+
         (on?'background:#00d4ff;color:#04222b;border:none;':'background:#151a1f;color:#cfe6ee;border:1px solid #29414c;');
       b.onclick=function(){ if(o.i!==currentOpenIndex()) openViewForEditing(o.i); };
       _switcher.appendChild(b);
     });
+    if(unsaved){
+      var u=document.createElement('button'); u.type='button'; u.id='cal-side-unsaved';
+      u.textContent='This photo (unsaved)';
+      u.title='Not in the part yet — tap to keep it. Scaling or tracing it keeps it too.';
+      u.style.cssText='min-height:34px;padding:5px 11px;border-radius:8px;cursor:pointer;font:600 13px Segoe UI,system-ui,sans-serif;'+
+        'background:#2a2416;color:#f3d48a;border:1px dashed #c9a24a;';
+      u.onclick=function(){ captureCurrent(null, true); renderSideSwitcher(); };
+      _switcher.appendChild(u);
+    }
   }
 
   // One send at a time. Without this a double tap on "Send to Datum" — easy on a phone, and
@@ -777,7 +976,9 @@
     t.innerHTML='<b>Part in progress'+(job.brief.part?': '+esc(job.brief.part):'')+'</b><br>'+
       (n ? n+' photo'+(n===1?'':'s') : 'no photos saved')+
       (roles.length ? ' · 3D views: '+roles.map(function(r){ return LBL[r]; }).join(', ') : '')+
-      '<br><span style="color:#8aa0aa;font-size:12px;">A new photo is added to this part.</span>';
+      // True in both modes now: a photo is kept once it is scaled, traced or used in the part
+      // (captureCurrent). It used to promise this while full mode silently dropped the photo.
+      '<br><span style="color:#8aa0aa;font-size:12px;">A photo you scale or trace is kept with this part.</span>';
     var b=chip('Start a new part', function(){
       if(!window.confirm('Start a new part? The '+(n ? n+' saved photo'+(n===1?'':'s') : 'saved views')+
         ' of the current part will be cleared from this device. (Tap “💾 Save job” first to keep a copy.)')) return;
@@ -789,9 +990,30 @@
     if(up) host.insertBefore(el, up); else host.appendChild(el);
   }
 
-  function render(){ reflectButton(); ensureLandingLoad(); ensureLandingJob(); renderSideSwitcher(); }
+  // A side reopened above is a node this module put into #viewer, which Dash does not know
+  // about: the next upload adds Dash's own .cal-view AFTER it instead of replacing it. Every
+  // querySelector('.cal-view') — this module's, the 3D part's, simple mode's — then kept
+  // finding the old side first, so the new photo's outline was assigned from, and saved
+  // over, the side that was open before. Save that side and take it away.
+  function reapReopened(){
+    var all=document.querySelectorAll('.cal-view');
+    if(all.length<2) return;
+    var fresh=false;
+    for(var i=0;i<all.length;i++){ if(all[i].getAttribute('data-job-reopened')!=='1') fresh=true; }
+    if(!fresh) return;
+    for(var k=0;k<all.length;k++){
+      var el=all[k];
+      if(el.getAttribute('data-job-reopened')!=='1') continue;
+      if(el===document.querySelector('.cal-view')){ try{ syncOpenView(); }catch(e){} }
+      var wrap=(el.parentNode && el.parentNode.classList && el.parentNode.classList.contains('cal-wrap')) ? el.parentNode : el;
+      wrap.remove();
+    }
+  }
+  function render(){ reapReopened(); reflectButton(); ensureLandingLoad(); ensureLandingJob(); renderSideSwitcher(); }
   // Refresh the button AND notify other layers (the simple-mode card) that the job changed.
-  function changed(){ reflectButton(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
+  // The side switcher follows too: a photo stored or given a role changes its buttons without
+  // any DOM mutation for the observer below to see.
+  function changed(){ reflectButton(); renderSideSwitcher(); try{ document.dispatchEvent(new CustomEvent('camscan-job-changed')); }catch(e){} }
 
   // Dimensions already measured on THIS part, in other views, usable as a scale reference
   // here. The same physical object appears in every photo of a job, so a length measured
@@ -814,11 +1036,13 @@
         'board is a thirty-eighth of the span, and a pixel of error on the card becomes ' +
         'centimetres on the board. A steel rule, a sheet of A4, a tape measure — anything ' +
         'big and rigid beats a small card.' },
-    { t:'A rectangle beats a line',
-      d:'Four corners of something you know the size of (a sheet of paper, the marker) let ' +
-        'CamScan undo the camera angle: a length in that plane then measures within about 1% ' +
-        'at 20° of tilt and 2% at 40°. A two-point line cannot — it scales everything uniformly, so ' +
-        'at 40° the same photo reads −22% across the part and −50% along it.' },
+    { t:'A ruler line plus Square up corrects tilt along the ruler; a rectangle corrects it in every direction',
+      d:'A line on its own scales everything uniformly, so at 40° of camera tilt the same photo ' +
+        'reads −22% across the part and −50% along it. Tidy ▾ → ⊞ Square up then reads the tilt ' +
+        'from the ruler’s parallel edges (or the part’s long sides) and corrects it along the ruler. ' +
+        'Four corners of something you know the size of (a sheet of paper, the marker) undo the ' +
+        'camera angle in every direction: a length in that plane measures within about 1% at 20° ' +
+        'of tilt and 2% at 40°.' },
     { t:'Stand back and zoom in, rather than moving in close',
       d:'Depth error scales as height over distance, so the same 20 mm-thick part reads +8.7% ' +
         'from 250 mm away and +3.4% from 600 mm. Just keep the reference big enough in frame ' +
@@ -826,7 +1050,8 @@
     { t:'Get the whole part in the frame, with background around it',
       d:'The outline tracer needs to see where the part ends. If it runs out of frame there is ' +
         'no edge to find, and a part photographed against something its own colour — a dark ' +
-        'part on its own shadow — needs the ✖ Not the part tap to separate them.' },
+        'part on its own shadow — needs help: draw a ▭ Area box snugly round the part, then tap ' +
+        'the part, and nothing outside the box can be traced; or tap ✖ Not the part on the shadow.' },
     { t:'Shoot the same part from more than one side',
       d:'One photo gives an outline; thickness and profile come from the second and third. ' +
         'Measuring one dimension in two views also lets CamScan check the scales against each ' +
@@ -894,12 +1119,19 @@
   }
   function setPartView(role, prof){
     if(!prof || !Array.isArray(prof.points)) return false;
-    var p = part();
-    // A fresh outline starts with no rotate/flip: those belonged to the outline it replaces.
-    p.views[role] = { points: prof.points, mm_per_px: prof.mm_per_px, image_height: prof.image_height,
-                      size_mm: prof.size_mm, source: photoId(), at: new Date().toISOString(),
-                      ann_id: (prof.ann_id != null ? prof.ann_id : null),   // the outline it follows
-                      rot: 0, flip_h: false, flip_v: false };
+    var p = part(), here = photoId(), old = p.views[role];
+    // Rotate and flip line a view up with the others, and they describe how the part lies in
+    // ITS photo. A new outline from the same photo — a re-trace, or an outline deleted and
+    // drawn again, which has to be assigned again — lies the same way, so it keeps them (and
+    // the side's "covers"); re-aligning three views by hand after every re-trace was the cost.
+    // An outline from another photo starts square.
+    var same = !!(old && old.source === here);
+    var rec = { points: prof.points, mm_per_px: prof.mm_per_px, image_height: prof.image_height,
+                size_mm: prof.size_mm, source: here, at: new Date().toISOString(),
+                ann_id: (prof.ann_id != null ? prof.ann_id : null),   // the outline it follows
+                rot: same ? (old.rot || 0) : 0, flip_h: same ? !!old.flip_h : false, flip_v: same ? !!old.flip_v : false };
+    if(same && old.covers) rec.covers = old.covers;
+    p.views[role] = rec;
     save(); changed();
     return true;
   }
@@ -975,6 +1207,10 @@
     clearPartView: clearPartView,
     savePart: function(){ saveSoon(); },
     addView: addView,
+    // Store (or refresh) the photo on screen when anything was done to it; see captureCurrent.
+    captureCurrent: captureCurrent,
+    // Remove a stored photo; asks first when the part uses its outline. False if cancelled.
+    removeView: removeView,
     open: openPanel,
     submit: submit,          // send/hand-off the collected set (used by simple mode + tests)
     count: function(){ return job.views.length; },
@@ -1003,7 +1239,11 @@
   };
 
   function beforeReload(){
-    try{ syncOpenView(); }catch(e){}
+    // New and a reload used to drop a fresh photo that had a scale, a trace or a 3D view
+    // (only a reopened side was synced). Not while the photo-quality warning or the load
+    // error is up, though: there the user is throwing the shot away for a better one.
+    var discarding = !!(document.getElementById('cal-quality') || document.querySelector('.cal-load-error'));
+    try{ if(currentOpenIndex()==null){ if(!discarding) captureCurrent(); } else syncOpenView(); }catch(e){}
     var limit = new Promise(function(res){ setTimeout(res, 2000); });   // never block a reload forever
     return Promise.race([persist(), limit]);
   }
@@ -1022,13 +1262,22 @@
                              o.data && o.data.marker_size_mm, o.opts && o.opts.units]);
     }catch(e){ return null; }
   }
+  //
+  // A FRESH photo is stored the same way on its first change the user made — a scale or a
+  // mark (hasContent with manualOnly) — so a reload, a crash or the phone dropping the tab
+  // never takes a scaled, traced photo with it; from then on it is autosaved like any side.
   function _autoCheck(){
     _autoTimer = null;
     var o = overlay();
-    if(!o || currentOpenIndex() == null) return;
+    if(!o) return;
     var sig = _storedSig(o);
     if(o !== _autoOverlay){ _autoOverlay = o; _autoSig = sig; return; }   // just opened: nothing changed yet
-    if(sig !== _autoSig){ _autoSig = sig; try{ syncOpenView(); }catch(e){} }
+    if(sig === _autoSig) return;
+    _autoSig = sig;
+    try{
+      if(currentOpenIndex() != null) syncOpenView();
+      else if(hasContent(o, true)) captureCurrent();
+    }catch(e){}
   }
   function hookAutosave(){
     var o = overlay();
@@ -1036,10 +1285,8 @@
     var orig = o.requestDraw.bind(o);
     o.requestDraw = function(){
       var r = orig.apply(null, arguments);
-      if(currentOpenIndex() != null){
-        if(_autoTimer) clearTimeout(_autoTimer);
-        _autoTimer = setTimeout(_autoCheck, 1200);
-      }
+      if(_autoTimer) clearTimeout(_autoTimer);
+      _autoTimer = setTimeout(_autoCheck, 1200);
       return r;
     };
     o.__jobAutosave = true;
