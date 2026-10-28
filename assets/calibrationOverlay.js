@@ -1781,7 +1781,11 @@
               else { self.opts.manualHomography=null; self._manualRef=prev.ref; self.opts.manualMmPerPx=prev.mm; self._rescaleAnnotations(); self.requestDraw(); }
             };
             if(self._manualRef && self._manualRef.kind==='squared' && self._squarePrev) Object.assign(prev, self._squarePrev);   // switching: undo goes all the way back
-            self.setManualRectScale(j.H, self.opts.manualMmPerPx, { kind:'squared', tilt_deg:j.tilt_deg, reference:j.reference,
+            // The server's H is the ruler's plane: a plane offset on the line scale does not
+            // carry over. Square up from the line's own scale and say so; Undo puts the
+            // offset back with the mm/px it lives in.
+            const plane=self._lineScalePlane(), dropped=plane ? plane.h : 0;
+            self.setManualRectScale(j.H, dropped ? plane.base : self.opts.manualMmPerPx, { kind:'squared', tilt_deg:j.tilt_deg, reference:j.reference,
                                      focal_source:j.focal_source, sides:j.sides, ruler_edges:j.ruler_edges }, self._refExtentPx);
             self._squarePrev=prev;
             toast.dismiss();
@@ -1820,10 +1824,12 @@
                 // The ruler was wanted and not usable: say why, what that costs, and how to
                 // get it used — the scale line is where its edges are looked for.
                 noRuler=j.ruler_reason || 'no clear edges';
-                msg='Couldn\'t find the ruler\'s edges along your scale line ('+noRuler+'), so this used the part\'s long sides, which assumes the part is a true rectangle'+
+                msg=(j.ruler_found ? 'Found the ruler\'s edges along your scale line but couldn\'t square up from them ('
+                                   : 'Couldn\'t find the ruler\'s edges along your scale line (')+noRuler+'), so this used the part\'s long sides, which assumes the part is a true rectangle'+
                   ' (camera tilted '+tilt+' along it). To use the ruler, redraw the scale line down its middle, end to end.';
               }
             }
+            if(dropped) msg+=' Your '+dropped+' mm plane offset is off: a squared-up photo measures in the ruler\'s plane (Undo brings it back).';
             // A photo with no lens data (chat apps strip it) got a typical phone lens instead.
             if(j.focal_source==='assumed' && j.tilt_deg>1) msg+=' Tip: this file has no camera data, so a typical phone lens was assumed — the phone\'s original photo is more exact.';
             const actions=[];
@@ -2015,7 +2021,8 @@
       // --- Measuring off the card's plane -------------------------------------------------
       // Height in mm of the face being measured ABOVE the card (a part's top face is
       // positive; a recess is negative). 0 means measure in the card's own plane.
-      featureHeightMM(){ return this._featureHeightMM || 0; }
+      // Under a line scale the offset is read back from the scale itself (_lineScalePlane).
+      featureHeightMM(){ const p = this._lineScalePlane(); return p ? p.h : (this._featureHeightMM || 0); }
 
       // How wrong an UNCORRECTED measurement of a face `h` mm off the card's plane would be,
       // as a percentage, or null when the working distance is unknown. Taken from the
@@ -2044,6 +2051,31 @@
                '. Resting the card on that face and re-shooting is exact; correcting here is an estimate.';
       }
 
+      // A line scale's plane offset, read back from the scale rather than stored beside it.
+      // The line's own mm/px is its length over its drawn ends, and the ends are saved with
+      // the view, so the offset in force is whatever the current mm/px implies: it survives
+      // a reload, a job swap, an autosave or an Undo with nothing else saved, and a newly
+      // drawn line reads 0 by construction. Z = f * mm/px does not change when a save
+      // downscales the photo (f and mm/px scale oppositely). null unless a plain line scale.
+      _lineScalePlane(){
+        const cur = this.opts.manualMmPerPx;
+        if(!(cur > 0) || this.opts.manualHomography) return null;
+        const L = this._scaleLine;
+        const px = (L && Array.isArray(L.a) && Array.isArray(L.b)) ? Math.hypot(L.b[0] - L.a[0], L.b[1] - L.a[1]) : 0;
+        // No ends kept (a save from before they were): what this session remembers, else this scale.
+        const prev = this._lineScaleBase;
+        const base = (px > 0 && L.mm > 0) ? L.mm / px : ((prev && cur === prev.scaled) ? prev.mm : cur);
+        const cam = (this.data && this.data.camera) || {};
+        const W = (this.img && (this.img.naturalWidth || this.img.width)) || 0, H = (this.img && (this.img.naturalHeight || this.img.height)) || 0;
+        const exif = cam.focal_source === 'exif' && cam.focal_px > 0;
+        // camera_geometry.default_focal_px: a 68° field of view across the long side.
+        const f = exif ? cam.focal_px : Math.max(W, H) / (2 * Math.tan(34 * Math.PI / 180));
+        const Z = f * base, factor = cur / base;
+        // A save's downscale leaves ~1e-15 of float noise; 0.1 mm at 600 mm is 1.7e-4.
+        const h = (Z > 0 && Math.abs(factor - 1) > 1e-6) ? Math.round(10 * Z * (1 - factor)) / 10 : 0;
+        return { base:base, Z:Z, exif:exif, h:h };
+      }
+
       // Ask the server for the homography of the plane `h` mm above the card, and measure
       // there instead. Resolves true when the correction is active.
       async setFeatureHeight(h){
@@ -2058,33 +2090,22 @@
         // cover's bottom edge, 45 mm below the ruler on its top face: 0.516 mm/px, f = 1186 px
         // (no lens data), Z = 612 mm, so every top-view size read 7.4% small. `h` keeps the
         // marker path's sense: mm ABOVE the reference, so that edge is h = -45.
-        if(this.opts.manualMmPerPx){
-          const prev = this._lineScaleBase;
-          // The line's own scale: remembered while the corrected one is still in force, and
-          // whatever is there otherwise (a new line has been drawn since).
-          const base = (prev && this.opts.manualMmPerPx === prev.scaled) ? prev.mm : this.opts.manualMmPerPx;
+        const plane = this._lineScalePlane();
+        if(plane){
+          // Always from the line's own scale, so applying twice does not compound and 0
+          // puts the line's scale back, in this session or after a reload.
+          const base = plane.base, Z = plane.Z;
           const done = () => { this._planeH = null; this._rescaleAnnotations(); this.updateKPI(); this.requestDraw(); };
-          if(!mm){
-            this.opts.manualMmPerPx = base; this._lineScaleBase = null; this._featureHeightMM = 0; done();
-            return true;
-          }
-          const cam = (this.data && this.data.camera) || {};
-          const W = (this.img && (this.img.naturalWidth || this.img.width)) || 0, H = (this.img && (this.img.naturalHeight || this.img.height)) || 0;
-          const exif = cam.focal_source === 'exif' && cam.focal_px > 0;
-          // camera_geometry.default_focal_px: a 68° field of view across the long side.
-          const f = exif ? cam.focal_px : Math.max(W, H) / (2 * Math.tan(34 * Math.PI / 180));
-          const Z = f * base;
+          this._featureHeightMM = 0;   // the offset lives in the mm/px; featureHeightMM() reads it back
+          if(!mm){ this.opts.manualMmPerPx = base; this._lineScaleBase = null; done(); return true; }
           // Past a third of the way to the lens the estimate means nothing.
-          if(!(Z > 0) || Math.abs(mm) >= Z / 3){
-            this.opts.manualMmPerPx = base; this._lineScaleBase = null; this._featureHeightMM = 0; done();
-            return false;
-          }
+          if(!(Z > 0) || Math.abs(mm) >= Z / 3){ this.opts.manualMmPerPx = base; this._lineScaleBase = null; done(); return false; }
           const factor = (Z - mm) / Z, pct = 100 * (factor - 1);
           this.opts.manualMmPerPx = base * factor;
-          this._lineScaleBase = { mm:base, scaled:this.opts.manualMmPerPx, pct:pct, estimated:!exif, distance_mm:Z };
-          this._featureHeightMM = mm; done();
+          this._lineScaleBase = { mm:base, scaled:this.opts.manualMmPerPx };
+          done();
           this._toast('Scale moved to a face ' + Math.abs(mm) + ' mm ' + (mm < 0 ? 'below' : 'above') + ' the ruler: sizes ' +
-                      (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%' + (exif ? '' : ', estimated (no lens data)') +
+                      (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%' + (plane.exif ? '' : ', estimated (no lens data)') +
                       '. Laying the ruler on that face and re-shooting is exact. Set 0 to go back.', { autoMs:9000 });
           return true;
         }

@@ -10,7 +10,8 @@ Boots the app, loads a photo with a ruler-line scale and an outline, and answers
   * nothing selected: the message says Square up uses the ruler under the scale line.
 Then "Measuring a raised face?" on a ruler line: a face 45 mm below a ruler read at
 0.516 mm/px, with no lens data (f = 1186 px for a 1200 x 1600 photo), reads 7.4% small, so
-the scale grows by that and the message says it is an estimate.
+the scale grows by that and the message says it is an estimate. The offset survives a save
+and reload without compounding, a new line clears it, and Square up over it says it is off.
 
 Not part of the fast smoke test (needs Chromium + a running server). Run directly:
     .venv/bin/python tests/test_squareup_messages_e2e.py
@@ -99,7 +100,7 @@ def _result(**over):
     r = {"ok": True, "H": H_SQ, "reference": "part", "other": None, "sides": SIDES, "ruler_edges": None,
          "tilt_deg": 3.1, "width_change_pct": 5.2, "focal_source": "exif", "focal_px": 1186.0, "converge_deg": 0.3,
          "part": {"angle_deg": 0.0, "width_mm": [300.0, 300.0], "width_change_pct": 0.0},
-         "ruler_check": None, "partial": False, "ruler_reason": None}
+         "ruler_check": None, "partial": False, "ruler_reason": None, "ruler_found": False}
     r.update(over)
     return r
 
@@ -179,6 +180,16 @@ def main():
                                  timeout=5000)
             pg.wait_for_function("document.body.innerText.includes('Tap one end of the ruler, then the other')", timeout=5000)
 
+            # 1b) Edges found, but they would not square up: not called "couldn't find".
+            pg.evaluate(f"(()=>{{const o={O};o.setMode('select');o.ann.selectedId={oid};}})()")
+            reply["body"] = _result(ruler_reason="the ruler's edges cross in the photo", ruler_found=True)
+            assert pg.evaluate(f"{O}.squareUp()")
+            text = pg.evaluate("window.__calLastToast.innerText")
+            assert "Found the ruler's edges along your scale line but couldn't square up from them" in text \
+                and "Couldn't find" not in text, text
+            pg.locator(".cal-toast-action", has_text="Undo").click()
+            pg.wait_for_function(f"!{O}.opts.manualHomography", timeout=5000)
+
             # 2) One ruler edge only: said plainly, the part's sides and Redraw on offer.
             pg.evaluate(f"(()=>{{const o={O};o.setMode('select');o.ann.selectedId={oid};}})()")
             reply["body"] = _result(reference="ruler", other="part", partial=True, ruler_reason="right edge unclear",
@@ -226,6 +237,38 @@ def main():
             text = pg.evaluate("window.__calLastToast.innerText")
             assert "+7.4%" in text and "no lens data" not in text, text
             assert pg.evaluate(f"{O}.featureHeightMM()") == -45
+            eff = pg.evaluate(f"{O}.opts.manualMmPerPx")   # f = 1186 exactly now, not 1186.08
+            # The offset survives a save and reload (the snapshot carries only the mm/px and
+            # the line): it reads back as -45, applying it again does not compound, and 0
+            # still finds the line's own scale.
+            pg.evaluate(f"""(()=>{{const o={O};const s=o.getRestoreState();
+                o.opts.manualMmPerPx=null;o._lineScaleBase=null;o._featureHeightMM=0;o._scaleLine=null;
+                o._applyRestore(s);}})()""")
+            assert abs(pg.evaluate(f"{O}.opts.manualMmPerPx") - eff) < 1e-9, "the reload lost the corrected scale"
+            assert pg.evaluate(f"{O}.featureHeightMM()") == -45, "the reload lost the offset's reading"
+            assert pg.evaluate(f"{O}.setFeatureHeight(-45)") is True
+            assert abs(pg.evaluate(f"{O}.opts.manualMmPerPx") - eff) < 1e-9, "re-applying after a reload compounded"
+            assert pg.evaluate(f"{O}.setFeatureHeight(0)") is True
+            assert abs(pg.evaluate(f"{O}.opts.manualMmPerPx") - base) < 1e-12, "0 after a reload missed the line's scale"
+            # A new line drawn over an offset is in the ruler's plane: no stale offset reported.
+            pg.evaluate(f"{O}.setFeatureHeight(-45)")
+            pg.evaluate(f"{O}.setManualScaleFromPixels(581.4, 300, [[600,409.3],[600,990.7]])")
+            assert pg.evaluate(f"{O}.featureHeightMM()") == 0, "a new line kept the old offset"
+            assert abs(pg.evaluate(f"{O}.opts.manualMmPerPx") - base) < 1e-12
+            # Square up over an offset squares from the line's own scale, says the offset is
+            # off, and Undo brings the offset back with its scale.
+            pg.evaluate(f"{O}.setFeatureHeight(-45)")
+            reply["body"] = _result(other="ruler", ruler_found=True)
+            pg.evaluate(f"(()=>{{const o={O};o.ann.selectedId={oid};}})()")
+            assert pg.evaluate(f"{O}.squareUp()"), "square up over an offset did not apply"
+            text = pg.evaluate("window.__calLastToast.innerText")
+            assert "-45 mm plane offset is off" in text, text
+            assert abs(pg.evaluate(f"{O}.opts.manualMmPerPx") - base) < 1e-12, "squared up from the offset scale"
+            assert pg.evaluate(f"{O}.featureHeightMM()") == 0
+            pg.locator(".cal-toast-action", has_text="Undo").click()
+            pg.wait_for_function(f"!{O}.opts.manualHomography", timeout=5000)
+            assert abs(pg.evaluate(f"{O}.opts.manualMmPerPx") - eff) < 1e-9 and pg.evaluate(f"{O}.featureHeightMM()") == -45, \
+                "Undo did not bring the offset back"
             pg.evaluate(f"{O}.setFeatureHeight(0)")
             # A squared-up scale is still refused, as before.
             reply["body"] = _result()
@@ -238,7 +281,8 @@ def main():
             browser.close()
         print("E2E_RESULT: PASS (no-ruler message with reason, Redraw scale line + disabled Use the ruler; partial "
               "message; refusal offers Redraw; no-selection text; line scale 0.516 mm/px, 45 mm below -> +7.4% "
-              "with the no-lens hedge, 0 restores, squared still refused)")
+              "with the no-lens hedge, 0 restores, survives a reload, new line clears it, Square up says it "
+              "dropped it and Undo brings it back, squared still refused)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")

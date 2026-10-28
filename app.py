@@ -1327,11 +1327,12 @@ def api_square_up():
     Returns { ok, H (image px -> plane mm, 3x3), reference, sides, ruler_edges, tilt_deg,
               width_change_pct, focal_source, part: {angle_deg, width_mm, width_change_pct},
               ruler_check: {...} | null, other: "ruler" | "part" | null,
-              partial: bool, ruler_reason: str | null }
+              partial: bool, ruler_reason: str | null, ruler_found: bool }
     `partial`: only one of the ruler's edges was clear, and the other is assumed parallel to
     it — that lines the photo up but cannot see a tilt along the ruler, so the part's taper
     read through it is marked as less sure. `ruler_reason` says why the ruler's edges were not
-    found (or only one was), for the message. Both are also on a 200 { ok:false } refusal.
+    found (or only one was), or why edges that were found did not square up (`ruler_found`
+    true). `partial` and `ruler_reason` are also on a 200 { ok:false } refusal.
     """
     from flask import jsonify
     from ruler_check import find_ruler_edges, ruler_report
@@ -1417,8 +1418,11 @@ def api_square_up():
         res, ref = res_r, "ruler"
     if not all(math.isfinite(v) for row in res["H"] for v in row):
         return refuse("Could not square up this photo.")
-    if edges is not None and res_r is None and err_r is not None and not ruler_reason:
-        ruler_reason = str(err_r)
+    # Edges found that would not square up are not "no edges": say which, so the message
+    # does not tell the user to redraw a line that found the ruler fine.
+    ruler_found = edges is not None
+    if ruler_found and res_r is None and err_r is not None:
+        ruler_reason = (f"{ruler_reason}; " if ruler_reason else "") + str(err_r)
     H = res["H"]
     other = None
     if ref == "ruler" and sides is not None:
@@ -1451,7 +1455,8 @@ def api_square_up():
         if len(tapers) == 2:
             part["taper_sigma_mm"] = round(abs(tapers[0] - tapers[1]) / 2.0, 2)
     return jsonify(ok=True, reference=ref, other=other, sides=sides, ruler_edges=edges,
-                   part=part, ruler_check=check, partial=partial, ruler_reason=ruler_reason, **res)
+                   part=part, ruler_check=check, partial=partial, ruler_reason=ruler_reason,
+                   ruler_found=ruler_found, **res)
 
 
 def _decode_data_url(durl):

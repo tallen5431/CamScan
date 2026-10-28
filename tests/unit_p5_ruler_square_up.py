@@ -2,8 +2,9 @@
 
 Standalone: python tests/unit_p5_ruler_square_up.py. Prints one [PASS]/[FAIL] line per check
 and UNIT_RESULT: PASS / FAIL; exits non-zero on a failure. Every photo here is drawn: a
-ruler strip on a dark part, with the thing that broke the edge finder on a customer's top
-photo — something dark and straight running a few px off one of the ruler's edges.
+ruler strip on a dark part, with what broke the edge finder on a customer's top photo: the
+ruler drifting across the drawn scale line, and something straight (a rib's highlight, a
+groove) running a few px off one of its edges.
 """
 import base64
 import os
@@ -64,6 +65,35 @@ def ruler_photo(groove=None, jagged=None, ruler=True, seed=1):
     return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), line
 
 
+def rib_photo(drift=0.0, rib=None, groove=None, seed=1):
+    """What broke the edge finder on a customer's top photo, drawn: the ruler drifts `drift`
+    px across a scale line drawn straight down from the middle of its top end, and a straight
+    band runs beside one edge. rib=(side 'L'/'R', gap px, width px, grey): a band that stays
+    put while the ruler drifts — a moulded rib's highlight (bright) or a groove (dark).
+    groove=(same): a band that drifts with the ruler. Returns (BGR image, scale line)."""
+    H, W, ss = 900, 500, 8
+    big = np.full((H * ss, W * ss), 95, np.uint8)
+    D = drift / (Y1 - Y0)
+
+    def P(x, y, d=D):
+        return [int(round(((x + d * (y - Y0)) + .5) * ss - .5)), int(round((y + .5) * ss - .5))]
+    cv2.fillPoly(big, [np.array([P(X0, Y0), P(X0 + WIDTH, Y0), P(X0 + WIDTH, Y1), P(X0, Y1)], np.int32)], 205)
+    for i in range(int((Y1 - Y0) / 1.95)):
+        y = Y0 + 3 + i * 1.95
+        ln = 9 if i % 10 == 0 else (6 if i % 5 == 0 else 3.5)
+        cv2.line(big, tuple(P(X0, y)), tuple(P(X0 + ln, y)), 50, max(1, ss // 3))
+    for band, d in ((rib, 0.0), (groove, D)):
+        if band:
+            side, gap, wd, grey = band
+            xa = X0 + WIDTH + gap if side == "R" else X0 - gap - wd
+            cv2.fillPoly(big, [np.array([P(xa, Y0 - 60, d), P(xa + wd, Y0 - 60, d),
+                                         P(xa + wd, Y1 + 60, d), P(xa, Y1 + 60, d)], np.int32)], grey)
+    img = cv2.resize(big, (W, H), interpolation=cv2.INTER_AREA).astype(np.float32)
+    img = cv2.GaussianBlur(img, (0, 0), 0.9)
+    img = np.clip(img + np.random.default_rng(seed).normal(0, 3, img.shape), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), [[X0 + WIDTH / 2, Y0 + 15], [X0 + WIDTH / 2, Y1 - 15]]
+
+
 def widths(edges):
     """The ruler's width at each end of the found edges, in px (they run up the photo)."""
     (a0, a1), (b0, b1) = edges
@@ -77,15 +107,30 @@ def data_url(img):
 def main():
     from ruler_check import find_ruler_edges
 
-    # 1) A dark groove 3-6 px off the ruler's right edge. The two cases marked `old None`
-    #    returned no edges at all before (the groove-side fit failed its rms test); the dark
-    #    full-length groove was worse — it passed, 4-6 px too wide, a false taper.
-    cases = [((3, 6, 30, 1.0), "groove 3->6 px, grey 30"),
-             ((4, 6, 10, 1.0), "groove 4->6 px, near black (was 60-62 px wide)"),
-             ((3, 6, 10, 0.5), "groove 3->6 px along half the ruler (old None)"),
-             ((6, 3, 20, 1.0), "groove 6->3 px"),
-             ((5, 5, 10, 0.6), "groove 5 px along 60% (old None)")]
-    for groove, label in cases:
+    # 1) What the customer's top photo did, drawn. Each case below failed before this change
+    #    (checked against the code it replaced, seeds 1-6): with no drift, a bright rib 3-4 px
+    #    off an edge was taken for that edge (63-64 px wide, both fits clean); with the ruler
+    #    drifting 10-14 px across the line, the averaged edges smeared and either nothing was
+    #    found (None, as that photo's line read) or the band was taken for the edge.
+    cases = [(dict(rib=("R", 3, 4, 250)), "bright rib 3 px off the right edge (was 63.3 px wide)"),
+             (dict(rib=("L", 4, 4, 250)), "bright rib 4 px off the left edge (was 64.3 px wide)"),
+             (dict(drift=6, rib=("L", 4, 4, 250)), "drift 6 px + bright rib on the left (was 64.7-69.9 px)"),
+             (dict(drift=14, rib=("R", 5, 3, 240)), "drift 14 px past a bright rib on the right (was None)"),
+             (dict(drift=10, rib=("L", 3, 4, 15)), "drift 10 px past a dark groove on the left (was None)"),
+             (dict(drift=10, groove=("R", 3, 4, 250)), "drift 10 px, a bright band riding the right edge (was 63.2 px wide)")]
+    for kw, label in cases:
+        img, line = rib_photo(**kw)
+        r = find_ruler_edges(img, *line, detail=True)
+        w = widths(r["edges"]) if r["edges"] else None
+        check(f"ruler edges, as on the top photo: {label}",
+              w is not None and all(abs(v - WIDTH) <= 2.0 for v in w),
+              f"width {w and [round(v, 2) for v in w]} px (true {WIDTH}), partial={r['partial']}, reason={r['reason']}")
+
+    # The plan's groove 3-6 px off the right edge, with the line following the ruler: these
+    # read right before too, and must still.
+    for groove, label in [((3, 6, 30, 1.0), "groove 3->6 px, grey 30"), ((4, 6, 10, 1.0), "groove 4->6 px, near black"),
+                          ((3, 6, 10, 0.5), "groove 3->6 px along half the ruler"), ((6, 3, 20, 1.0), "groove 6->3 px"),
+                          ((5, 5, 10, 0.6), "groove 5 px along 60%")]:
         img, line = ruler_photo(groove=groove)
         r = find_ruler_edges(img, *line, detail=True)
         w = widths(r["edges"]) if r["edges"] else None

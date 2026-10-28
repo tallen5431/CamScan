@@ -191,6 +191,8 @@ line, from the working distance (focal length x mm per px). This is a correction
 measurement — it is most accurate when the photo carries lens data (EXIF), and is an
 estimate otherwise; the message says which. It does not apply on top of Square up or a
 paper rectangle: set the scale from the ruler line, correct for the plane, and measure.
+(Square up over a corrected line drops the correction and says so; Undo brings it back.)
+The correction is kept with the photo, and drawing a new scale line clears it.
 
 Also worth doing: shoot from further back. The error scales as height/distance, so a
 20 mm-thick part reads +8.7% at 250 mm and +3.4% at 600 mm. Just keep the card large
