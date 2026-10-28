@@ -104,6 +104,7 @@ def main():
           "turned a quarter" in (o["warnTurned"] or ""), repr(o["warnTurned"]))
     check("an outline the size of the Top, saved as End, is called a top view",
           "looks like a top view" in (o["warnSame"] or ""), repr(o["warnSame"]))
+    check("...with the article the role takes", "not an end view" in (o["warnSame"] or ""), repr(o["warnSame"]))
     check("a tall Top outline is laid along its length, as the server does",
           o["sizeTurned"] == [200, 90], str(o["sizeTurned"]))
     check("a matched view's sizes include its scale", o["sizeScaled"] == [90, 45], str(o["sizeScaled"]))

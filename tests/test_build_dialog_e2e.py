@@ -169,6 +169,18 @@ def _real_server(pg, notes):
     pg.click('[data-view3d="end"]')
     fill = _canvas_fill(pg)
     assert fill and fill["min"] >= 0.6, f"End view fills too little of the canvas: {fill}"
+    # Turned sideways by hand from End, the 679 mm length still fits, and a nudge does not jump.
+    cb = pg.locator("#cal-part-3d").bounding_box()
+    cx, cy = cb["x"] + cb["width"] / 2, cb["y"] + cb["height"] / 2
+    pg.mouse.move(cx, cy)
+    pg.mouse.down()
+    pg.mouse.move(cx + 2, cy)
+    nudge = _canvas_fill(pg)
+    assert nudge and abs(nudge["min"] - fill["min"]) < 0.05, f"the part jumped when turned: {fill} -> {nudge}"
+    pg.mouse.move(cx + 120, cy, steps=6)
+    pg.mouse.up()
+    side = _canvas_fill(pg)
+    assert side and side["w"] < 0.99 and side["h"] < 0.99, f"turned from End, the part overflows: {side}"
     pg.click('[data-view3d="iso"]')
 
     # 1d. A known length and an end slope go to the server; one that applies them says so.
@@ -336,8 +348,25 @@ def _fresh_photo(pg):
     warn = pg.evaluate("window.__calLastToast.innerText")
     assert "76% shorter than the Top view" in warn and "End view" in warn, f"warning: {warn!r}"
     assert pg.evaluate("!window.CalibJob.part().views.side"), "saved before the user answered"
+    # Save anyway saves the outline the warning was about, even once the selection has moved.
+    pg.evaluate(f"(()=>{{const o={OV}; o.ann.selectedId=null; o.requestDraw();}})()")
     pg.locator(".cal-toast-action", has_text="Save anyway").click()
     pg.wait_for_function("!!window.CalibJob.part().views.side", timeout=5000)
+    sz = pg.evaluate("window.CalibJob.part().views.side.size_mm")
+    assert sorted(round(x) for x in sz) == [133, 160], f"Save anyway saved another outline: {sz}"
+
+    # 3c'. Traced again on a photo already matched: the new outline takes the photo's factor,
+    #      as its cavity kept it.
+    pg.evaluate(f"(()=>{{const o={OV}, pl=o.ann.items.find(a=>a.type==='polyline'&&a.closed);"
+                " o.ann.selectedId=pl.id; o.requestDraw();"
+                " const p=window.CalibJob.part(), s=p.views.side;"
+                " p.views.cavity=Object.assign({}, s, {scale:0.9, scale_undo:1, scale_note:'matched to Top'});"
+                " window.CalibJob.savePart();})()")
+    pg.evaluate("window.CalibPart3D.assign('side', true)")
+    side = pg.evaluate("window.CalibJob.part().views.side")
+    assert side.get("scale") == 0.9 and side.get("scale_note") == "matched to Top", f"factor not carried: {side}"
+    pg.evaluate("(()=>{const p=window.CalibJob.part(); delete p.views.cavity; delete p.views.side.scale;"
+                " delete p.views.side.scale_undo; delete p.views.side.scale_note; window.CalibJob.savePart();})()")
 
     # 3d. Clearing the photo's scale leaves the view's last scaled copy, flagged.
     mpp = pg.evaluate("window.CalibJob.part().views.side.mm_per_px")

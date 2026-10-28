@@ -82,6 +82,7 @@
     return worst;
   }
   function within(w){ return !w || Math.abs(w.off) <= ASSIGN_TOLERANCE; }
+  function an(word){ return (/^[aeiou]/i.test(word) ? 'an ' : 'a ') + word; }   // "an end view"
   // Why an outline does not fit as `role`, with what it probably is instead; null when it fits.
   function assignWarning(role, prof, views){
     if(!AXES[role] || !prof.size_mm) return null;
@@ -98,7 +99,7 @@
       if(Math.max(Math.abs(szc[0] / vc[0] - 1), Math.abs(szc[1] / vc[1] - 1)) <= ASSIGN_TOLERANCE) same = c;
       return !!same;
     });
-    if(same) return msg + 'It is the size of your ' + LABEL[same] + ' view — this looks like a ' + same + ' view, not a ' + role + ' view.';
+    if(same) return msg + 'It is the size of your ' + LABEL[same] + ' view — this looks like ' + an(same) + ' view, not ' + an(role) + ' view.';
     if(within(sizeCheck(role, [sz[1], sz[0]], views))){
       return msg + 'It matches turned a quarter: save it, then press ⟲ on its row in Build 3D part.';
     }
@@ -148,22 +149,29 @@
   }
 
   // ---- assigning the selected outline to a view -----------------------------------------
-  // `force`: the user saw the size warning and chose Save anyway.
-  function assign(role, force){
+  // `forced`: the user saw the size warning and chose Save anyway. From the toast it holds the
+  // outline and photo that warning was about, since the toast stays up 30 s and the selection
+  // can move meanwhile; a plain `true` (window.CalibPart3D.assign) saves the current selection.
+  function assign(role, forced){
     var o = overlay(), job = J();
     if(!o || !job) return false;
-    if(!force && o._confirmUncalibrated && !o._confirmUncalibrated()) return false;
-    var prof = o.partProfile && o.partProfile();
+    if(!forced && o._confirmUncalibrated && !o._confirmUncalibrated()) return false;
+    var here = job.photoId ? job.photoId() : null, kept = forced && forced.prof ? forced : null;
+    if(kept && kept.photo !== here){
+      toast('That outline’s photo is no longer open. Open it again, then choose the outline’s view.');
+      return false;
+    }
+    var prof = kept ? kept.prof : (o.partProfile && o.partProfile());
     if(!prof){
       toast(o.isCalibrated && !o.isCalibrated() ? 'Set this photo’s scale first, then choose the outline’s view.'
                                                 : 'Select a closed outline first, then choose its view.');
       return false;
     }
     var p = job.part();
-    if(!force){
-      var warn = assignWarning(role, prof, p.views);
+    if(!forced){
+      var warn = assignWarning(role, prof, p.views), held = { prof: prof, photo: here };
       if(warn){
-        toast(warn, 30000, [{ label: 'Save anyway', fn: function(){ assign(role, true); } },
+        toast(warn, 30000, [{ label: 'Save anyway', fn: function(){ assign(role, held); } },
                             { label: 'Cancel', fn: function(){} }]);
         return false;
       }
@@ -171,6 +179,20 @@
     storePhoto(role);
     job.setPartView(role, prof);
     p = job.part();
+    // A Match factor belongs to the photo, not the outline: a view traced again on a photo
+    // already matched (its cavity still carries the factor) takes the same factor, or the
+    // cavity and the outline around it would come out at different scales.
+    var nv = p.views[role];
+    if(nv && nv.scale == null && nv.source){
+      ['top', 'side', 'end', 'cavity'].some(function(r){
+        var w = p.views[r];
+        if(r === role || !w || w.source !== nv.source || !(Number(w.scale) > 0)) return false;
+        nv.scale = w.scale;
+        if(w.scale_note) nv.scale_note = w.scale_note;
+        if(w.scale_undo != null) nv.scale_undo = w.scale_undo;
+        return true;
+      });
+    }
     if(role === 'cavity' && !p.opts.cavity_view) p.opts.cavity_view = 'end';
     job.savePart();
     // Larger first, whichever way the photo was held: "160 × 134", never "134 × 160".
@@ -866,7 +888,8 @@
   // `preset`: the button last pressed, until the part is turned by hand. `fit`: the part's
   // projected width and height in that preset, so a straight-on view fills the canvas — the
   // bounding sphere of a 679 mm part left its 165 × 80 mm end as a 64 px speck. Kept while
-  // turning by hand, so the part does not jump in size under the finger.
+  // turning by hand, so the part does not jump in size under the finger, but capped by what
+  // the turned part needs: End's fit drew the 679 mm length 2200 px wide once turned sideways.
   var view3d = { yaw: VIEWS3D.iso[0], pitch: VIEWS3D.iso[1], zoom: 1, preset: 'iso', fit: null };
   var FIT_PRESETS = { top: 1, side: 1, end: 1 };
   function setView3d(name){
@@ -899,7 +922,11 @@
     // Straight on, the bounding box's centre lands on the canvas centre, so fitting the
     // projected box needs no shift.
     if(!view3d.fit && FIT_PRESETS[view3d.preset]) view3d.fit = [Math.max(1e-6, phi[0] - plo[0]), Math.max(1e-6, phi[1] - plo[1])];
-    var sc = view3d.fit ? view3d.zoom * 0.9 * Math.min(W / view3d.fit[0], H / view3d.fit[1])
+    // The cap measures from the centre both ways, since off-axis the mesh need not sit
+    // evenly about it; straight on it equals the preset's fit, so a preset is unchanged.
+    var sc = view3d.fit ? view3d.zoom * 0.9 * Math.min(W / view3d.fit[0], H / view3d.fit[1],
+                                                       W / (2 * Math.max(-plo[0], phi[0], 1e-6)),
+                                                       H / (2 * Math.max(-plo[1], phi[1], 1e-6)))
                         : view3d.zoom * 0.46 * Math.min(W, H) / R;
     var L = [-0.45, 0.6, -0.66], Ln = Math.hypot(L[0], L[1], L[2]); L = [L[0] / Ln, L[1] / Ln, L[2] / Ln];
     var list = [];
