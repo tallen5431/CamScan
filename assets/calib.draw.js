@@ -40,12 +40,27 @@ window.CalibDraw = (function(){
     ctx.restore();
   }
 
-  function drawMarkers(ctx, canvas, data, linePx){
+  // opts.confirmed: the user said this detection IS their reference, so an unverified one
+  // is drawn like any other.
+  function drawMarkers(ctx, canvas, data, linePx, opts){
     if(!data || !Array.isArray(data.markers)) return;
     const dotR = px(canvas, 10);
+    const confirmed = !!(opts && opts.confirmed);
     for(const m of data.markers){
       if(!m.corners || m.corners.length<4) continue;
       const pts = m.corners.map(p=>[p.x,p.y]);
+      // A candidate the server could not verify is only a hint: faint and dashed, with no
+      // corner handles, so it never passes for the scale reference.
+      if(m.unverified && !confirmed){
+        ctx.save();
+        ctx.globalAlpha = 0.45; ctx.setLineDash([px(canvas, 8), px(canvas, 6)]);
+        ctx.lineWidth = px(canvas, Math.max(1, linePx*0.6)); ctx.strokeStyle = colors.marker;
+        ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+        for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+        ctx.closePath(); ctx.stroke();
+        ctx.restore();
+        continue;
+      }
       // Reset the outline width each iteration — the corner-dot loop below leaves
       // lineWidth at the dot-stroke value, so without this every marker after the
       // first would be outlined at the wrong thickness.

@@ -119,7 +119,10 @@ window.CalibExport = (function(){
     ctx.drawImage(img, 0, 0);
     const fallback = (data && data.mm_per_px) || 0;
     if(opts.showGrid) D().drawGrid(ctx, iw, ih);
-    if(opts.showMarkers) D().drawMarkers(ctx, full, data, opts.linePx != null ? opts.linePx : 3);
+    // A candidate the server could not confirm is not the scale; the live view does not draw
+    // it, and the image that goes to the shop must not show it as if it were.
+    const unconfirmed = data && data.calibration_usable === false && !opts.markerConfirmed;
+    if(opts.showMarkers && !unconfirmed) D().drawMarkers(ctx, full, data, opts.linePx != null ? opts.linePx : 3, { confirmed: !!opts.markerConfirmed });
     _drawAnnotations(ctx, full, data, store, opts.units, opts.labelScale != null ? opts.labelScale : 1.4,
                      opts.linePx != null ? opts.linePx : 3, fallback, opts.allowHomography !== false);
     const maxDim = opts.maxDim || 0;
@@ -133,8 +136,8 @@ window.CalibExport = (function(){
     return full;
   }
 
-  function exportPNG(img, data, store, showGrid, showMarkers, unitsKey, labelScale=1.4, linePx=3, allowHomography=true){
-    const off = _renderAnnotated(img, data, store, { showGrid, showMarkers, units:unitsKey, labelScale, linePx, allowHomography });
+  function exportPNG(img, data, store, showGrid, showMarkers, unitsKey, labelScale=1.4, linePx=3, allowHomography=true, markerConfirmed=false){
+    const off = _renderAnnotated(img, data, store, { showGrid, showMarkers, units:unitsKey, labelScale, linePx, allowHomography, markerConfirmed });
     off.toBlob((blob)=>{ const a=document.createElement('a'); a.download='annotated.png'; a.href=URL.createObjectURL(blob); a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }, 'image/png');
   }
 

@@ -171,6 +171,7 @@ def scenario_not_the_part(browser, errors, dialogs):
     assert plain > 1.4, f"precondition: the plain trace should swallow the shadow, got {plain:.2f}x"
 
     # The real button, then a real tap on the shadow.
+    pg.evaluate(f"window.__firstPts=JSON.stringify({OUTERS}[0].pts)")
     btn = pg.locator("button", has_text="Not the part")
     assert btn.is_visible(), "'Not the part' is not shown after a trace"
     btn.click()
@@ -180,7 +181,9 @@ def scenario_not_the_part(browser, errors, dialogs):
         pg.mouse.click(where["x"], where["y"])
     body = json.loads(req.value.post_data or "{}")
     assert len(body.get("bg") or []) == 1, f"the tap did not reach the trace as a background hint: {body.get('bg')}"
-    pg.wait_for_function(f"(()=>{{const p={OUTERS};return p.length===1&&p[0].id!=={first['id']};}})()",
+    # The re-trace replaces the outline in place: same id (a 3D view follows it), new points.
+    pg.wait_for_function(f"(()=>{{const p={OUTERS};return p.length===1&&p[0].id==={first['id']}"
+                         f"&&JSON.stringify(p[0].pts)!==window.__firstPts;}})()",
                          timeout=20000)
     hinted = _area(pg.evaluate(OUTERS)[0]["pts"]) / PART_AREA
     assert 0.75 <= hinted <= 1.35, f"after the tap the trace should be the part, got {hinted:.2f}x"
