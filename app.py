@@ -1229,6 +1229,42 @@ def api_straighten():
     return jsonify(ok=True, **res)
 
 
+@server.route("/api/square_up", methods=["POST"])
+def api_square_up():
+    """Perspective from a part's two parallel sides plus the scale line — see square_up.py.
+
+    Body: { outline: [[x, y], ...], ruler: [[x, y], [x, y]], ruler_mm, image_w, image_h,
+            focal_px | null }   (image pixel coords)
+    Returns { ok, H (image px -> plane mm, 3x3), sides, tilt_deg, width_change_pct,
+              focal_source } or a 200 { ok:false, error } with the reason in words.
+    """
+    from flask import jsonify
+    from square_up import SquareUpError, long_sides, square_up
+
+    data = _json_body()
+    pts = data.get("outline")
+    if not isinstance(pts, list) or not (4 <= len(pts) <= 5000):
+        return jsonify(ok=False, error="Select the part's traced outline first."), 400
+    try:
+        ring = [[float(p[0]), float(p[1])] for p in pts]
+    except (TypeError, ValueError, IndexError):
+        return jsonify(ok=False, error="The outline is not a list of points."), 400
+    if not all(math.isfinite(v) for q in ring for v in q):
+        return jsonify(ok=False, error="The outline has non-finite points."), 400
+    try:
+        sides = long_sides(ring)
+        res = square_up(sides[0], sides[1], data.get("ruler"), data.get("ruler_mm"),
+                        data.get("image_w"), data.get("image_h"), data.get("focal_px"))
+    except SquareUpError as e:
+        return jsonify(ok=False, error=str(e)), 200
+    except Exception as e:
+        print(f"[square_up] error: {e}")
+        return jsonify(ok=False, error="Could not square up this photo."), 500
+    if not all(math.isfinite(v) for row in res["H"] for v in row):
+        return jsonify(ok=False, error="Could not square up this photo."), 200
+    return jsonify(ok=True, sides=sides, **res)
+
+
 def _decode_data_url(durl):
     """('data:image/jpeg;base64,...') -> (mimetype, raw_bytes)."""
     header, b64 = durl.split(",", 1)

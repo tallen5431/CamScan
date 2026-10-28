@@ -1045,7 +1045,8 @@
       getScaleInfo(){
         const s=this.getScale()||0; const unit=Units.get(this.opts.units);
         let source='none';
-        if(this.opts.manualHomography) source='paper/rectangle';   // perspective flag conveys tilt-correction
+        if(this.opts.manualHomography) source=(this._manualRef && this._manualRef.kind==='squared')
+          ? 'ruler, squared up from parallel sides' : 'paper/rectangle';   // perspective flag conveys tilt-correction
         else if(this.opts.manualMmPerPx) source='manual line';
         else if(this.currentMarkerSizeMM()) source=`printed square ${this.currentMarkerSizeMM()} mm`;
         const span=this.referenceSpanWarning();
@@ -1119,7 +1120,9 @@
           manual:{
             mmPerPx:(this.opts.manualMmPerPx>0 ? this.opts.manualMmPerPx/s : null),
             homography:(this.opts.manualHomography ? this._scaleHomography(this.opts.manualHomography, s) : null),
-            ref:this._scaleRef(this._manualRef, s)
+            ref:this._scaleRef(this._manualRef, s),
+            line:(this._scaleLine ? { a:[this._scaleLine.a[0]*s, this._scaleLine.a[1]*s],
+                                      b:[this._scaleLine.b[0]*s, this._scaleLine.b[1]*s], mm:this._scaleLine.mm } : null)
           }
         };
       }
@@ -1137,6 +1140,7 @@
           this.opts.manualMmPerPx=(m.mmPerPx>0?m.mmPerPx:null);
           this.opts.manualHomography=(m.homography||null);
           this._manualRef=(m.ref||null);
+          this._scaleLine=(m.line && Array.isArray(m.line.a) && Array.isArray(m.line.b) && m.line.mm>0) ? m.line : null;
           if(Array.isArray(state.ann)){
             this.ann.items=state.ann.map(a=>JSON.parse(JSON.stringify(a)));
             Ann.reserveIds(this.ann.items);   // advance the id counter past restored ids (no collisions)
@@ -1179,6 +1183,9 @@
             if(typeof m.edge_px==='number') m.edge_px*=s;
             if(typeof m.mm_per_px==='number' && m.mm_per_px>0) m.mm_per_px=m.mm_per_px/s;
           });
+          // The focal length is in pixels too. Left unscaled while the marker's edge_px was
+          // scaled, a reopened side's camera distance came out 1/s too far.
+          if(c.camera && typeof c.camera.focal_px==='number' && c.camera.focal_px>0) c.camera.focal_px*=s;
           return c;
         }catch(e){ return c; }
       }
@@ -1246,7 +1253,7 @@
         // rescaling an unrelated image (see updateKPI).
         this._markerSizeFromMemory = !!fromMemory;
         this.opts.manualMmPerPx = null; // markers become the source of truth again
-        this.opts.manualHomography = null; this._manualRef = null;
+        this.opts.manualHomography = null; this._manualRef = null; this._scaleLine = null;
         const vals=[];
         for(const m of (this.data?.markers||[])){
           const px = m.edge_px || this._markerEdgePx(m);
@@ -1263,9 +1270,11 @@
 
       // Set the scale directly from a known length: the user draws a line of known real
       // length; mm_per_px = knownMM / pixelLength. Works even with zero detected markers.
-      setManualScaleFromPixels(pixelLength, knownMM){
+      setManualScaleFromPixels(pixelLength, knownMM, ends){
         knownMM = parseFloat(knownMM);
         if(!(pixelLength>0) || !(knownMM>0)) return;
+        // The line itself, not just its scale: Square up re-reads it on the corrected plane.
+        this._scaleLine = (Array.isArray(ends) && ends.length===2) ? { a:ends[0].slice(), b:ends[1].slice(), mm:knownMM } : null;
         this._markerSizeFromMemory = false;
         // A line scale is uniform — drop any paper-rectangle homography so we don't claim
         // tilt correction the single line can't provide.
@@ -1276,7 +1285,7 @@
         this.requestDraw();
       }
       clearManualScale(){
-        this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null;
+        this.opts.manualMmPerPx = null; this.opts.manualHomography = null; this._manualRef = null; this._scaleLine = null;
         // The raised-plane homography was derived from the calibration that just went away.
         this._planeH = null; this._featureHeightMM = 0;
         this._rescaleAnnotations(); this.requestDraw();
@@ -1433,15 +1442,16 @@
         this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, true);
       }
 
-      _runAutoTrace(seed, simplify, isRetrace){
-        if(!this.img){ return; }
-        const self=this;
+      // The /api/trace request for `seed` at detail `simplify`, with the Area box and the
+      // taps, all in the posted image's coords; sentScale maps results back. null if the
+      // photo cannot be read. Shared by the trace and by Refine's full-detail re-trace.
+      _traceRequest(seed, simplify){
         const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
         const sentScale=Math.min(1, 1600/Math.max(natW, natH));   // cap the POST size; map results back
         const cw=Math.max(1,Math.round(natW*sentScale)), ch=Math.max(1,Math.round(natH*sentScale));
         const cnv=document.createElement('canvas'); cnv.width=cw; cnv.height=ch;
         cnv.getContext('2d').drawImage(this.img, 0, 0, cw, ch);
-        let durl; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){ return; }
+        let durl; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){ return null; }
 
         const exclude=[];
         try{
@@ -1462,15 +1472,23 @@
           const r=this._lastAutoRoi;
           roiSent=[r[0]*sentScale, r[1]*sentScale, r[2]*sentScale, r[3]*sentScale];
         }
+        return { sentScale:sentScale, body:{ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent,
+                                             fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) } };
+      }
 
+      _runAutoTrace(seed, simplify, isRetrace){
+        if(!this.img){ return; }
+        const self=this;
+        const req=this._traceRequest(seed, simplify);
+        if(!req) return;
+        const sentScale=req.sentScale;
         const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
         // A photo whose colours mislead the quick trace falls back to a careful one that takes
         // several seconds (6-10 s measured on real customer photos). Say so, so it never
         // looks hung.
         const slowNote=setTimeout(()=>{ try{ toast.update('Still tracing — this photo needs the slower, careful method (about 10 s)…'); }catch(e){} }, 3500);
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent,
-                                  fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) }) })
+            body:JSON.stringify(req.body) })
           .then(r=>{ clearTimeout(slowNote); return r.json(); })
           .then(function(j){
             if(j && j.ok && Array.isArray(j.points) && j.points.length>=3){
@@ -1486,6 +1504,7 @@
               const pts=j.points.map(p=>[p[0]/sentScale, p[1]/sentScale]);   // back to image coords
               Ann.addPolyline(self.ann, pts, mm, self.opts.units, self.opts.lockMarkerId, true);
               self._autoAddedIds.push(self.ann.selectedId);
+              self._tracedOuter={ id:self.ann.selectedId, json:JSON.stringify(self.ann.items[self.ann.items.length-1].pts) };
               let nPts=pts.length, nHoles=0;
               // Interior holes come back typed: a round bore as a TRUE circle (perfect in the
               // DXF), a hex / 12-point socket or slot as a corner-kept polygon. Each is added
@@ -1581,8 +1600,15 @@
         }
         this._straightened = this._straightened || {};
         const prior = this._straightened[a.id];
-        const src = (refine && prior && prior.to===JSON.stringify(a.pts)) ? prior.from : a.pts;
+        let src = (refine && prior && prior.to===JSON.stringify(a.pts)) ? prior.from : a.pts;
         if(!this.img) return Promise.resolve(false);
+        // Detail the first trace simplified away (a gentle rounded corner traced as one straight
+        // piece) cannot be fitted afterwards. So if the outline is still exactly the trace's own —
+        // or Straighten's version of it — Refine first re-traces the same spot at full detail,
+        // with the same Area box and taps. Anything edited by hand is refined as it stands.
+        const t=this._tracedOuter, curJ=JSON.stringify(a.pts);
+        const fromTrace = refine && t && t.id===a.id && Array.isArray(this._lastAutoSeed)
+          && (curJ===t.json || (prior && prior.to===curJ && JSON.stringify(prior.from)===t.json));
         const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
         const k=Math.min(1, 1600/Math.max(natW, natH));      // the same posted size the trace uses
         const cnv=document.createElement('canvas');
@@ -1591,12 +1617,31 @@
         let durl=null; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){}   // none: straighten by the dots alone
         const self=this, id=a.id;
         if(refine && !durl){ this._toast('Refine needs the photo, which could not be read here.', {autoMs:3000}); return Promise.resolve(false); }
-        const toast=this._toast(refine ? 'Refining…' : 'Straightening…');
-        return fetch(this._apiUrl('api/outline/straighten'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, mode:refine?'refine':'straighten', points:src.map(p=>[p[0]*k, p[1]*k]) }) })
+        const toast=this._toast(refine ? (fromTrace ? 'Refining — re-tracing at full detail (up to ~10 s)…' : 'Refining…') : 'Straightening…');
+        const fine = fromTrace ? (function(){
+          const req=self._traceRequest(self._lastAutoSeed, 0.0003);
+          if(!req) return Promise.resolve(src);
+          return fetch(self._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(req.body) })
+            .then(r=>r.json())
+            .then(j=>(j && j.ok && Array.isArray(j.points) && j.points.length>=3) ? j.points.map(p=>[p[0]/req.sentScale, p[1]/req.sentScale]) : src)
+            .catch(()=>src);
+        })() : Promise.resolve(src);
+        let usedPts=src;
+        return fine.then(srcPts => { usedPts=srcPts; return fetch(this._apiUrl('api/outline/straighten'), { method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ image:durl, mode:refine?'refine':'straighten', points:srcPts.map(p=>[p[0]*k, p[1]*k]) }) }); })
           .then(r=>r.json())
           .then(function(j){
             const cur=self.ann.items.find(x=>x.id===id);
+            if(cur && refine && fromTrace && usedPts!==src && (!j || !j.ok)){
+              // No straight sides to fit (a round part), but the full-detail re-trace is
+              // itself the more detailed outline that was asked for.
+              self._pushHistory();
+              cur.pts=usedPts.map(p=>p.slice());
+              self._dismissTraceDetail(); self.requestDraw();
+              toast.update('Refined: re-traced at full detail ('+cur.pts.length+' points) — no straight sides to fit. Undo to go back.', 'ok');
+              setTimeout(toast.dismiss, 3200);
+              return true;
+            }
             if(!j || !j.ok || !cur || !Array.isArray(j.points)){
               toast.update('Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err');
               setTimeout(toast.dismiss, 3000);
@@ -1618,6 +1663,47 @@
           .catch(function(){ toast.update((refine?'Refine':'Straighten')+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
       }
 
+      // Square up (square_up.py): the selected outline's two long sides are parallel on the
+      // part, so where they converge in the photo says how the camera was tilted; with the
+      // scale line, every measurement and export is then corrected for that tilt. Undo puts
+      // the plain line scale back.
+      squareUp(){
+        const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
+        if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<4){
+          this._toast('Select the part\'s traced outline first — Square up uses its two long sides.', {autoMs:3200});
+          return Promise.resolve(false);
+        }
+        const line=this._scaleLine;
+        if(!line){
+          this._toast('Set the scale with a line along your ruler first (📐 → Measure something of known size), then Square up.', {autoMs:5000});
+          return Promise.resolve(false);
+        }
+        const W=this.img.naturalWidth||this.img.width, H=this.img.naturalHeight||this.img.height;
+        const cam=this.data && this.data.camera;
+        const focal=(cam && cam.focal_source==='exif' && cam.focal_px>0) ? cam.focal_px : null;
+        const self=this;
+        const toast=this._toast('Squaring up…');
+        return fetch(this._apiUrl('api/square_up'), { method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ outline:a.pts, ruler:[line.a, line.b], ruler_mm:line.mm, image_w:W, image_h:H, focal_px:focal }) })
+          .then(r=>r.json())
+          .then(function(j){
+            if(!j || !j.ok){ toast.update((j && j.error) || 'Could not square up this photo.', 'err'); setTimeout(toast.dismiss, 5000); return false; }
+            const prev={ mm:self.opts.manualMmPerPx, H:self.opts.manualHomography, ref:self._manualRef, ext:self._refExtentPx };
+            self.setManualRectScale(j.H, self.opts.manualMmPerPx, { kind:'squared', tilt_deg:j.tilt_deg,
+                                     focal_source:j.focal_source, sides:j.sides }, self._refExtentPx);
+            toast.dismiss();
+            const msg='Squared up: the camera was tilted '+(Math.round(j.tilt_deg*10)/10)+'° along the part (its sides narrowed '+
+              (Math.round(j.width_change_pct*10)/10)+'% end to end). Measurements and exports now correct for it.'+
+              (j.focal_source==='assumed' ? ' The camera\'s focal length was assumed — the original photo from the phone carries the exact one.' : '');
+            self._toast(msg, { autoMs:9000, action:{ label:'Undo', fn:function(){
+              if(prev.H) self.setManualRectScale(prev.H, prev.mm, prev.ref, prev.ext);
+              else { self.opts.manualHomography=null; self._manualRef=prev.ref; self.opts.manualMmPerPx=prev.mm; self._rescaleAnnotations(); self.requestDraw(); }
+            } } });
+            return true;
+          })
+          .catch(function(){ toast.update('Square up needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
+      }
+
       _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el) el.remove(); }
 
       // Ask for the real length of a just-drawn line and set the working scale from it.
@@ -1625,19 +1711,20 @@
       // we fall back to a prompt(). The entered value is in the current display unit.
       _promptScale(pixelLen, mid){
         const unit=Units.get(this.opts.units);
+        const ends=this.selectedPoints.slice(0,2).map(p=>p.slice());   // kept for Square up
         const done=(valStr)=>{
           this.selectedPoints=[]; this.hover=null;
-          if(valStr!=null){ const v=parseFloat(valStr); if(v>0){ this.setManualScaleFromPixels(pixelLen, unit.toMM(v)); this.setMode('select'); } }
+          if(valStr!=null){ const v=parseFloat(valStr); if(v>0){ this.setManualScaleFromPixels(pixelLen, unit.toMM(v), ends); this.setMode('select'); } }
           this.requestDraw();
         };
         if(typeof this.onNeedScaleInput==='function'){ this.onNeedScaleInput(pixelLen, done, unit, mid); return; }
-        this._inlineScaleInput(pixelLen, done, unit, mid);
+        this._inlineScaleInput(pixelLen, done, unit, mid, ends);
       }
 
       // Floating inline field near the drawn line's midpoint for entering its real
       // length. Replaces the native prompt(), which covered the line and was clumsy on
       // mobile. done(valueStringOrNull) applies the value or cancels.
-      _inlineScaleInput(pixelLen, done, unit, mid){
+      _inlineScaleInput(pixelLen, done, unit, mid, ends){
         const prev=document.getElementById('cal-scale-input'); if(prev) prev.remove();
         const box=document.createElement('div'); box.id='cal-scale-input';
         box.style.cssText='position:fixed;z-index:40;background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
@@ -1656,7 +1743,7 @@
         // they bypass unit.toMM and can't be corrupted by inch/cm mode (the unit trap).
         const finishMM=(mm)=>{
           box.remove(); this.selectedPoints=[]; this.hover=null;
-          if(mm>0){ this.setManualScaleFromPixels(pixelLen, mm); this.setMode('select'); }
+          if(mm>0){ this.setManualScaleFromPixels(pixelLen, mm, ends); this.setMode('select'); }
           this.requestDraw();
         };
         // One-tap reference presets so a customer without a ruler (or who doesn't know a
@@ -2137,7 +2224,8 @@
           // can't silently rescale an unrelated image without the user noticing.
           const remembered = !this.opts.manualMmPerPx && this._markerSizeFromMemory;
           const src = this.opts.manualHomography
-                        ? (this._manualRef ? `paper ${Math.round(this._manualRef.w)}×${Math.round(this._manualRef.h)} mm` : 'paper')
+                        ? (this._manualRef && this._manualRef.kind==='squared' ? `squared up ${this._manualRef.tilt_deg}°`
+                           : this._manualRef ? `paper ${Math.round(this._manualRef.w)}×${Math.round(this._manualRef.h)} mm` : 'paper')
                         : (this.opts.manualMmPerPx ? 'manual line' : `${this.currentMarkerSizeMM()??'—'} mm sq`);
           const unitPerPx=unit.fromMM(s);
           specs.push({text: narrow ? `${unitPerPx.toPrecision(3)} ${unit.label}/px`
@@ -2229,7 +2317,9 @@
           manual_scale:this.opts.manualMmPerPx||null,
           homography: rect ? rect : ((!this.opts.manualMmPerPx && this.data?.homography) ? this.data.homography : null),
           homography_maps: rect ? 'px_to_mm' : ((!this.opts.manualMmPerPx && this.data?.homography) ? 'px_to_unit_square' : null),
-          manual_reference: this._manualRef ? { width_mm:this._manualRef.w, height_mm:this._manualRef.h } : null,
+          manual_reference: !this._manualRef ? null : (this._manualRef.kind==='squared'
+            ? { squared_up: true, tilt_deg:this._manualRef.tilt_deg, focal_source:this._manualRef.focal_source }
+            : { width_mm:this._manualRef.w, height_mm:this._manualRef.h }),
           markers:this.data?.markers??[]
         }, this._exportStore(), this.opts.units);
         Xport.exportJSON(payload);

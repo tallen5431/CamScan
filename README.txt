@@ -66,7 +66,16 @@ re-draw in CAD.
      what the trace found — a stretch that spilled onto the background still needs a drag.
      "✨ Refine" does the same and then gives each corner the radius the photo shows — a
      straightened corner is sharp, a cover's usually is not — or keeps it sharp if that is
-     what the photo shows. Use either; both undo in one step.
+     what the photo shows. If the outline is still as traced (or as Straighten left it), Refine
+     first re-traces it at full detail with the same Area box and taps, so gentle curves the
+     first trace smoothed away come back (up to ~10 s). Use either; both undo in one step.
+     Photo taken at an angle? With the scale set from a line along your ruler, select the
+     outline and press "⊞ Square up": the part's two long sides are parallel, so how they
+     narrow in the photo gives the camera's tilt, and every measurement and export is
+     corrected for it (exact for tilt along the part; within ~1% with a few degrees sideways
+     as well). It uses the photo's focal length when the original photo carries it, and says
+     when it had to assume one. A rectangle of known size on the face (Set scale) is exact
+     in every case.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
      For a COVER, also fill in the wall thickness (see below).
   3) 💾 menu → "Save STL (3D print)".

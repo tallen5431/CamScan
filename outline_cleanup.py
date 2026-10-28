@@ -244,6 +244,36 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
                     snapped += 1
         lines.append((i, cnt, line))
 
+    if fillets and len(lines) > 3:
+        # A large, gentle rounding — the end of a step pad — is often traced as a short
+        # straight piece with a corner at each end, which no single corner's fillet can
+        # follow. A side much shorter than both neighbours that turns the same way at each
+        # end is treated as part of one corner instead: its dots join the stretch between the
+        # long sides, where an arc tangent to those two is tried against them.
+        def span(t):
+            i_, c_, ln_ = t
+            a_, b_ = p[i_], p[(i_ + c_) % n]
+            return abs(float(np.dot(b_ - a_, ln_[1])))
+        lens = [span(t) for t in lines]
+        k_ = len(lines)
+        drop = set()
+        for j in range(k_):
+            jp, jn = (j - 1) % k_, (j + 1) % k_
+            if jp in drop or jn in drop:
+                continue
+            if lens[j] >= 0.35 * min(lens[jp], lens[jn]):
+                continue
+            # Same turn at both ends: the short side bends from one long side to the next.
+            d = [lines[q][1][1] for q in (jp, j, jn)]
+            o = [p[(lines[q][0] + lines[q][2]) % n] - p[lines[q][0]] for q in (jp, j, jn)]
+            d = [dd * (1.0 if float(np.dot(dd, oo)) > 0 else -1.0) for dd, oo in zip(d, o)]
+            t1 = d[0][0] * d[1][1] - d[0][1] * d[1][0]
+            t2 = d[1][0] * d[2][1] - d[1][1] * d[2][0]
+            if t1 * t2 > 0:
+                drop.add(j)
+        if drop:
+            lines = [t for q, t in enumerate(lines) if q not in drop]
+
     def proj(q, line):
         c, u = line
         return c + u * float(np.dot(q - c, u))

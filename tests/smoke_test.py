@@ -2090,6 +2090,78 @@ def main():
     except Exception as e:
         check("STEP/OBJ for CAD: one face per flat face, a valid closed solid, exact volume", False, repr(e))
 
+    # 8r10) Square up: a board photographed tilted along its length. Its long sides converge;
+    #       from that and a ruler the true size comes back exactly when the tilt is along the
+    #       part, and close with some sideways tilt too, where a ruler-only scale is far off.
+    try:
+        import math as _mm
+        from square_up import square_up as _sq, long_sides as _ls, SquareUpError as _SqE
+
+        def _rot(ax, deg):
+            t = _mm.radians(deg); c, s_ = _mm.cos(t), _mm.sin(t)
+            return {"x": np.array([[1, 0, 0], [0, c, -s_], [0, s_, c]]),
+                    "y": np.array([[c, 0, s_], [0, 1, 0], [-s_, 0, c]])}[ax]
+
+        def _scene(pitch, roll):
+            K = np.array([[1200.0, 0, 600], [0, 1200.0, 800], [0, 0, 1]])
+            R = _rot("x", 180) @ _rot("x", pitch) @ _rot("y", roll)
+            C = np.array([85.0, 350.0, 0.0]) + R.T @ np.array([0, 0, -900.0])
+
+            def proj(P):
+                u = K @ (R @ (np.array([P[0], P[1], 0.0]) - C))
+                return u[:2] / u[2]
+            return proj
+        rows, worst_sq, worst_uni = [], 0.0, 0.0
+        for pitch, roll in ((0, 0), (15, 0), (30, 0), (25, 6)):
+            pj = _scene(pitch, roll)
+            c4 = [pj(p_) for p_ in [(0, 0), (170, 0), (170, 700), (0, 700)]]
+            ru = [pj((60, 250)), pj((60, 478.6))]
+            # A traced-looking outline: corners plus dots along each side.
+            outline = []
+            for i in range(4):
+                a_, b_ = c4[i], c4[(i + 1) % 4]
+                outline += [(a_ + (b_ - a_) * t).tolist() for t in np.linspace(0, 1, 12, endpoint=False)]
+            sides = _ls(outline)
+            r10 = _sq(sides[0], sides[1], [ru[0].tolist(), ru[1].tolist()], 228.6, 1200, 1600, 1200.0)
+            Hm = np.array(r10["H"])
+
+            def _tp(p_):
+                q = Hm @ np.array([p_[0], p_[1], 1.0]); return q[:2] / q[2]
+            w0 = np.hypot(*(_tp(c4[1]) - _tp(c4[0]))); w1 = np.hypot(*(_tp(c4[2]) - _tp(c4[3])))
+            L = np.hypot(*(_tp(c4[3]) - _tp(c4[0])))
+            k_ = 228.6 / np.hypot(*(ru[1] - ru[0]))
+            u0, u1 = k_ * np.hypot(*(c4[1] - c4[0])), k_ * np.hypot(*(c4[2] - c4[3]))
+            e_sq = max(abs(w0 / 170 - 1), abs(w1 / 170 - 1), abs(L / 700 - 1))
+            e_un = max(abs(u0 / 170 - 1), abs(u1 / 170 - 1))
+            rows.append((pitch, roll, e_sq, e_un))
+            if roll == 0:
+                worst_sq = max(worst_sq, e_sq)
+            worst_uni = max(worst_uni, e_un)
+        tilted_roll = [r_ for r_ in rows if r_[1]][0]
+        refused = {}
+        for nm, args in {"crossed": ([[0, 0], [100, 0]], [[0, 0], [0, 100]]),
+                         "same line": ([[0, 0], [0, 300]], [[0, 310], [0, 600]])}.items():
+            try:
+                _sq(args[0], args[1], [[0, 0], [0, 50]], 50, 1200, 1600)
+                refused[nm] = False
+            except _SqE:
+                refused[nm] = True
+        import app as _app11
+        cli11 = _app11.server.test_client()
+        sq_codes = {k: cli11.post("/api/square_up", json=b).status_code for k, b in {
+            "none": {}, "short outline": {"outline": [[0, 0], [1, 1]]},
+            "nan": {"outline": [[0, 0], [1, "x"], [2, 2], [3, 3]]},
+            "no ruler": {"outline": [[0, 0], [100, 0], [100, 600], [0, 600]], "image_w": 1200, "image_h": 1600},
+        }.items()}
+        ok11 = (worst_sq < 1e-3 and tilted_roll[2] < 0.02 and worst_uni > 0.1 and all(refused.values())
+                and sq_codes == {"none": 400, "short outline": 400, "nan": 400, "no ruler": 200})
+        check("Square up recovers a tilted board's true size from its parallel sides", ok11,
+              f"along-the-part tilt 0-30 deg: worst error {worst_sq * 100:.3f}% (ruler alone: up to "
+              f"{worst_uni * 100:.0f}%); with 6 deg sideways tilt too: {tilted_roll[2] * 100:.2f}%; "
+              f"refusals {refused}; codes {sq_codes}")
+    except Exception as e:
+        check("Square up recovers a tilted board's true size from its parallel sides", False, repr(e))
+
     # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
     #      422 — never a 500 — for everything else.
     try:
