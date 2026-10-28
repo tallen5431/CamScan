@@ -64,6 +64,9 @@ re-draw in CAD.
      straight side becomes one line on the part's edge in the photo, sides meet at clean
      corners, and rounded corners keep their dots. Undo puts the dots back. It straightens
      what the trace found — a stretch that spilled onto the background still needs a drag.
+     "✨ Refine" does the same and then gives each corner the radius the photo shows — a
+     straightened corner is sharp, a cover's usually is not — or keeps it sharp if that is
+     what the photo shows. Use either; both undo in one step.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
      For a COVER, also fill in the wall thickness (see below).
   3) 💾 menu → "Save STL (3D print)".

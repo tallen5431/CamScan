@@ -1556,12 +1556,19 @@
       // Straighten the selected outline onto the part's edges (outline_cleanup.py): each long
       // side becomes one straight line fitted to the photo's edge beside it, sides meet at a
       // clean corner, and a rounded corner keeps its traced dots. One undo step.
-      straightenSelected(){
+      // mode 'refine' also gives each corner the radius the photo shows. It works best from
+      // the dots as traced, so if the outline is exactly what Straighten made of them, those
+      // dots go instead (re-fitting already straight sides from two dots each nudged them off).
+      straightenSelected(mode){
+        const refine = mode==='refine';
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<3){
-          this._toast('Select a closed outline first, then Straighten.', {autoMs:2600});
+          this._toast('Select a closed outline first, then '+(refine?'Refine':'Straighten')+'.', {autoMs:2600});
           return Promise.resolve(false);
         }
+        this._straightened = this._straightened || {};
+        const prior = this._straightened[a.id];
+        const src = (refine && prior && prior.to===JSON.stringify(a.pts)) ? prior.from : a.pts;
         if(!this.img) return Promise.resolve(false);
         const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
         const k=Math.min(1, 1600/Math.max(natW, natH));      // the same posted size the trace uses
@@ -1570,28 +1577,32 @@
         cnv.getContext('2d').drawImage(this.img, 0, 0, cnv.width, cnv.height);
         let durl=null; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){}   // none: straighten by the dots alone
         const self=this, id=a.id;
-        const toast=this._toast('Straightening…');
+        if(refine && !durl){ this._toast('Refine needs the photo, which could not be read here.', {autoMs:3000}); return Promise.resolve(false); }
+        const toast=this._toast(refine ? 'Refining…' : 'Straightening…');
         return fetch(this._apiUrl('api/outline/straighten'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, points:a.pts.map(p=>[p[0]*k, p[1]*k]) }) })
+            body:JSON.stringify({ image:durl, mode:refine?'refine':'straighten', points:src.map(p=>[p[0]*k, p[1]*k]) }) })
           .then(r=>r.json())
           .then(function(j){
             const cur=self.ann.items.find(x=>x.id===id);
             if(!j || !j.ok || !cur || !Array.isArray(j.points)){
-              toast.update('Nothing to straighten — this outline has no long straight sides.', 'err');
+              toast.update('Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err');
               setTimeout(toast.dismiss, 3000);
               return false;
             }
             self._pushHistory();
+            const before=cur.pts.map(p=>p.slice());
             cur.pts=j.points.map(p=>[p[0]/k, p[1]/k]);
+            if(!refine) self._straightened[id]={ from: before, to: JSON.stringify(cur.pts) };
             self._dismissTraceDetail();   // its slider re-traces, which would undo this
             self.requestDraw();
-            const n=j.straight|0, sn=j.snapped|0;
-            toast.update('Straightened '+n+' side'+(n===1?'':'s')+(sn ? ' — '+(sn===n?'all':sn)+' snapped to the edge in the photo' : '')+
-                         '. Undo to go back.', 'ok');
+            const n=j.straight|0, sn=j.snapped|0, rd=j.rounded|0;
+            toast.update(refine
+              ? ('Refined: '+n+' straight side'+(n===1?'':'s')+(rd ? ', '+rd+' rounded corner'+(rd===1?'':'s')+' fitted to the photo' : ', corners kept as they are')+'. Undo to go back.')
+              : ('Straightened '+n+' side'+(n===1?'':'s')+(sn ? ' — '+(sn===n?'all':sn)+' snapped to the edge in the photo' : '')+'. Undo to go back.'), 'ok');
             setTimeout(toast.dismiss, 3200);
             return true;
           })
-          .catch(function(){ toast.update('Straighten needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
+          .catch(function(){ toast.update((refine?'Refine':'Straighten')+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
       }
 
       _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el) el.remove(); }

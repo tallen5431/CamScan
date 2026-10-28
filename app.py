@@ -1167,13 +1167,13 @@ def api_trace():
 def api_straighten():
     """Straighten a traced outline onto the part's edges (see outline_cleanup.py).
 
-    Body: { image: dataURL | null, points: [[x, y], ...] } — points in the POSTed image's pixel
-    coords. Returns { ok, points, straight, snapped }. Without an image the sides are still
+    Body: { image: dataURL | null, points: [[x, y], ...], mode: "straighten" | "refine" } —
+    points in the POSTed image's pixel coords. Returns { ok, points, straight, snapped[, rounded] }. Without an image the sides are still
     straightened, through their own dots. A failure is a 200 {ok:false}: the outline as it was
     is always a fine answer.
     """
     from flask import jsonify
-    from outline_cleanup import straighten_outline
+    from outline_cleanup import refine_outline, straighten_outline
 
     data = _json_body()
     pts = data.get("points")
@@ -1198,8 +1198,12 @@ def api_straighten():
             return jsonify(ok=False, error="bad_image"), 400
         if img.shape[0] * img.shape[1] > MAX_IMAGE_PIXELS:
             return jsonify(ok=False, error="too_large"), 400
+    # "refine" also gives each corner the radius the photo shows (it needs the photo).
+    refine = data.get("mode") == "refine"
+    if refine and img is None:
+        return jsonify(ok=False, error="no_image"), 400
     try:
-        res = straighten_outline(img, ring)
+        res = refine_outline(img, ring) if refine else straighten_outline(img, ring)
     except Exception as e:
         print(f"[straighten] error: {e}")
         return jsonify(ok=False, error="failed"), 500

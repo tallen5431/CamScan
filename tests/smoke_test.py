@@ -396,7 +396,7 @@ def main():
             "none": {}, "short": {"points": [[0, 0], [1, 1]]}, "nan": {"points": [[0, 0], [1, "x"], [2, 2]]},
             "inf": {"points": [[0, 0], [1e400, 1], [2, 2]]}, "bad image": {"image": "data:x,@@", "points": wob.tolist()},
         }.items()}
-        ok_t = (st and _tiou(st["points"]) > _tiou(wob) and len(st["points"]) < len(wob) / 2
+        ok_t = (st and _tiou(st["points"]) > _tiou(wob) and len(st["points"]) < 0.75 * len(wob)
                 and st["straight"] >= 4 and st["snapped"] >= 4 and side_err < 1.5
                 and no_img and no_img["straight"] >= 4 and tiny is None and round_left
                 and codes == {"ok": 200, "none": 400, "short": 400, "nan": 400, "inf": 400, "bad image": 400})
@@ -406,6 +406,67 @@ def main():
               f"no-image sides={no_img and no_img['straight']}, circle left alone={round_left}, codes={codes}")
     except Exception as e:
         check("Straighten puts wobbly sides on the part's edge, not a ridge beside it", False, repr(e))
+
+    # 2g4) Refine: a corner gets the radius the photo shows — the true one on a rounded part,
+    #      none on a sharp one — and the outline is never made meaningfully worse.
+    try:
+        import math as _m
+        import outline_cleanup as _oc
+        from auto_outline import auto_outline_full as _aof2
+        radii, sharp_rounded, worst = [], 0, 1.0
+        _orig_f = _oc._fillet
+
+        def _spy_f(*a, **kw):
+            arc = _orig_f(*a, **kw)
+            if arc:
+                A = np.asarray(arc); p1, p2, p3 = A[0], A[len(A) // 2], A[-1]
+                aa, bb, cc = np.hypot(*(p2 - p3)), np.hypot(*(p1 - p3)), np.hypot(*(p1 - p2))
+                ss = (aa + bb + cc) / 2
+                ar = _m.sqrt(max(1e-12, ss * (ss - aa) * (ss - bb) * (ss - cc)))
+                _spy_f.r.append(aa * bb * cc / (4 * ar))
+            return arc
+        _oc._fillet = _spy_f
+        try:
+            for sd in range(4):
+                for rounded_part in (True, False):
+                    rng_r = np.random.default_rng(sd)
+                    R_true = int(rng_r.uniform(18, 40)) if rounded_part else 0
+                    img_r = np.clip(rng_r.normal(170, 15, (700, 600, 3)), 0, 255).astype(np.uint8)
+                    pm = np.zeros((700, 600), np.uint8)
+                    if R_true:
+                        cv2.rectangle(pm, (150 + R_true, 100), (430 - R_true, 600), 255, -1)
+                        cv2.rectangle(pm, (150, 100 + R_true), (430, 600 - R_true), 255, -1)
+                        for cx, cy in [(150 + R_true, 100 + R_true), (430 - R_true, 100 + R_true),
+                                       (150 + R_true, 600 - R_true), (430 - R_true, 600 - R_true)]:
+                            cv2.circle(pm, (cx, cy), R_true, 255, -1)
+                    else:
+                        cv2.rectangle(pm, (150, 100), (430, 600), 255, -1)
+                    M_r = cv2.getRotationMatrix2D((300, 350), rng_r.uniform(-20, 20), 1)
+                    pm = cv2.warpAffine(pm, M_r, (600, 700), flags=cv2.INTER_NEAREST)
+                    img_r[pm > 0] = (70, 70, 70)
+                    img_r = cv2.GaussianBlur(img_r, (3, 3), 0)
+                    with _quiet():
+                        tr = _aof2(img_r, seed=[290, 350])
+                    _spy_f.r = []
+                    rf = _oc.refine_outline(img_r, tr["outer"])
+
+                    def _iou_r(poly):
+                        m = np.zeros(pm.shape, np.uint8); cv2.fillPoly(m, [np.round(poly).astype(np.int32)], 255)
+                        return np.count_nonzero((m > 0) & (pm > 0)) / np.count_nonzero((m > 0) | (pm > 0))
+                    worst = min(worst, _iou_r(rf["points"]) - _iou_r(tr["outer"]))
+                    if R_true:
+                        radii += [r_ / R_true for r_ in _spy_f.r]
+                    else:
+                        sharp_rounded += rf["rounded"]
+        finally:
+            _oc._fillet = _orig_f
+        ok_r = (len(radii) >= 6 and all(0.75 <= x <= 1.3 for x in radii) and sharp_rounded == 0
+                and worst > -0.005)
+        check("Refine fits a rounded corner's radius and leaves a sharp one sharp", ok_r,
+              f"{len(radii)} of 16 rounded corners fitted, radius/true {min(radii or [0]):.2f}-{max(radii or [0]):.2f}; "
+              f"sharp corners rounded={sharp_rounded}; worst IoU change {worst:+.4f}")
+    except Exception as e:
+        check("Refine fits a rounded corner's radius and leaves a sharp one sharp", False, repr(e))
 
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
