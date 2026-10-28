@@ -468,6 +468,27 @@ def main():
     except Exception as e:
         check("Refine fits a rounded corner's radius and leaves a sharp one sharp", False, repr(e))
 
+    # 2g5) Refine on a board with one corner cut by a short chamfer — a short side between two
+    #      long ones, turning the same way at both ends — must not fail (it raised a TypeError
+    #      on the customer's cover until this was checked).
+    try:
+        import outline_cleanup as _oc5
+        # Sized so the chamfer counts as a side (over 6% of the outline) yet is under 0.35 of
+        # both neighbours — the only case that reaches the merge.
+        img5 = np.clip(np.random.default_rng(2).normal(170, 12, (700, 700, 3)), 0, 255).astype(np.uint8)
+        poly5 = np.array([[100, 100], [600, 100], [600, 510], [510, 600], [100, 600]], np.int32)
+        cv2.fillPoly(img5, [poly5], (70, 70, 70))
+        img5 = cv2.GaussianBlur(img5, (3, 3), 0)
+        pts5 = []
+        for i in range(5):
+            a_, b_ = poly5[i].astype(float), poly5[(i + 1) % 5].astype(float)
+            pts5 += [(a_ + (b_ - a_) * t).tolist() for t in np.linspace(0, 1, 10, endpoint=False)]
+        r5 = _oc5.refine_outline(img5, pts5)
+        check("Refine handles a short chamfer between two long sides", r5 is not None and len(r5["points"]) >= 5,
+              f"{len(pts5)} dots -> {len(r5['points']) if r5 else None}")
+    except Exception as e:
+        check("Refine handles a short chamfer between two long sides", False, repr(e))
+
     # 2h) Edge-snap safety invariant: pulling the boundary onto the nearest strong image edge
     #     must be a strict NO-OP on a boundary already sitting on a crisp edge — a clean trace
     #     must not drift when snapping is on. (Its benefit is on soft real-photo fringes; here we
@@ -1909,9 +1930,9 @@ def main():
                                      "view": "top", "align": "center"})),
                        ("no views", dict(views={})),
                        ("top without depth", dict(views={"top": {"points": top6}})),
-                       ("wall with a side view", dict(views={"top": {"points": top6},
-                                                             "side": {"points": side6}},
-                                                      wall_mm=3))):
+                       ("wall as thick as the part", dict(views={"top": {"points": top6},
+                                                                 "side": {"points": side6}},
+                                                          wall_mm=500))):
             try:
                 build_part(**kw)
                 bad6.append(f"accepted: {nm}")
@@ -2161,6 +2182,38 @@ def main():
               f"refusals {refused}; codes {sq_codes}")
     except Exception as e:
         check("Square up recovers a tilted board's true size from its parallel sides", False, repr(e))
+
+    # 8r11) A hollow cover from several views: the wall is exact (shrinking distributes over the
+    #       views' intersection), it opens underneath, it prints plate-down, and it exports.
+    try:
+        from part_builder import build_part as _bp12
+        import cad_export as _ce12
+        import tempfile as _tf12
+        box12 = _bp12({"top": {"points": [[0, 0], [100, 0], [100, 60], [0, 60]]},
+                       "side": {"points": [[0, 0], [100, 0], [100, 20], [0, 20]]}}, wall_mm=2)
+        v_ok = abs(box12["info"]["volume_mm3"] - (120000 - 96 * 56 * 18)) < 1e-6
+        t12 = np.asarray(box12["tris"])
+        # Plate-down: the face on the bed (z = 0) is the whole 100 x 60 plate; the top is a rim.
+        def _area_at(z):
+            flat = np.all(np.abs(t12[:, :, 2] - z) < 1e-6, axis=1)
+            a_ = t12[flat]
+            return float(np.sum(np.linalg.norm(np.cross(a_[:, 1] - a_[:, 0], a_[:, 2] - a_[:, 0]), axis=1)) / 2)
+        bed, rim = _area_at(0.0), _area_at(20.0)
+        plate_ok = abs(bed - 6000) < 1e-6 and abs(rim - (6000 - 96 * 56)) < 1e-6
+        toe12 = _bp12({"top": {"points": [[0, 0], [700, 0], [700, 170], [0, 170]]},
+                       "side": {"points": [[0, 20], [30, 0], [177, 0], [177, 86], [0, 86]], "covers": "start"}},
+                      wall_mm=3)
+        from solid_export import mesh_report as _mr12
+        rep12 = _mr12(toe12["tris"])
+        d12 = _tf12.mkdtemp()
+        st12 = _ce12.write_step(toe12["tris"], d12 + "/c.step")
+        ok12 = v_ok and plate_ok and rep12["watertight"] and rep12["oriented"] and st12["faces"] > 6 \
+            and toe12["info"]["kind"] == "shell" and toe12["info"]["upside_down"] is True
+        check("a hollow cover from several views: exact wall, open underneath, plate-down, exports", ok12,
+              f"box volume exact={v_ok}, bed {bed:.0f} mm2 / rim {rim:.0f} mm2, toe cover "
+              f"{rep12['volume_mm3']:.0f} mm3 closed={rep12['watertight']}, STEP faces {st12['faces']}")
+    except Exception as e:
+        check("a hollow cover from several views: exact wall, open underneath, plate-down, exports", False, repr(e))
 
     # 8r8) /api/export/part takes untrusted JSON: a valid build, a preview, and a clean 400 or
     #      422 — never a 500 — for everything else.

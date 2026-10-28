@@ -130,6 +130,13 @@ is built from several outlines instead of one, each traced on whichever photo sh
                            triangle, which is hard to change.
        OBJ                 a mesh with one polygon per flat side, for programs that only take
                            meshes (in Fusion: Insert Mesh, then Convert Mesh).
+  HOLLOW: put a wall thickness in "Hollow — wall (mm)" and the part comes out as a cover of
+  that wall, open underneath, turned plate-down for printing — with Top alone or with Side
+  and End views too. Leave it empty for a solid part.
+  Each view follows the outline it was assigned from: Refine, Square up, a dragged dot or a
+  new scale on that photo carries through to the part without assigning it again (the row
+  says "follows its outline"). If the outline is deleted, the view keeps its last copy and
+  the row says so.
   Assigned an outline to the wrong view? Use "Move to…" on its row (swaps with whatever held
   that view) — no need to go back to the photo.
   A Side profile of only ONE END (a toe photographed up close): on the Side row choose

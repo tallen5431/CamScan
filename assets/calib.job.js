@@ -864,6 +864,7 @@
     // A fresh outline starts with no rotate/flip: those belonged to the outline it replaces.
     p.views[role] = { points: prof.points, mm_per_px: prof.mm_per_px, image_height: prof.image_height,
                       size_mm: prof.size_mm, source: photoId(), at: new Date().toISOString(),
+                      ann_id: (prof.ann_id != null ? prof.ann_id : null),   // the outline it follows
                       rot: 0, flip_h: false, flip_v: false };
     save(); changed();
     return true;
