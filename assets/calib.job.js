@@ -1219,6 +1219,8 @@
     // Is the on-screen overlay an already-stored view being re-edited (tracked positionally)?
     // Distinct from hasCurrent, which keys on a fresh upload's sourceId.
     isCurrentStored: function(){ return currentOpenIndex() != null; },
+    // The name the photo on screen is stored under, or null when it is not stored.
+    currentLabel: function(){ var i=currentOpenIndex(); return (i!=null && job.views[i]) ? (job.views[i].label || null) : null; },
     syncOpen: syncOpenView,  // persist the reopened side's edits in place (no relabel)
     isEmbedded: function(){ return EMBED; },
     // Call before reloading the page: captures the open side and waits (briefly) until the

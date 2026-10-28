@@ -142,12 +142,16 @@ def check_new_keeps_photo(browser, errors, dialogs):
     pg.locator("#cal-ctx-3d").click()
     pg.locator('#cal-part-pick [data-role="top"]').click()
     pg.wait_for_function("!!window.CalibJob.part().views.top", timeout=5000)
-    assert pg.evaluate("window.CalibJob.count()") == 0, "photo stored before Add photo was pressed"
+    # Assigning a 3D role may already store the photo (the Build dialog saves it on assign);
+    # either way, Add photo must keep exactly one copy of it.
+    pre = pg.evaluate("window.CalibJob.count()")
+    assert pre in (0, 1), f"photo stored {pre} times before Add photo"
     btn = pg.locator("#cal-tb-new")
     assert "Add photo" in btn.inner_text(), f"button label: {btn.inner_text()!r}"
     with pg.expect_navigation(timeout=20000):
         btn.click()
-        pg.wait_for_function("document.body.innerText.includes('saved to the part as \"Top\"')", timeout=5000)
+        if pre == 0:
+            pg.wait_for_function("document.body.innerText.includes('saved to the part as \"Top\"')", timeout=5000)
     pg.wait_for_function("window.CalibJob && window.CalibJob.ready", timeout=15000)
     pg.evaluate("window.CalibJob.ready")
     n = pg.evaluate("window.CalibJob.count()")
@@ -161,7 +165,8 @@ def check_new_keeps_photo(browser, errors, dialogs):
 
 
 STORED_VIEWS = ("(async()=>{await window.CalibJob.flush();const j=await window.CalibJob.persisted();"
-                "return j?j.views.map(v=>({label:v.label,at:v.capturedAt})):[];})()")
+                "return j?j.views.map(v=>({label:v.label,at:v.capturedAt,"
+                "marks:((v.restore||{}).ann||[]).length})):[];})()")
 
 
 def check_add_photo_keeps_label(browser, errors, dialogs):
@@ -183,7 +188,7 @@ def check_add_photo_keeps_label(browser, errors, dialogs):
     pg.evaluate("window.CalibJob.ready")
     after = pg.evaluate(STORED_VIEWS)
     assert [v["label"] for v in after] == ["Front"], f"Add photo relabelled the stored photo: {after}"
-    assert after[0]["at"] > before[0]["at"], f"Add photo did not recapture the later marks: {before} -> {after}"
+    assert after[0]["marks"] > before[0]["marks"], f"Add photo did not recapture the later marks: {before} -> {after}"
     assert not dialogs, f"Add photo asked when the photo was kept: {dialogs}"
     ctx.close()
 

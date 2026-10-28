@@ -300,7 +300,7 @@ def scenario_simple_card(browser, errors, dialogs):
     assert not a["onCanvas"], f"precondition: the card should cover the ruler, top={a['top']}"
     # The top bar's Set scale chip, then the line tool from its chooser.
     pg.click("#cal-tb-scale")
-    pg.get_by_text("Measure something of known size").click()
+    pg.get_by_text("Ruler or tape on the part").click()
     pg.wait_for_selector("#cal-simple", state="detached", timeout=3000)
     a = pg.evaluate(TO_SCREEN, [RULER_X[0], RULER_Y])
     b = pg.evaluate(TO_SCREEN, [RULER_X[1], RULER_Y])

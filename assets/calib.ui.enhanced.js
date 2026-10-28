@@ -859,7 +859,10 @@ window.CalibUI = (function(){
       const role = assignedRoleLabel();
       try {
         // A reopened side is already in the part: persist its edits in place, no relabel.
-        if (J.isCurrentStored && J.isCurrentStored()) { if (J.syncOpen) J.syncOpen(); return Promise.resolve(role || 'its side'); }
+        if (J.isCurrentStored && J.isCurrentStored()) {
+          if (J.syncOpen) J.syncOpen();
+          return Promise.resolve((J.currentLabel && J.currentLabel()) || role || 'its side');
+        }
         // Already added under a name the user chose ("Front" from a label chip): addView
         // replaces the label in place, so recapturing as "View 1" or "Side" would put Front
         // back on the checklist as missing. Recapture under the stored name; the job API has

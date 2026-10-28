@@ -1851,7 +1851,7 @@
         }
         const line=this._scaleLine;
         if(!line){
-          this._toast('Set the scale with a line along your ruler first (📐 → Measure something of known size), then Square up.', {autoMs:5000});
+          this._toast('Set the scale with a line along your ruler first (📐 Set scale → Ruler or tape on the part), then Square up.', {autoMs:5000});
           return Promise.resolve(false);
         }
         const W=this.img.naturalWidth||this.img.width, H=this.img.naturalHeight||this.img.height;
@@ -2161,17 +2161,24 @@
       // that tap arrives, and the click presses whatever is there. On a customer phone that
       // was the length box's "Letter" chip: a 666 px line became 279.4 mm (the ruler span was
       // 127 mm), the box never showed, and nothing said so. Clicks inside the box during the
-      // first 400 ms are that tap's, not the user's, so they are dropped.
+      // first 400 ms are that tap's, not the user's, so they are dropped — unless the press
+      // itself began after the box opened: then it is the user's own (a quick tap on Set),
+      // not the opening tap's leftover click.
       _swallowGhostClick(box){
         const t0=performance.now();
+        let own=false;
+        const down=()=>{ own=true; };
         const h=(e)=>{
-          if(performance.now()-t0>400 || !box.isConnected){ document.removeEventListener('click', h, true); return; }
+          if(performance.now()-t0>400 || !box.isConnected){ done(); return; }
+          if(own) return;
           const r=box.getBoundingClientRect();
           const inside=box.contains(e.target) || (e.clientX>=r.left && e.clientX<=r.right && e.clientY>=r.top && e.clientY<=r.bottom);
           if(inside){ e.preventDefault(); e.stopPropagation(); }
         };
+        const done=()=>{ document.removeEventListener('click', h, true); document.removeEventListener('pointerdown', down, true); };
+        document.addEventListener('pointerdown', down, true);
         document.addEventListener('click', h, true);
-        setTimeout(()=>document.removeEventListener('click', h, true), 450);
+        setTimeout(done, 450);
       }
 
       // Put a fixed box where its rect holds none of `pts` (CSS px, with a fingertip's margin
