@@ -1710,7 +1710,7 @@
       squareUp(reference){
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<4){
-          this._toast('Select the part\'s traced outline first — Square up uses its two long sides.', {autoMs:3200});
+          this._toast('Select the part\'s traced outline first, then Square up (it uses the ruler under your scale line).', {autoMs:3600});
           return Promise.resolve(false);
         }
         const line=this._scaleLine;
@@ -1751,7 +1751,21 @@
                                   ruler_image:rulerImage, ruler_box:rulerBox, reference:reference||'auto' }) })
           .then(r=>r.json())
           .then(function(j){
-            if(!j || !j.ok){ toast.update((j && j.error) || 'Could not square up this photo.', 'err'); setTimeout(toast.dismiss, 5000); return false; }
+            // Redraw the scale line down the ruler's middle: what finds its edges. `before`
+            // puts the plain line scale back first, when a result was applied.
+            const redraw=function(before){
+              return { label:'Redraw scale line', fn:function(){
+                if(before && before()===false) return;
+                self.setMode('setscale');
+                self._toast('Tap one end of the ruler, then the other — down its middle, end to end.', {autoMs:6000});
+              } };
+            };
+            if(!j || !j.ok){
+              toast.dismiss();
+              self._toast((j && j.error) || 'Could not square up this photo.',
+                (j && j.ruler_reason && reference!=='part') ? { autoMs:9000, actions:[redraw(null)] } : { autoMs:5000 });
+              return false;
+            }
             if(!unchanged()){ toast.update('The scale changed while squaring up — press Square up again to use the new one.', 'err'); setTimeout(toast.dismiss, 5000); return false; }
             const prev={ mm:self.opts.manualMmPerPx, H:self.opts.manualHomography, ref:self._manualRef, ext:self._refExtentPx };
             // Undo and the switch button act only while this result is still the scale: once
@@ -1772,8 +1786,17 @@
             self._squarePrev=prev;
             toast.dismiss();
             const tilt=r1(j.tilt_deg)+'°';
-            let msg;
-            if(j.reference==='ruler'){
+            let msg, noRuler=null;
+            if(j.reference==='ruler' && j.partial){
+              // One edge clear, the other assumed parallel to it: the photo is lined up on the
+              // ruler, but two parallel lines cannot show a tilt along it, so the part's taper
+              // read through it may be that tilt and is not called one.
+              msg='Squared up from the ruler, but only one of its edges was clear'+(j.ruler_reason ? ' ('+j.ruler_reason+')' : '')+
+                ', so the other was assumed parallel — this lines the photo up but cannot see a camera tilt along the ruler.';
+              const p=j.part;
+              if(p && p.width_mm) msg+=' The part reads '+len(p.width_mm[0])+' and '+len(p.width_mm[1])+' wide at its two ends (not checked against the ruler).';
+              msg+=' For a full check, redraw the scale line down the ruler\'s middle, end to end.';
+            } else if(j.reference==='ruler'){
               msg='Squared up from the ruler\'s edges: the camera was tilted '+tilt+'.';
               const rw=j.ruler_check && j.ruler_check.width_mm;
               if(rw) msg+=' The ruler reads '+len((rw[0]+rw[1])/2)+' wide — if yours is, the correction is right.';
@@ -1791,14 +1814,37 @@
               msg='Squared up from the part\'s long sides: the camera was tilted '+tilt+' along the part (its sides narrowed '+
                 r1(j.width_change_pct)+'% end to end).';
               const c=j.ruler_check;
-              if(c && c.width_mm) msg+=' Check: the ruler now reads '+len(c.width_mm[0])+' and '+len(c.width_mm[1])+' wide at its two ends'+
+              if(c && c.width_mm && !j.partial) msg+=' Check: the ruler now reads '+len(c.width_mm[0])+' and '+len(c.width_mm[1])+' wide at its two ends'+
                 (c.width_change_pct>0.6 ? ' ('+r1(c.width_change_pct)+'% apart — a true rectangle reads the same; the part may not be one).' : ' — square.');
-              else if(reference!=='part') msg+=' (No ruler edges found along the scale line to check it against.)';
+              else if(reference!=='part' && j.other!=='ruler'){
+                // The ruler was wanted and not usable: say why, what that costs, and how to
+                // get it used — the scale line is where its edges are looked for.
+                noRuler=j.ruler_reason || 'no clear edges';
+                msg='Couldn\'t find the ruler\'s edges along your scale line ('+noRuler+'), so this used the part\'s long sides, which assumes the part is a true rectangle'+
+                  ' (camera tilted '+tilt+' along it). To use the ruler, redraw the scale line down its middle, end to end.';
+              }
             }
-            if(j.focal_source==='assumed' && j.tilt_deg>3) msg+=' The camera\'s focal length was assumed — the original photo from the phone carries the exact one.';
-            const alt=j.other ? { label: j.other==='ruler' ? 'Use the ruler instead' : 'Use the part\'s sides instead',
-                                   fn:function(){ if(!stillMine()) return; self.ann.selectedId=a.id; self.squareUp(j.other); } } : null;
-            self._toast(msg, { autoMs:16000, actions: alt ? [alt, { label:'Undo', fn:undo }] : [{ label:'Undo', fn:undo }] });
+            // A photo with no lens data (chat apps strip it) got a typical phone lens instead.
+            if(j.focal_source==='assumed' && j.tilt_deg>1) msg+=' Tip: this file has no camera data, so a typical phone lens was assumed — the phone\'s original photo is more exact.';
+            const actions=[];
+            if(j.other) actions.push({ label: j.other==='ruler' ? (j.partial ? 'Use the ruler (one edge)' : 'Use the ruler instead') : 'Use the part\'s sides instead',
+                                       fn:function(){ if(!stillMine()) return; self.ann.selectedId=a.id; self.squareUp(j.other); } });
+            if(noRuler || j.partial) actions.push(redraw(function(){ if(!stillMine()) return false; undo(); }));
+            const why='Use the ruler: unavailable — '+(noRuler || '');
+            if(noRuler) actions.push({ label:'Use the ruler', disabled:true, title:why,
+                                       fn:function(){ self._toast(why+'. Redraw the scale line down the ruler\'s middle, end to end.', {autoMs:6000}); } });
+            actions.push({ label:'Undo', fn:undo });
+            self._toast(msg, { autoMs:noRuler ? 20000 : 16000, actions:actions });
+            // The toast's buttons know nothing of "disabled": grey that one out in place, with
+            // the reason on hover, rather than hide it — it says the ruler was looked for.
+            const shown=window.__calLastToast;
+            if(noRuler && shown && shown.querySelectorAll){
+              shown.querySelectorAll('button').forEach(function(btn){
+                if(btn.textContent!=='Use the ruler') return;
+                btn.disabled=true; btn.title=why; btn.setAttribute('aria-disabled', 'true');
+                btn.style.opacity='0.5'; btn.style.cursor='not-allowed';
+              });
+            }
             return true;
           })
           .catch(function(){ toast.update('Square up needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
@@ -2002,11 +2048,50 @@
       // there instead. Resolves true when the correction is active.
       async setFeatureHeight(h){
         const mm = Number(h) || 0;
+        // A manual paper rectangle (or a Square up) carries no camera geometry to lift.
+        if(this.opts.manualHomography){
+          this._featureHeightMM = 0; this._planeH = null; this.updateKPI(); this.requestDraw(); return !mm;
+        }
+        // A line scale holds in the ruler's plane only. A plane d mm farther from the camera
+        // is seen at Z+d instead of Z, so each px there spans (Z+d)/Z as many mm, with
+        // Z = f * mm/px the working distance. On a customer's top photo the outline was the
+        // cover's bottom edge, 45 mm below the ruler on its top face: 0.516 mm/px, f = 1186 px
+        // (no lens data), Z = 612 mm, so every top-view size read 7.4% small. `h` keeps the
+        // marker path's sense: mm ABOVE the reference, so that edge is h = -45.
+        if(this.opts.manualMmPerPx){
+          const prev = this._lineScaleBase;
+          // The line's own scale: remembered while the corrected one is still in force, and
+          // whatever is there otherwise (a new line has been drawn since).
+          const base = (prev && this.opts.manualMmPerPx === prev.scaled) ? prev.mm : this.opts.manualMmPerPx;
+          const done = () => { this._planeH = null; this._rescaleAnnotations(); this.updateKPI(); this.requestDraw(); };
+          if(!mm){
+            this.opts.manualMmPerPx = base; this._lineScaleBase = null; this._featureHeightMM = 0; done();
+            return true;
+          }
+          const cam = (this.data && this.data.camera) || {};
+          const W = (this.img && (this.img.naturalWidth || this.img.width)) || 0, H = (this.img && (this.img.naturalHeight || this.img.height)) || 0;
+          const exif = cam.focal_source === 'exif' && cam.focal_px > 0;
+          // camera_geometry.default_focal_px: a 68° field of view across the long side.
+          const f = exif ? cam.focal_px : Math.max(W, H) / (2 * Math.tan(34 * Math.PI / 180));
+          const Z = f * base;
+          // Past a third of the way to the lens the estimate means nothing.
+          if(!(Z > 0) || Math.abs(mm) >= Z / 3){
+            this.opts.manualMmPerPx = base; this._lineScaleBase = null; this._featureHeightMM = 0; done();
+            return false;
+          }
+          const factor = (Z - mm) / Z, pct = 100 * (factor - 1);
+          this.opts.manualMmPerPx = base * factor;
+          this._lineScaleBase = { mm:base, scaled:this.opts.manualMmPerPx, pct:pct, estimated:!exif, distance_mm:Z };
+          this._featureHeightMM = mm; done();
+          this._toast('Scale moved to a face ' + Math.abs(mm) + ' mm ' + (mm < 0 ? 'below' : 'above') + ' the ruler: sizes ' +
+                      (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%' + (exif ? '' : ', estimated (no lens data)') +
+                      '. Laying the ruler on that face and re-shooting is exact. Set 0 to go back.', { autoMs:9000 });
+          return true;
+        }
         this._featureHeightMM = mm;
         if(!mm){ this._planeH = null; this.updateKPI(); this.requestDraw(); return true; }
-        // Only the auto marker homography can be lifted: a manual paper rectangle carries no
-        // camera geometry, and a manual line scale is uniform by nature.
-        if(this.opts.manualHomography || this.opts.manualMmPerPx || !this.data || !this.data.homography){
+        // Otherwise only the auto marker homography can be lifted.
+        if(!this.data || !this.data.homography){
           this._featureHeightMM = 0; this._planeH = null; this.updateKPI(); this.requestDraw(); return false;
         }
         const cam = this.data.camera || {};

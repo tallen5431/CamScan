@@ -348,17 +348,20 @@ app.layout = html.Div([
         html.Div([
             html.Div("📸", className="landing-logo"),
             html.Div("CamScan", className="landing-title"),
-            html.P("Measure real-world millimeters from a photo.", className="landing-sub"),
+            html.P("Turn 2-3 photos into a 3D part (STL / STEP / OBJ)", className="landing-sub"),
+            # The scale holds only in the plane the ruler lies in: a ruler beside the part, on
+            # the ground, reads a face 20 mm above it about 4% large from 0.5 m — so it
+            # goes ON the face being photographed, one photo per face.
             html.Div([
-                html.B("No printer needed."), " Lay a coin, a card, or a sheet of paper "
-                "flat beside your part for scale, then ", html.B("measure in real mm"),
-                ". A printed calibration square works too and scales automatically.",
+                "For each view (top, side, end) lay a ruler or tape ",
+                html.B("FLAT ON the face you are photographing"), ", not beside the part. "
+                "Shoot square-on from about 0.5 m with the whole part in frame.",
             ], className="landing-how"),
             html.Div(
-                "Lay the paper on the same flat surface as the part and measure features "
-                "that sit flat on it — a raised top face reads slightly large. One photo "
-                "captures the front outline and holes; a full 3D quote may need a few "
-                "angles, shot flat-on for best accuracy.",
+                "Then, on each photo: set the scale along the ruler, box the part and tap it "
+                "to trace it, and use it in the 3D part as Top, Side or End. Build, then "
+                "download STL to print or STEP for CAD. A printed calibration square works "
+                "too and scales automatically.",
                 className="landing-note",
             ),
             dcc.Upload(
@@ -570,9 +573,9 @@ def on_upload(contents, filename):
         if not focal_px:
             # Square up uses the lens's focal length. A photo passed through a chat app or
             # a screenshot has lost it, and a typical phone lens is assumed instead — close
-            # enough for a photo taken nearly square-on, less so the steeper it was.
-            status += (" 📷 This file has no camera data (chat apps strip it), so Square up "
-                       "will assume a typical phone lens — the phone's original photo is better.")
+            # enough for a photo taken nearly square-on, less so the steeper it was. The full
+            # tip comes with Square up's result, where it matters; this only flags it.
+            status += " 📷 No camera data in this file (chat apps strip it)."
         return _upload_notice(status, viewer)
 
     status = (
@@ -1087,6 +1090,8 @@ def api_trace():
     Returns { ok, points:[[x,y],...] } in the POSTed image's pixel coords, which the client
     turns into an editable, closed outline. Kept lenient — a failure to segment is a normal
     200 {ok:false} so the UI can say 'tap the part' rather than showing an error page.
+    A `hint` (what to do next, in words) and `warnings` (a list of them) the tracer gives are
+    passed on, with the outline or with the refusal; a refusal always carries a hint.
     """
     from flask import jsonify
     try:
@@ -1182,19 +1187,42 @@ def api_trace():
         print(f"[trace] error: {e}")
         return jsonify(ok=False, error="trace_failed"), 500
 
+    # What the tracer has to say about its result (auto_outline may add a `hint` and
+    # `warnings`; an older one adds neither). Only plain text goes back to the page.
+    extra = {}
+    if isinstance(res, dict):
+        if isinstance(res.get("hint"), str) and res["hint"].strip():
+            extra["hint"] = res["hint"].strip()[:400]
+        warns = res.get("warnings")
+        if isinstance(warns, (list, tuple)):
+            warns = [w.strip()[:400] for w in warns if isinstance(w, str) and w.strip()][:8]
+            if warns:
+                extra["warnings"] = warns
+
     if not res or not res.get("outer"):
-        return jsonify(ok=False, error="no_outline"), 200
+        # A tap ON the part that finds nothing is the usual case (measured on a customer's top
+        # photo: a dark cover on dark concrete), and the remedy that works is the one the
+        # user would not guess — a box round the part first. Without a hint the page could
+        # only repeat "tap the part", which they had just done.
+        extra.setdefault("hint", "Couldn't separate the part from the background inside your Area box — "
+                                 "draw the box snugly round the part, then tap the part again."
+                         if roi else
+                         "Couldn't separate the part from the background here. Draw a box round "
+                         "the part (▭ Area), then tap the part again.")
+        return jsonify(ok=False, error="no_outline", **extra), 200
     # A trace that IS the frame is not an outline — the tap landed on something featureless
     # (sky, a plain wall, bare concrete) and the segmenter had no edge to find. Handing it
     # back would let the user measure and export the image border as their part.
     if res.get("runaway"):
         return jsonify(ok=False, error="runaway",
-                       hint="That trace covers the whole photo — the spot you tapped has no "
-                            "edge to find. Tap right on the part, draw an Area box around it "
-                            "first, or tap ✖ Not the part on the background."), 200
+                       hint=extra.get("hint") or
+                       "That trace covers the whole photo — the spot you tapped has no "
+                       "edge to find. Tap right on the part, draw an Area box around it "
+                       "first, or tap ✖ Not the part on the background.",
+                       **({"warnings": extra["warnings"]} if "warnings" in extra else {})), 200
     # `points` is the outer boundary (unchanged shape for older clients); `holes` are interior
     # loops (a box-end ring, bolt holes) the client drops in as extra closed profiles.
-    return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [])
+    return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [], **extra)
 
 
 @server.route("/api/outline/straighten", methods=["POST"])
@@ -1298,8 +1326,12 @@ def api_square_up():
     the result, as a check.
     Returns { ok, H (image px -> plane mm, 3x3), reference, sides, ruler_edges, tilt_deg,
               width_change_pct, focal_source, part: {angle_deg, width_mm, width_change_pct},
-              ruler_check: {...} | null, other: "ruler" | "part" | null }
-    or a 200 { ok:false, error } with the reason in words.
+              ruler_check: {...} | null, other: "ruler" | "part" | null,
+              partial: bool, ruler_reason: str | null }
+    `partial`: only one of the ruler's edges was clear, and the other is assumed parallel to
+    it — that lines the photo up but cannot see a tilt along the ruler, so the part's taper
+    read through it is marked as less sure. `ruler_reason` says why the ruler's edges were not
+    found (or only one was), for the message. Both are also on a 200 { ok:false } refusal.
     """
     from flask import jsonify
     from ruler_check import find_ruler_edges, ruler_report
@@ -1320,7 +1352,7 @@ def api_square_up():
     args = (ruler, data.get("ruler_mm"), data.get("image_w"), data.get("image_h"), data.get("focal_px"))
 
     # The ruler's edges, if the crop round the scale line shows them.
-    edges, edge_sigma = None, None
+    edges, edge_sigma, partial, ruler_reason = None, None, False, None
     durl, box = data.get("ruler_image"), data.get("ruler_box")
     if isinstance(durl, str) and "," in durl and isinstance(box, list) and len(box) == 3:
         try:
@@ -1332,13 +1364,23 @@ def api_square_up():
             _mime, raw = _decode_data_url(durl)
             crop = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
             if crop is not None and crop.shape[0] * crop.shape[1] <= MAX_IMAGE_PIXELS:
-                e, edge_sigma = find_ruler_edges(crop, [(ra[0] - x0) * k, (ra[1] - y0) * k],
-                                                 [(rb[0] - x0) * k, (rb[1] - y0) * k], with_error=True)
+                det = find_ruler_edges(crop, [(ra[0] - x0) * k, (ra[1] - y0) * k],
+                                       [(rb[0] - x0) * k, (rb[1] - y0) * k], detail=True)
+                e, edge_sigma, ruler_reason = det["edges"], det["sigma"], det["reason"]
                 if e:
                     edges = [[[p[0] / k + x0, p[1] / k + y0] for p in ed] for ed in e]
+                    partial = bool(det["partial"])
+            else:
+                ruler_reason = "the photo round the scale line could not be read"
         except Exception as ex:
             print(f"[square_up] ruler edges skipped: {ex}")
-            edges = None
+            edges, partial = None, False
+            ruler_reason = ruler_reason or "the scale line could not be read"
+    elif want != "part":
+        ruler_reason = "no photo of the ruler was sent"
+
+    def refuse(msg, code=200):
+        return jsonify(ok=False, error=msg, partial=partial, ruler_reason=ruler_reason), code
 
     try:
         sides = None
@@ -1357,32 +1399,40 @@ def api_square_up():
         if sides is not None and (want == "part" or res_r is None):
             res_p = square_up(sides[0], sides[1], *args)
         if want == "ruler" and res_r is None:
-            raise err_r or SquareUpError("Could not find the ruler's edges along the scale line — "
-                                         "draw it along the middle of the ruler.")
+            raise err_r or SquareUpError("Could not find the ruler's edges along the scale line" +
+                                         (f" ({ruler_reason})" if ruler_reason else "") +
+                                         " — draw it down the middle of the ruler, end to end.")
         if want == "part" and res_p is None:
             raise SquareUpError("This outline has no two long parallel sides to square up from.")
         if res_r is None and res_p is None:
             raise err_r or SquareUpError("Could not square up this photo.")
     except SquareUpError as e:
-        return jsonify(ok=False, error=str(e)), 200
+        return refuse(str(e))
     except Exception as e:
         print(f"[square_up] error: {e}")
-        return jsonify(ok=False, error="Could not square up this photo."), 500
+        return refuse("Could not square up this photo.", 500)
     if want == "part" or res_r is None:
         res, ref = res_p, "part"
     else:
         res, ref = res_r, "ruler"
     if not all(math.isfinite(v) for row in res["H"] for v in row):
-        return jsonify(ok=False, error="Could not square up this photo."), 200
+        return refuse("Could not square up this photo.")
+    if edges is not None and res_r is None and err_r is not None and not ruler_reason:
+        ruler_reason = str(err_r)
     H = res["H"]
     other = None
     if ref == "ruler" and sides is not None:
         other = "part"
-    elif ref == "part" and edges is not None:
+    elif ref == "part" and res_r is not None:
+        # The ruler is offered whenever squaring up from it worked, one edge or two.
         other = "ruler"
     part = ruler_report(sides, H) if sides is not None else None
     check = ruler_report(edges, H) if edges is not None else None
-    if part is not None and ref == "ruler" and edge_sigma:
+    if part is not None and ref == "ruler" and partial:
+        # One edge was assumed parallel to the other, so the ruler says nothing about a tilt
+        # along it, and whatever taper the part's sides show may be that tilt.
+        part["taper_note"] = "one ruler edge assumed parallel"
+    elif part is not None and ref == "ruler" and edge_sigma:
         # How sure the part's taper is: the ruler is short next to the part, so a small doubt
         # in the angle between its edges grows along the part. Redo it with the edges turned
         # apart and together by one standard error; half the spread is the taper's.
@@ -1401,7 +1451,7 @@ def api_square_up():
         if len(tapers) == 2:
             part["taper_sigma_mm"] = round(abs(tapers[0] - tapers[1]) / 2.0, 2)
     return jsonify(ok=True, reference=ref, other=other, sides=sides, ruler_edges=edges,
-                   part=part, ruler_check=check, **res)
+                   part=part, ruler_check=check, partial=partial, ruler_reason=ruler_reason, **res)
 
 
 def _decode_data_url(durl):
