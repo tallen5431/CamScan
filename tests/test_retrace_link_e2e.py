@@ -6,9 +6,12 @@ flow round it.
      copy, ignored the new scale and said its outline was deleted. Now the view keeps its
      ann_id, has no orphan flag, and its size follows the scale.
   2. Tap trace, draw an Area box round the part, tap again (the success message's own advice
-     for a missed shadow): exactly one outline, and the box used as the trace region is gone.
+     for a missed shadow): exactly one outline, and the box used as the trace region is gone;
+     undo brings the box back as the user's measured rectangle.
   3. A trace that finds nothing says to draw an Area box, and the next tap traces again
-     (it used to drop silently into placing hand-trace dots).
+     (it used to drop silently into placing hand-trace dots). An Area box elsewhere on the
+     photo is not the trace region: it is not sent, and stays a measurement through a failed
+     and a successful trace.
   4. A message about one photo goes when the photo does.
   5. Labels read to 0.1 mm; an unconfirmed marker candidate is neither drawn nor exported.
 
@@ -180,20 +183,31 @@ def main():
             pg.wait_for_function(f"{RECTS}.length===0", timeout=20000)
             n = pg.evaluate(f"({{polys:{OV}.ann.items.filter(a=>a.type==='polyline').length, rects:{RECTS}.length}})")
             assert n == {"polys": 1, "rects": 0}, f"tap, box, tap should leave one outline and no box: {n}"
+            pg.evaluate(f"{OV}.undo()")
+            back = pg.evaluate(f"({{rects:{RECTS}.map(a=>Object.keys(a).filter(k=>/roi/i.test(k))), "
+                               f"meas:{OV}.getMeasurements().filter(m=>m.label==='Rect').length}})")
+            assert back == {"rects": [[]], "meas": 1}, f"undo did not bring the Area box back as a measurement: {back}"
 
             # 3. A trace that finds nothing: the Area-box advice, and the next tap traces again.
-            pg.evaluate(f"(()=>{{const o={OV};o.clearAll();o.armAutoOutline();}})()")
+            far_box = (f"(()=>{{const o={OV};o.clearAll();"
+                       f"window.CalibAnn.addRectangle(o.ann,[20,20],[120,90],0.5,'mm',null);o.armAutoOutline();}})()")
+            rect_meas = f"{OV}.getMeasurements().filter(m=>m.label==='Rect').length"
+            pg.evaluate(far_box)
             pg.route("**/api/trace", lambda route: route.fulfill(status=200, content_type="application/json",
                                                                    body=json.dumps({"error": "no_outline"})))
-            with pg.expect_response(lambda r: "/api/trace" in r.url):
+            with pg.expect_request(lambda q: "/api/trace" in q.url) as tq:
                 _tap(pg, (400, 300))
+            assert not json.loads(tq.value.post_data).get("roi"), "an Area box the tap is outside was sent as the trace region"
             pg.wait_for_function("document.body.innerText.includes(\"Couldn't separate the part from the background here\")",
                                  timeout=5000)
             pg.unroute("**/api/trace")
             with pg.expect_request(lambda q: "/api/trace" in q.url, timeout=5000):
                 _tap(pg, (400, 300))
+            assert pg.evaluate(rect_meas) == 1, "a failed trace hid the Area box elsewhere on the photo"
             pg.wait_for_function(f"{POLYS}.length===1", timeout=20000)
             assert pg.evaluate(f"{OV}.selectedPoints.length") == 0, "a hand-trace dot was placed"
+            assert pg.evaluate(f"{RECTS}.length") == 1 and pg.evaluate(rect_meas) == 1, \
+                "a successful trace removed or hid an Area box it was not inside"
 
             # 5. Labels at 0.1 mm (copy keeps full precision); no unconfirmed marker drawn.
             rd = pg.evaluate(f"""(()=>{{const o={OV};o.setManualScaleFromPixels(100,50);o._pushHistory();
@@ -222,7 +236,8 @@ def main():
             assert not errors, f"page errors: {errors}"
             browser.close()
         print("E2E_RESULT: PASS (re-trace keeps the Top view's ann_id and the view follows a new scale; "
-              "tap, box, tap leaves one outline; failed trace stays armed; toast goes with its photo; "
+              "tap, box, tap leaves one outline and undo restores the box; failed trace stays armed; "
+              "a box away from the tap is left alone; toast goes with its photo; "
               "0.1 mm labels; unconfirmed marker not drawn)")
         return 0
     except AssertionError as e:

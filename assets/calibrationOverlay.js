@@ -750,12 +750,6 @@
             }
           } else if(a.type==='rectangle'){
             const [x1,y1,x2,y2]=a.rect;
-            // An Area box marking where to trace is a helper: dashed, and no measurement label.
-            if(a.traceRoi){
-              c.save(); c.setLineDash([this._lineW(4), this._lineW(3)]);
-              c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.rectangle; c.strokeRect(x1,y1,x2-x1,y2-y1);
-              c.restore(); continue;
-            }
             const rm=Measure.rect(this._measureCtx(a), x1,y1,x2,y2);
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.rectangle; c.strokeRect(x1,y1,x2-x1,y2-y1);
             let rlabel;
@@ -979,7 +973,7 @@
 
       // ---- Submission (multi-view job) capture -------------------------------------
       // Every measurement on this view, as [{label,text}], for the review + email packet.
-      getMeasurements(){ return this.ann.items.filter(a=>!a.traceRoi).map(a=>this._readoutFor(a)).filter(Boolean)
+      getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean)
         .map(r=>{ const o={label:r.label, text:r.text}; if(r.mm>0) o.mm=r.mm; return o; }); }
       // --- Is the scale reference big enough for what is being measured? ----------------
       // A homography is only trustworthy near the points that fixed it. Extrapolate far
@@ -1536,8 +1530,9 @@
       }
 
       // Pick the Area (rectangle) annotation to use as the trace ROI: the smallest box that
-      // contains the seed, or — if the seed is off any box / absent — the smallest box overall.
-      // Returns [x, y, w, h] in image coords, or null when no usable box is drawn.
+      // contains the seed. A box the tap is not inside is an ordinary Area measurement
+      // somewhere else on the photo, not a region round this part, so it is neither sent nor
+      // touched. Returns [x, y, w, h] in image coords, or null when no box holds the seed.
       _roiForSeed(seed){
         try{
           const norm=r=>{ const x1=Math.min(r[0],r[2]), y1=Math.min(r[1],r[3]),
@@ -1547,17 +1542,14 @@
           let cands=((this.ann && this.ann.items) || [])
             .filter(a=>a && a.type==='rectangle' && Array.isArray(a.rect) && a.rect.length===4)
             .map(a=>({ b:norm(a.rect), a:a })).filter(c=>c.b[2]>4 && c.b[3]>4);
+          if(!Array.isArray(seed)) return null;
+          cands=cands.filter(c=>seed[0]>=c.b[0] && seed[0]<=c.b[0]+c.b[2] &&
+                                seed[1]>=c.b[1] && seed[1]<=c.b[1]+c.b[3]);
           if(!cands.length) return null;
-          if(Array.isArray(seed)){
-            const inside=cands.filter(c=>seed[0]>=c.b[0] && seed[0]<=c.b[0]+c.b[2] &&
-                                         seed[1]>=c.b[1] && seed[1]<=c.b[1]+c.b[3]);
-            if(inside.length) cands=inside;
-          }
           cands.sort((p,q)=>p.b[2]*p.b[3]-q.b[2]*q.b[3]);   // most specific (smallest) box wins
-          // The box is now a helper that says where to trace, not a measurement: it is drawn
-          // dashed with no label, kept out of the readouts and exports, and removed once the
-          // trace inside it succeeds (see _runAutoTrace).
-          cands[0].a.traceRoi=true;
+          // Only remembered here: the box stays an ordinary measurement until the trace inside
+          // it succeeds, and only then is it removed (see _runAutoTrace), so a failed trace
+          // leaves it exactly as drawn and undo brings it back as the user's rectangle.
           this._lastAutoRoiId=cands[0].a.id;
           return cands[0].b;
         }catch(e){ return null; }
@@ -1643,8 +1635,9 @@
                 self.ann.items = self.ann.items.filter(function(a){ return !ids.has(a.id); });
               }
               // A successful trace inside an Area box has used it up: the box goes in the same
-              // undo step, so tap, box, tap leaves the one outline and nothing else.
-              if(roiId!=null) self.ann.items = self.ann.items.filter(function(a){ return !(a.id===roiId && a.traceRoi); });
+              // undo step (after the snapshot above, so undo restores it untouched), and tap,
+              // box, tap leaves the one outline and nothing else.
+              if(roiId!=null) self.ann.items = self.ann.items.filter(function(a){ return !(a.id===roiId && a.type==='rectangle'); });
               self._autoAddedIds = [];
               const pts=j.points.map(p=>[p[0]/sentScale, p[1]/sentScale]);   // back to image coords
               Ann.addPolyline(self.ann, pts, mm, self.opts.units, self.opts.lockMarkerId, true);
@@ -2665,8 +2658,7 @@
         }
       }
 
-      // An Area box that only marked where to trace (traceRoi) is a helper, not a measurement.
-      _exportStore(){ return { items: this.ann.items.filter(a=>a && !a.traceRoi) }; }
+      _exportStore(){ return { items: this.ann.items.filter(Boolean) }; }
       _imgH(){ return this.img ? (this.img.naturalHeight || this.img.height) : 0; }
       // Gated like saveCSV/saveDXF/saveSVG: an uncalibrated PNG now labels honestly in pixels,
       // and the confirm says exactly that, so the customer isn't handed a scale-less drawing
