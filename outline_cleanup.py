@@ -4,7 +4,7 @@ A traced outline follows the part's edge pixel by pixel, so a side that is strai
 part comes back as a wobbly run of dots: shadows, scuffs and texture along the edge each nudge
 a few of them. Fixing that by dragging every dot is the job this replaces.
 
-    straighten_outline(img, points) -> {"points", "straight", "snapped"}
+    straighten_outline(img, points) -> {"points", "straight", "snapped", ...}
 
 1. Find the outline's straight sides: walk it from its sharpest corner, growing each side
    while its dots stay in a band round one line and the line neither bows nor turns. The band
@@ -19,8 +19,15 @@ a few of them. Fixing that by dragging every dot is the job this replaces.
    part on the same side of it everywhere — so the fit cannot hop between the part's edge and
    a ridge or groove just inside it. A side where the photo shows no consistent edge is
    straightened through its own dots instead: still a clean line, just not snapped.
-3. Two sides that meet become one sharp corner where their lines cross. A rounded corner —
-   whatever lies between two sides — keeps its traced dots, joined to the sides either side.
+3. Two sides that meet become one sharp corner where their lines cross — unless that point
+   lies out beyond the trace (the sides swallowed a gently rounded corner's dots), when the
+   dots round the corner stay. A rounded corner — whatever lies between two sides — keeps its
+   traced dots, joined to the sides either side.
+
+Before that, a short step out at the end of a long side — a shadow traced as part of the
+part — is pulled back onto the side's line where the photo shows the edge carrying on
+(reported in "jogs" and "notes"). For a Side or End profile (role=), the near-level top edge
+is made one straight side.
 
 Nothing is invented: a run is only ever replaced by the line that best fits it, and the
 result is refused (the original returned) if it changes the outline's area by more than a
@@ -177,9 +184,107 @@ def _sides(p: np.ndarray, min_run: float, sigma: float) -> List[tuple]:
 
 def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[float]],
                        min_run_frac: float = 0.06, fillets: bool = False,
-                       snap: bool = True, exact: bool = False) -> Optional[Dict[str, Any]]:
+                       snap: bool = True, exact: bool = False, jogs: bool = True,
+                       role: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """See the module notes. `points` are image pixel coords; so is the result. `img_bgr` may
-    be None, in which case sides are straightened through their own dots (nothing snapped)."""
+    be None, in which case sides are straightened through their own dots (nothing snapped).
+
+    jogs : pull a short outward step at the end of a long side (a shadow traced as part)
+           back onto the side's line — see _pull_jogs. Reported in "jogs" and "notes".
+    role : "side" or "end" for a Side/End profile photo: its long, near-level top edge (the
+           cover's deck) becomes one straight side — see _merge_top_run."""
+    res = _straighten(img_bgr, points, min_run_frac, fillets, snap, exact, jogs)
+    if role not in ("side", "end"):
+        return res
+    # The deck of a cover is the top edge of its Side and End profiles, and every wobble left
+    # in it becomes a ridge in the 3D part and a face in the STEP file: Refine left 58 dots on
+    # the customer's End trace, and the deck printed touching the bed over 0.4% of its area.
+    # Straightening alone keeps that edge in pieces wherever the wobble broke it, so the near-
+    # level run along the top is made one side, whatever straightening made of it.
+    p0 = _ring(points)
+    if p0 is None:
+        return res
+    base = np.asarray(res["points"], float) if res else p0
+    merged = _merge_top_run(base)
+    if merged is None:
+        return res
+    a0, a1 = _area(p0), _area(merged)
+    if a1 * a0 <= 0 or abs(a1 - a0) > _MAX_AREA_CHANGE * abs(a0):
+        return res
+    out = dict(res) if res else {"straight": 0, "snapped": 0, "rounded": 0, "kept_round": 0}
+    out["points"] = merged.tolist()
+    out["top_merged"] = True
+    out["notes"] = list(out.get("notes") or []) + ["made the top edge one straight line"]
+    return out
+
+
+def _merge_top_run(p: np.ndarray) -> Optional[np.ndarray]:
+    """The ring with its near-level top run (image y is down: the part lies below it) replaced
+    by one straight line, or None when there is no such run.
+
+    The run is the widest stretch of consecutive dots that stays within a band round one line,
+    keeps going one way across, and has the part below it. Grown from every dot, so a corner
+    dot at one end cannot spoil it, and not tied to the topmost dot: on the customer's End
+    trace the highest point was the top of a sloped end, with the deck lower and 6 degrees off
+    level. The band is as wide as a step pad's measured wobble (~1% of the profile's size); the
+    line must stay within 15 degrees of level (that End photo, not squared up, had its deck at
+    6-11; the 3D build levels it), and the run span 30% of the profile's width to count — a
+    short flat at the top of a rounded end is not the deck."""
+    n = len(p)
+    if n < 4:
+        return None
+    w = float(np.ptp(p[:, 0]))
+    if w <= 0:
+        return None
+    tol = max(3.0, 0.012 * float(np.hypot(*np.ptp(p, axis=0))))
+    max_slope = math.tan(math.radians(_TOP_MAX_TILT))
+    ring32 = p.astype(np.float32).reshape(-1, 1, 2)
+
+    def fit(idx):
+        q = p[idx]
+        span = float(np.ptp(q[:, 0]))
+        if span < 1e-6:
+            return None
+        dx = np.diff(q[:, 0])
+        if not (np.all(dx > -tol) or np.all(dx < tol)):
+            return None
+        m, c = np.polyfit(q[:, 0], q[:, 1], 1)
+        # Over a few dots the slope is all wobble; it is judged once the run has some length.
+        if span >= 0.1 * w and abs(m) > max_slope:
+            return None
+        if float(np.max(np.abs(q[:, 1] - (m * q[:, 0] + c)))) > tol:
+            return None
+        return m, c, span
+
+    best = None
+    for i in range(n):
+        j = 1
+        last = None
+        while j < n - 2:
+            f_ = fit([(i + t) % n for t in range(j + 1)])
+            if f_ is None:
+                break
+            last = (j, f_)
+            j += 1
+        if last is None:
+            continue
+        j, (m, c, span) = last
+        if span < 0.3 * w or (best is not None and span <= best[3]):
+            continue
+        xm = 0.5 * (p[i][0] + p[(i + j) % n][0])
+        if cv2.pointPolygonTest(ring32, (float(xm), float(m * xm + c + tol)), False) <= 0:
+            continue                                   # the part is above it: a bottom edge
+        best = (i, j, (m, c), span)
+    if best is None:
+        return None
+    i, j, (m, c), _ = best
+    x0, x1 = p[i][0], p[(i + j) % n][0]
+    ends = [np.array([x0, m * x0 + c]), np.array([x1, m * x1 + c])]
+    keep = [p[(i + j + 1 + t) % n] for t in range(n - j - 1)]
+    return np.asarray(ends + keep, float)
+
+
+def _straighten(img_bgr, points, min_run_frac, fillets, snap, exact, jogs):
     p = _ring(points)
     if p is None:
         return None
@@ -221,6 +326,20 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
         gray = cv2.GaussianBlur(gray, (0, 0), 1.2)
         gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 8.0
         gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3) / 8.0
+
+    jog_list: List[Dict[str, Any]] = []
+    if gx is not None and jogs:
+        # A shadow beside the end of a side gets traced as part of it: the side runs straight,
+        # steps out, and runs on — on the customer's step pad 25-30 px (13-19 mm) over its last
+        # 100 mm. Splitting the side at the step keeps it; so the long side's line is carried
+        # on over the step, and the step pulled back onto it where the photo shows the edge.
+        p2, jog_list = _pull_jogs(p, gx, gy, sides, float(max(np.ptp(p, axis=0))))
+        if jog_list:
+            p = p2
+            n = len(p)
+            sides = _sides(p, min_run, sigma)
+            if not sides:
+                return None
 
     def verts(i, cnt):
         return p[(i + np.arange(cnt + 1)) % n]
@@ -295,6 +414,9 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     out: List[np.ndarray] = []
     k = len(lines)
     rounded = 0
+    kept_round = 0
+    ring32 = p.astype(np.float32).reshape(-1, 1, 2)
+    tol_on = max(1.0, 1.5 * sigma)                 # a dot this near its side's line is on it
     for s_i in range(k):
         i, cnt, line = lines[s_i]
         ni, ncnt, nline = lines[(s_i + 1) % k]
@@ -308,7 +430,18 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
         if between == 0:
             x = cross(line, nline)
             corner = p[end]
-            if x is not None and float(np.hypot(*(x - corner))) <= 3 * r:
+            if x is not None and _outside(ring32, x) > r:
+                # The two sides swallowed a gently rounded corner's dots, so their lines meet
+                # out beyond it: on a trace of the customer's step pad that put a sharp point
+                # 41 px out on the concrete (+10 mm of length). The traced dots near the corner
+                # stay instead, as a short stretch between the sides — what a corner the sides
+                # did not swallow gets, and what Refine can then fit a fillet to.
+                piece = _corner_dots(p, i, cnt, ni, ncnt, 0, line, nline, proj, tol_on)
+                kept_round += 1
+                out.extend(piece[:-1] if s_i == k - 1 and k > 1 else piece)
+                if s_i == k - 1 and k > 1:
+                    out[0] = piece[-1]
+            elif x is not None and float(np.hypot(*(x - corner))) <= 3 * r:
                 arc = None
                 if fillets and gx is not None and k > 1:
                     # Each side may give at most 45% of itself to a corner, so a rounded end
@@ -335,6 +468,12 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
         else:
             e1, s2_ = proj(p[end], line), proj(p[ni], nline)
             dots = [e1] + [p[(end + 1 + j) % n] for j in range(between - 1)] + [s2_]
+            if max(_outside(ring32, e1), _outside(ring32, s2_)) > r:
+                # A side that took in a corner dot well off its line would put that dot out on
+                # its line, beyond the corner: give such dots back to the corner instead.
+                dots = _corner_dots(p, i, cnt, ni, ncnt, between, line, nline, proj, tol_on)
+                e1, s2_ = dots[0], dots[-1]
+                kept_round += 1
             arc = None
             x = cross(line, nline) if (fillets and gx is not None and k > 1) else None
             if x is not None:
@@ -355,7 +494,6 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
                 # gap at a truck's door — could pull the corner out to it).
                 # Measured from the outline as it was: inward, a fillet may cut well into a
                 # traced chamfer (3x the reach); outward, only as far as a side's own snap.
-                ring32 = p.astype(np.float32).reshape(-1, 1, 2)
                 for q_ in np.asarray(arc):
                     dmin = min(_seg_dist(q_, p[j], p[(j + 1) % n]) for j in range(n))
                     inside_ = cv2.pointPolygonTest(ring32, (float(q_[0]), float(q_[1])), False) >= 0
@@ -392,7 +530,170 @@ def straighten_outline(img_bgr: Optional[np.ndarray], points: Sequence[Sequence[
     a1 = _area(res)
     if a1 * a0 <= 0 or abs(a1 - a0) > _MAX_AREA_CHANGE * abs(a0):
         return None
-    return {"points": res.tolist(), "straight": len(lines), "snapped": snapped, "rounded": rounded}
+    out_d = {"points": res.tolist(), "straight": len(lines), "snapped": snapped, "rounded": rounded,
+             "kept_round": kept_round}
+    if jog_list:
+        out_d["jogs"] = jog_list
+        out_d["notes"] = [f"pulled in a {j['px']:.0f} px bulge on the {j['side']} side near the "
+                          f"{j['end']} end (likely shadow)" for j in jog_list]
+    return out_d
+
+
+_TOP_MAX_TILT = 15.0      # degrees: a Side/End photo's deck further off level than this is not its top
+_JOG_MAX_STRETCH = 0.20   # of the side's length (step included): a longer step is a real change of width
+_JOG_MIN_STEP = 0.01      # of the part's length: below this a step is trace wobble
+_JOG_MAX_STEP = 0.08      # of the part's length: above this it is a real feature, not a shadow
+
+
+def _edge_along(gx, gy, a, b, nrm, reach=2.0, inward=None):
+    """Median edge strength across the segment a->b (looking up to `reach` px either side of
+    it, or `inward` px to the -nrm side), in the one polarity that is stronger along it —
+    grey levels per px."""
+    L = float(np.hypot(*(b - a)))
+    k = int(min(60, max(6, L / 4)))
+    base = a[None, :] + np.linspace(0.1, 0.9, k)[:, None] * (b - a)[None, :]
+    offs = np.arange(-(reach if inward is None else inward), reach + 0.25, 0.5)
+    qx = base[:, 0, None] + offs[None, :] * nrm[0]
+    qy = base[:, 1, None] + offs[None, :] * nrm[1]
+    g = _bilinear(gx, qx, qy) * nrm[0] + _bilinear(gy, qx, qy) * nrm[1]
+    return max(float(np.median(np.max(sg * g, axis=1))) for sg in (1.0, -1.0))
+
+
+def _side_name(v) -> str:
+    return ("right" if v[0] > 0 else "left") if abs(v[0]) >= abs(v[1]) else ("bottom" if v[1] > 0 else "top")
+
+
+def _pull_jogs(p, gx, gy, sides, part_len):
+    """Pull a shadow's step off the end of each long side: (new ring, [jog, ...]).
+
+    From each end of a long side, the dots that carry on past it OUTSIDE its line — by more
+    than 1% of the part's length (trace wobble is less) and less than 8% (a flange is more),
+    over less than 20% of the side's length — are a step out. It is pulled back onto the
+    side's line (a Huber fit over the whole side, so the step cannot tilt it) only where the
+    photo shows an edge along that line through the step: there the part's own edge carries
+    on and the step is shadow beside it (the customer's cover: grey 68 -> 4 at the line).
+    A real widening has no edge across it, a taper no step, and both are left alone."""
+    n = len(p)
+    ring32 = p.astype(np.float32).reshape(-1, 1, 2)
+    step_min, step_max = _JOG_MIN_STEP * part_len, _JOG_MAX_STEP * part_len
+    taken = set()
+    edits = []                                   # (ring-ordered dots that go, what replaces them)
+    found = []
+    for (i, cnt) in sides:
+        vv = p[(i + np.arange(cnt + 1)) % n]
+        c, u = _fit_line(vv)
+        if float(np.dot(u, vv[-1] - vv[0])) < 0:
+            u = -u                               # along the ring's direction
+        t = (vv - c) @ u
+        side_len = float(t.max() - t.min())
+        if side_len < 0.25 * part_len:
+            continue
+        nrm = np.array([-u[1], u[0]])
+        mid = c + u * float(t.mean())
+        if cv2.pointPolygonTest(ring32, (float(mid[0] + 3 * nrm[0]), float(mid[1] + 3 * nrm[1])), False) > 0:
+            nrm = -nrm                           # point it outward
+        side_edge = _edge_along(gx, gy, c + u * float(t.min() + 0.1 * side_len),
+                                c + u * float(t.max() - 0.1 * side_len), nrm)
+
+        def off(q):
+            return float((q - c) @ nrm)
+        for d in (1, -1):
+            idx0 = (i + cnt) % n if d > 0 else i
+            t_side = float((p[idx0] - c) @ u)
+            ext = []
+            # Dots still within a step of the line, past the side's end, are the side going on:
+            # a sparse trace puts the step's own corner dot there, and on the customer's cover
+            # the trace dipped 11 px in just before it stepped out.
+            for _ in range(n - cnt - 2):
+                j = (idx0 + d) % n
+                if abs(off(p[j])) > step_min or d * float((p[j] - p[idx0]) @ u) <= 0:
+                    break
+                idx0 = j
+                ext.append(j)
+            t_end = float((p[idx0] - c) @ u)
+            run_len = side_len + d * (t_end - t_side)
+            k = 1
+            ok = True
+            while k < n - cnt - 1:
+                j = (idx0 + d * k) % n
+                if off(p[j]) <= 0.5 * step_min:
+                    break
+                # Measured against the whole side, step included.
+                if d * (float((p[j] - c) @ u) - t_end) > _JOG_MAX_STRETCH / (1.0 - _JOG_MAX_STRETCH) * run_len:
+                    ok = False
+                    break
+                k += 1
+            if not ok or k == 1 or k >= n - cnt - 1:
+                continue
+            bulge = [(idx0 + d * m) % n for m in range(1, k)]
+            j_back = (idx0 + d * k) % n
+            if any(b in taken for b in bulge + ext):
+                continue
+            o = np.array([off(p[b]) for b in bulge])
+            if not (step_min <= float(o.max()) <= step_max):
+                continue
+            # Where the step comes back: the segment from its last dot to the first dot back
+            # inside crosses the line there (or that dot, put on the line, if it is not inside).
+            q_out, q_in = p[bulge[-1]], p[j_back]
+            oi, oo = off(q_in), off(q_out)
+            x_out = (q_in + (q_out - q_in) * (oi / (oi - oo)) if oi < 0 < oo
+                     else c + u * float(np.dot(q_in - c, u)))
+            x_in = c + u * t_side
+            if float(np.hypot(*(x_out - x_in))) < 4.0:
+                continue
+            # The edge may sit a little inside the line there: the customer's cover, darker in
+            # the shadow, showed its edge 8-15 px in from the side's line over the last 100 mm.
+            e = _edge_along(gx, gy, x_in, x_out, nrm, inward=step_min)
+            if e < max(4.0, 0.15 * side_edge):
+                continue
+            # The side's run on past its end and the step both go; the side now ends where
+            # the step came back.
+            gone = ext + bulge
+            if d < 0:
+                gone = gone[::-1]
+            taken.update(gone)
+            edits.append((gone, [x_out]))
+            at = p[bulge].mean(axis=0)
+            found.append({"side": _side_name(nrm), "end": _side_name(u * d), "px": round(float(o.max()), 1),
+                          "at": [round(float(at[0]), 1), round(float(at[1]), 1)]})
+    if not edits:
+        return p, []
+    first = {e[0][0]: e[1] for e in edits}
+    out = []
+    for j in range(n):
+        if j in first:
+            out.extend(first[j])
+        if j not in taken:
+            out.append(p[j])
+    return np.asarray(out, float), found
+
+
+def _outside(ring32, q) -> float:
+    """How far q lies OUTSIDE the ring (px; 0 or negative when inside)."""
+    return -float(cv2.pointPolygonTest(ring32, (float(q[0]), float(q[1])), True))
+
+
+def _corner_dots(p, i, cnt, ni, ncnt, between, line, nline, proj, tol):
+    """The traced dots round the corner where side (i, cnt) meets the side starting at ni
+    (`between` dots after the first side ends): from the last dot of the first side that still
+    sits on its line (within tol) to the first dot of the second that does, the ends put on
+    the lines. At most 45% of either side is given up, as a fillet may take, so a corner never
+    eats a side."""
+    n = len(p)
+    end = (i + cnt) % n
+
+    def off(q, ln):
+        c, u = ln
+        return abs(float((q - c)[0] * u[1] - (q - c)[1] * u[0]))
+    a = 0
+    while a < int(0.45 * cnt) and off(p[(end - a) % n], line) > tol:
+        a += 1
+    b = 0
+    while b < int(0.45 * ncnt) and off(p[(ni + b) % n], nline) > tol:
+        b += 1
+    ia, ib = (end - a) % n, (ni + b) % n
+    mid = [p[(ia + 1 + j) % n] for j in range(a + between + b - 1)]
+    return [proj(p[ia], line)] + mid + [proj(p[ib], nline)]
 
 
 # ---------------------------------------------------------------------------------------
@@ -473,7 +774,8 @@ def _fillet(gx, gy, X, u_in, u_out, max_t, versus=None):
     return None if best is None else [q for q in best[1]]
 
 
-def refine_outline(img_bgr: np.ndarray, points: Sequence[Sequence[float]]) -> Optional[Dict[str, Any]]:
+def refine_outline(img_bgr: np.ndarray, points: Sequence[Sequence[float]],
+                   role: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Straighten, then give each corner where two sides meet the radius the photo shows.
 
     Straightening meets sides at a sharp point, which is wrong for a part whose corners are
@@ -484,21 +786,40 @@ def refine_outline(img_bgr: np.ndarray, points: Sequence[Sequence[float]]) -> Op
     and can only ever be tangent to the two sides already fitted, so it is either the corner
     the photo shows or no change at all.
 
-    Returns {"points", "straight", "snapped", "rounded"} in image pixel coords, or None.
+    role: "side" or "end" also makes the profile's top edge one straight side (see straighten_outline).
+
+    Returns {"points", "straight", "snapped", "rounded"} in image pixel coords (plus "jogs",
+    "notes" and "top_merged" when those apply), or None.
     """
     if img_bgr is None or not getattr(img_bgr, "size", 0):
         return None
-    st = straighten_outline(img_bgr, points)
+    st = straighten_outline(img_bgr, points, role=role)
     if st is None:
         return None
     # The sides are now on the photo's edges. Fitting them to it again, from two dots each,
     # only nudged them off (measured on rounded rectangles); so the second pass keeps every
     # side's line exactly (and, the outline being straight already, allows its sides no
     # wobble — or a corner dot joins a side and tilts it) and only decides the corners.
-    out = straighten_outline(img_bgr, st["points"], fillets=True, snap=False, exact=True)
+    out = straighten_outline(img_bgr, st["points"], fillets=True, snap=False, exact=True, role=role)
     if out is None:
         return dict(st, rounded=0)
+    # The second pass checks its corners against the first pass's outline, which may already
+    # sit a side's snap outside the trace; held to the trace itself, a fillet there could end
+    # up further out than any side may move (a 60 px corner on a noisy trace: 8.7 px with a
+    # 7.7 px reach). Then the first pass's corners stand.
+    p0 = _ring(points)
+    if p0 is not None and st.get("points") is not None:
+        ring32 = p0.astype(np.float32).reshape(-1, 1, 2)
+        reach = max(4.0, 0.012 * float(np.hypot(*np.ptp(p0, axis=0))))
+        reach = min(reach, 4.0 + 0.02 * max(img_bgr.shape[:2]))
+        far_o = max(_outside(ring32, q) for q in np.asarray(out["points"], float))
+        far_s = max(_outside(ring32, q) for q in np.asarray(st["points"], float))
+        if far_o > reach and far_o > far_s:
+            return dict(st, rounded=0)
     out["snapped"] = st["snapped"]
+    for key in ("jogs", "notes", "top_merged"):
+        if key in st:
+            out[key] = st[key]
     return out
 
 
