@@ -191,7 +191,7 @@ def scenario_wall(pg):
     # The outline from the previous scenario is selected; use the Depth dialog for real.
     pg.evaluate(f"(()=>{{const o={OV};const p=o.ann.items.find(a=>a.type==='polyline'&&a.closed);"
                 f"o.ann.selectedId=p.id;o.setMode('select');o.requestDraw();}})()")
-    depth_btn = pg.locator("button", has_text="Depth")
+    depth_btn = pg.locator("button", has_text="Extrude")
     depth_btn.first.click()
     pg.wait_for_selector("#cal-depth-input", timeout=5000)
     pg.locator("#cal-depth-input input[type=number]").first.fill("25")

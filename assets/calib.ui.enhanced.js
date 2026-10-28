@@ -68,6 +68,23 @@
       box-shadow: 0 1px 0 #000, 0 2px 8px rgba(0,0,0,0.35);
     }
     .cal-tb-left, .cal-tb-right{ display: flex; align-items: center; gap: 0.3rem; }
+    /* A phone keeps the top bar to ONE row: a second row cost ~50 px of photo. The word labels
+       that made it wrap (Add photo, Build 3D part (n)) give way to the icon, and the part's
+       view count rides on the icon as a badge. */
+    .cal-icon .cal-badge{ display: none; }
+    @media (max-width: 600px){
+      .cal-topbar{ flex-wrap: nowrap; gap: 0.3rem; padding: 0.4rem 0.4rem; }
+      .cal-tb-left, .cal-tb-right{ gap: 0.25rem; min-width: 0; }
+      .cal-icon{ padding: 0.4rem 0.45rem; }
+      .cal-icon.cal-narrow-icon .cal-icon-text{ display: none; }
+      .cal-icon .cal-badge{
+        display: inline-flex; position: absolute; top: -5px; right: -5px;
+        min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px;
+        align-items: center; justify-content: center;
+        background: #000; color: var(--cal-accent); border: 1px solid var(--cal-accent);
+        font: 700 11px/1 Segoe UI, system-ui, sans-serif;
+      }
+    }
 
     .cal-icon{
       background: var(--cal-bg-2); color: var(--cal-text);
@@ -101,8 +118,12 @@
       border-top: 1px solid var(--cal-border);
     }
     @media (min-width: 900px){
+      /* flex-start, not the base rule's centre: 12 tools + undo/redo are ~838 px tall, and in
+         an 813 px rail (1400x900) a centred column spilled 19 px off the TOP, where overflow
+         can't be scrolled to, and clipped Select. Spill only at the bottom, which scrolls. */
       .cal-rail{
         flex-flow: column nowrap; align-items: stretch; width: 86px;
+        justify-content: flex-start;
         border-top: none; border-right: 1px solid var(--cal-border);
         scrollbar-width: thin;
       }
@@ -159,10 +180,21 @@
          than run off the screen, clear of the zoom buttons on the right. */
       flex-wrap: wrap; align-content: flex-end; max-width: calc(100% - 84px);
     }
+    /* Phone: one row, docked clear of the home-indicator strip. Wrapped, a selected outline's
+       five buttons stood three rows (~145 px) deep over the photo at 390x844 and covered the
+       outline's own lower corners; the secondary ones now sit behind "⋯ More" (see reflect),
+       and anything still too wide scrolls sideways instead of stacking. */
     @media (max-width: 600px){
-      .cal-context{ gap: 6px; }
-      .cal-context button{ padding: 8px 12px; min-height: 40px; font-size: 13px; }
+      .cal-context{
+        gap: 6px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+        margin-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        scrollbar-width: none;
+      }
+      .cal-context::-webkit-scrollbar{ display: none; }
+      .cal-context button{ padding: 8px 12px; min-height: 40px; font-size: 13px; flex: 0 0 auto; white-space: nowrap; }
     }
+    .cal-context button.show.cal-ctx-folded{ display: none; }
+    .cal-context button.cal-ctx-more{ min-width: 44px; padding: 8px 10px; justify-content: center; font-size: 18px; background: var(--cal-bg-2); color: var(--cal-text); border: 1px solid var(--cal-border); }
     .cal-context button{
       pointer-events: auto; display: none; align-items: center; gap: 6px;
       border: none; border-radius: 999px; padding: 10px 16px; min-height: 44px;
@@ -200,6 +232,12 @@
     }
     .cal-coach-actions{ display: flex; gap: 8px; margin-top: 18px; }
     .cal-coach-actions button{ flex: 1; min-height: 44px; border-radius: 10px; font: 600 14px Segoe UI, system-ui, sans-serif; cursor: pointer; }
+    /* The Set-scale chooser's Apply / Verify / Clear / Close sit outside .cal-coach-actions,
+       so they carried no size and measured ~19 px tall on a phone: size the classes themselves. */
+    .cal-coach-primary, .cal-coach-secondary{
+      min-height: 44px; padding: 8px 14px; border-radius: 10px;
+      font: 600 14px Segoe UI, system-ui, sans-serif; cursor: pointer;
+    }
     .cal-coach-primary{ background: var(--cal-accent); color: #000; border: none; }
     .cal-coach-primary:hover{ background: var(--cal-accent-hover); }
     .cal-coach-secondary{ background: transparent; color: var(--cal-text); border: 1px solid var(--cal-border); }
@@ -377,13 +415,39 @@ window.CalibUI = (function(){
       .observe(b, { childList: true, characterData: true, subtree: true });
   }
 
+  // A modal card opening over the photo: the last toast ("Saved as the Top view… Build 3D
+  // part") lives 8 s at z-index 70, above the card, and its button would take a tap meant for
+  // the card's row under it. CalibToast.dismiss() where it exists; otherwise the page-wide
+  // handle the overlay's _toast keeps (its placer timer stops once the node is detached).
+  function dismissToast(){
+    try {
+      if (window.CalibToast && typeof window.CalibToast.dismiss === 'function') { window.CalibToast.dismiss(); return; }
+      const t = window.__calLastToast;
+      if (t && t.parentNode) t.parentNode.removeChild(t);
+    } catch (e) {}
+  }
+
+  // Leave simple mode the way the simple card's own Set scale / Trace buttons do: its card is
+  // fixed over the bottom ~40% of the photo (560x289 px at 1366x768), which is where a ruler
+  // laid along a step usually is, and it swallowed both taps of the scale line. The simple
+  // layer's poll removes its card and shows "◂ Simple view" within 500 ms of the flag; the
+  // body class and the card go now so the very next tap reaches the canvas.
+  function leaveSimple(overlay){
+    if (!document.body.classList.contains('camscan-simple')) return;
+    try { localStorage.setItem('camscan.simplemode', '0'); } catch (e) {}
+    document.body.classList.remove('camscan-simple');
+    const card = document.getElementById('cal-simple');
+    if (card) card.style.display = 'none';
+    if (overlay && overlay._onBoxResize) setTimeout(() => { try { overlay._onBoxResize(); } catch (e) {} }, 0);
+  }
+
   function build(rootEl, overlay){
     armNoticeBanner();
     // Remove any chrome from a previous build on this view (defensive — one build per
     // upload in practice). The <canvas> is a direct grid child and is left in place.
     rootEl.querySelectorAll('.cal-topbar, .cal-rail, .cal-sheet, .cal-zoom, .cal-context, .cal-coach, .cal-fab')
       .forEach(el => el.remove());
-    document.querySelectorAll('#cal-tidy-menu').forEach(el => el.remove());
+    document.querySelectorAll('#cal-tidy-menu, #cal-more-menu').forEach(el => el.remove());
 
     let calInput = null;  // hoisted so the top-bar 📐 chip can focus the panel's size field
     function openCalibration(){
@@ -398,10 +462,16 @@ window.CalibUI = (function(){
     // existing flows — it doesn't reimplement any scale math.
     let scalePanel = null;
     function closeScalePanel(){ if (scalePanel && scalePanel.parentNode) scalePanel.remove(); scalePanel = null; }
-    function openScalePanel(){
+    // fromUser: a tap on a Set scale button leaves simple mode, as the simple card's own
+    // button does. The automatic first prompt on an unscaled photo does not — closing it must
+    // leave the simple card and its own Set scale button in place — and instead leaves simple
+    // mode once a method that needs taps on the photo is picked (go() below).
+    function openScalePanel(fromUser){
       dismissCoach();
       hideScaleNotice();
+      if (fromUser === true) leaveSimple(overlay);
       if (scalePanel) return;                 // already open — don't stack
+      dismissToast();
       scalePanel = document.createElement('div');
       scalePanel.className = 'cal-coach';     // reuse the dimmed-backdrop + card styling
       scalePanel.addEventListener('click', (e) => { if (e.target === scalePanel) closeScalePanel(); });
@@ -410,50 +480,57 @@ window.CalibUI = (function(){
       card.innerHTML = '<h3>📐 Set the scale</h3>' +
         '<p style="margin:0.1rem 0 0.6rem;color:#9aa;font-size:13px;">Pick one — every measurement rescales instantly.</p>';
 
-      // 1 — printed square / marker (fastest, most accurate): pick a size.
+      const mkBig = (emoji, title, sub, fn) => {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'cal-panel-btn';
+        b.style.cssText = 'display:flex;gap:0.6rem;align-items:flex-start;text-align:left;width:100%;margin:0.3rem 0;min-height:44px;';
+        b.innerHTML = `<span style="font-size:18px;line-height:1.2;">${emoji}</span>` +
+          `<span><b>${title}</b><br><span style="color:#9aa;font-size:12px;">${sub}</span></span>`;
+        b.onclick = fn;
+        return b;
+      };
+      // Every method below needs taps on the photo, and the simple card would sit on them.
+      const go = (mode) => { closeScalePanel(); leaveSimple(overlay); if (overlay.setMode) overlay.setMode(mode); };
+      // 1 — a ruler or tape lying on the part: what people actually have, so it leads. Two
+      // numbered marks along the middle, not the far ends: a ruler's ends are often worn,
+      // rounded or under the part, and the middle is where Square up looks for its edges.
+      const rulerBtn = mkBig('📏', 'Ruler or tape on the part',
+        'Tap two numbered marks along its middle, then type the distance between them. '
+        + 'Lay it ON the face you measure, not beside the part.',
+        () => go('setscale'));
+      rulerBtn.id = 'cal-scale-ruler';
+      card.appendChild(rulerBtn);
+      // 2 — a rectangle (tilt-corrected).
+      card.appendChild(mkBig('📄', 'A rectangle you know the size of (tilt-corrected)',
+        'Tap its 4 corners — a sheet of paper, or a square you lay out with a ruler. '
+        + 'Best for big parts: the reference should cover a good part of what you measure.',
+        () => go('setscalerect')));
+
+      // 3 — printed square / marker: pick a size.
       const sqHead = document.createElement('div');
       sqHead.innerHTML = '<b>🟩 I printed a square or the CamScan marker</b><br>' +
         '<span style="color:#9aa;font-size:12px;">Tap its printed edge size:</span>';
-      sqHead.style.cssText = 'margin:0.3rem 0 0.35rem;';
+      sqHead.style.cssText = 'margin:0.6rem 0 0.35rem;';
       card.appendChild(sqHead);
       const sizeRow = document.createElement('div');
       sizeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.4rem;margin:0 0 0.7rem;';
       [30, 40, 60].forEach(v => {
         const c = document.createElement('button'); c.type = 'button'; c.className = 'cal-panel-btn';
-        c.style.cssText = 'padding:0.5rem 0.9rem;flex:0 0 auto;';
+        c.style.cssText = 'padding:0.5rem 0.9rem;flex:0 0 auto;min-height:44px;';
         c.textContent = v === 40 ? `${v} mm ★` : `${v} mm`;
         if (v === 40) c.title = 'Recommended marker size';
         c.onclick = () => { if (overlay.setMarkerSizeMM) overlay.setMarkerSizeMM(v); if (calInput) calInput.value = String(v); closeScalePanel(); };
         sizeRow.appendChild(c);
       });
       const otherBtn = document.createElement('button'); otherBtn.type = 'button'; otherBtn.className = 'cal-panel-btn';
-      otherBtn.style.cssText = 'padding:0.5rem 0.9rem;flex:0 0 auto;';
+      otherBtn.style.cssText = 'padding:0.5rem 0.9rem;flex:0 0 auto;min-height:44px;';
       otherBtn.textContent = 'Other…';
       otherBtn.onclick = () => { closeScalePanel(); openCalibration(); };
       sizeRow.appendChild(otherBtn);
       card.appendChild(sizeRow);
 
-      const mkBig = (emoji, title, sub, fn) => {
-        const b = document.createElement('button'); b.type = 'button'; b.className = 'cal-panel-btn';
-        b.style.cssText = 'display:flex;gap:0.6rem;align-items:flex-start;text-align:left;width:100%;margin:0.3rem 0;';
-        b.innerHTML = `<span style="font-size:18px;line-height:1.2;">${emoji}</span>` +
-          `<span><b>${title}</b><br><span style="color:#9aa;font-size:12px;">${sub}</span></span>`;
-        b.onclick = fn;
-        return b;
-      };
-      // 2 — known line (credit card / coin / ruler): presets appear as they draw.
-      card.appendChild(mkBig('📏', 'Measure something of known size',
-        'A credit card, coin, or ruler in the photo — presets appear as you draw.',
-        () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscale'); }));
-      // 3 — paper sheet (tilt-corrected).
-      card.appendChild(mkBig('📄', 'A rectangle you know the size of (tilt-corrected)',
-        'Tap its 4 corners — a sheet of paper, or a square you lay out with a ruler. '
-        + 'Best for big parts: the reference should cover a good part of what you measure.',
-        () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('setscalerect'); }));
-
       // 4 — the plane the feature actually sits in. This is the biggest single source of
-      // error in the app and the only one the user can neither see nor guess: the card's
-      // homography rectifies the CARD's plane, so a part's top face reads d/(d-h) too
+      // error in the app and the only one the user can neither see nor guess: the reference's
+      // homography rectifies the REFERENCE's plane, so a part's top face reads d/(d-h) too
       // large — about +5% for a part 20 mm thick at arm's length — and, unlike camera
       // tilt, that error is exactly as large in a perfectly square-on photo.
       const planeWrap = document.createElement('div');
@@ -463,14 +540,16 @@ window.CalibUI = (function(){
       planeHead.textContent = '⬆ Measuring a raised face?';
       const planeHint = document.createElement('div');
       planeHint.style.cssText = 'color:#9fb2bb;font-size:12px;line-height:1.45;margin-bottom:0.45rem;';
-      planeHint.textContent = 'If the face you are measuring sits above the card (a part with '
-        + 'thickness), say how far above. Best of all: rest the card ON that face and re-shoot '
-        + '— that is exact, this is a correction.';
+      planeHint.textContent = 'If the face you are measuring sits above the reference (a part with '
+        + 'thickness), say how far above. A negative value means the outline is below the '
+        + 'reference (a ruler resting on top of the part, measuring its base). Best of all: rest '
+        + 'the reference ON that face and re-shoot — that is exact, this is a correction.';
       const planeRow = document.createElement('div');
       planeRow.style.cssText = 'display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;';
       const planeIn = document.createElement('input');
-      planeIn.type = 'number'; planeIn.min = '0'; planeIn.step = '0.5';
-      planeIn.placeholder = 'mm above card';
+      // No min: a face below the reference is a real case (the ruler lies on the part's top).
+      planeIn.type = 'number'; planeIn.step = '0.5';
+      planeIn.placeholder = 'mm above reference';
       planeIn.value = (overlay.featureHeightMM && overlay.featureHeightMM()) || '';
       planeIn.style.cssText = 'width:8.5rem;min-height:40px;padding:0.4rem 0.5rem;background:#0b0f12;'
         + 'border:1px solid #29414c;border-radius:8px;color:#eef;font-size:15px;';
@@ -479,7 +558,7 @@ window.CalibUI = (function(){
       planeMsg.style.cssText = 'font-size:12px;line-height:1.45;margin-top:0.45rem;color:#9fb2bb;';
       const showAdvice = (h) => {
         const adv = overlay.parallaxAdvice ? overlay.parallaxAdvice(h) : null;
-        planeMsg.textContent = adv || (h ? '' : 'Measuring in the card\u2019s own plane.');
+        planeMsg.textContent = adv || (h ? '' : 'Measuring in the reference\u2019s own plane.');
         planeMsg.style.color = adv ? '#e6b970' : '#9fb2bb';
       };
       const applyBtn = document.createElement('button');
@@ -500,7 +579,7 @@ window.CalibUI = (function(){
       };
       const planeClear = document.createElement('button');
       planeClear.type = 'button'; planeClear.className = 'cal-coach-secondary';
-      planeClear.textContent = 'In the card\u2019s plane';
+      planeClear.textContent = 'In the reference\u2019s plane';
       planeClear.onclick = async () => { planeIn.value = ''; await overlay.setFeatureHeight(0); showAdvice(0); };
       planeIn.addEventListener('input', () => {
         const h = parseFloat(planeIn.value);
@@ -515,7 +594,7 @@ window.CalibUI = (function(){
       foot.style.cssText = 'display:flex;gap:0.5rem;align-items:center;margin-top:0.7rem;';
       const verifyBtn = document.createElement('button'); verifyBtn.type = 'button'; verifyBtn.className = 'cal-coach-secondary';
       verifyBtn.textContent = '✅ Verify'; verifyBtn.title = 'Measure a 2nd known feature to check the scale';
-      verifyBtn.onclick = () => { closeScalePanel(); if (overlay.setMode) overlay.setMode('verifyscale'); };
+      verifyBtn.onclick = () => go('verifyscale');
       const clearBtn = document.createElement('button'); clearBtn.type = 'button'; clearBtn.className = 'cal-coach-secondary';
       clearBtn.textContent = '↺ Clear'; clearBtn.title = 'Clear a manual scale and fall back to the detected square';
       clearBtn.onclick = () => { if (overlay.clearManualScale) overlay.clearManualScale(); closeScalePanel(); };
@@ -526,7 +605,7 @@ window.CalibUI = (function(){
 
       scalePanel.appendChild(card);
       rootEl.appendChild(scalePanel);
-      setTimeout(() => { try { sizeRow.querySelector('button').focus(); } catch (e) {} }, 0);
+      setTimeout(() => { try { rulerBtn.focus(); } catch (e) {} }, 0);
     }
 
     // ---- Focus mode ----
@@ -750,20 +829,78 @@ window.CalibUI = (function(){
       return b;
     };
 
-    const newImage = iconBtn('⬅️', 'New', 'Upload a new image', () => {
-      if (!overlay.ann || overlay.ann.items.length === 0 ||
-          confirm('Start over with a new image? Current annotations will be lost.')) {
-        // The job (other photos, 3D views) must be saved before the page goes: its store
-        // writes complete asynchronously, and a write merely started during unload may not.
-        (window.CalibJob && window.CalibJob.beforeReload ? window.CalibJob.beforeReload() : Promise.resolve()).then(() => window.location.reload());
+    // ---- 📷 Add photo (was "New") ----
+    // New used to say "annotations will be lost" and then drop the PHOTO while keeping its 3D
+    // view: beforeReload only syncs a reopened side, and a fresh upload has no
+    // data-view-index, so after the reload the landing read "no photos saved · 3D views: Top"
+    // and the Top outline could never be reopened, re-scaled or squared up. It now stores the
+    // photo in the part first, under its 3D role's name when it has one.
+    const ROLE_LABEL = { top: 'Top', side: 'Side', end: 'End', cavity: 'Cavity' };
+    function assignedRoleLabel(){
+      const J = window.CalibJob;
+      try {
+        const views = (J && J.part && J.part().views) || {};
+        const pid = J.photoId && J.photoId();
+        const r = Object.keys(ROLE_LABEL).find(k => views[k] && views[k].source === pid);
+        return r ? ROLE_LABEL[r] : null;
+      } catch (e) { return null; }
+    }
+    // Worth keeping: a scale, any annotation, or a 3D view traced on it. A bare unscaled shot
+    // with nothing on it is the one case that is dropped.
+    function photoWorthKeeping(role){
+      return !!(role || (overlay.isCalibrated && overlay.isCalibrated()) ||
+                (overlay.ann && overlay.ann.items.length));
+    }
+    // Store the photo on screen in the part. Returns the label it is kept under, or null.
+    function keepCurrentPhoto(){
+      const J = window.CalibJob;
+      if (!J) return null;
+      const role = assignedRoleLabel();
+      try {
+        // A reopened side is already in the part: persist its edits in place, no relabel.
+        if (J.isCurrentStored && J.isCurrentStored()) { if (J.syncOpen) J.syncOpen(); return role || 'its side'; }
+        if (!photoWorthKeeping(role)) return null;
+        const n = (J.count && J.count()) || 0;
+        const label = role || ('View ' + (J.hasCurrent && J.hasCurrent() ? n : n + 1));
+        // The shared capture, where the job layer has it; otherwise the same steps by hand.
+        if (typeof J.captureCurrent === 'function') J.captureCurrent(label);
+        else if (J.addView) J.addView(label);
+        if ((J.hasCurrent && J.hasCurrent()) || (J.isCurrentStored && J.isCurrentStored())) return label;
+      } catch (e) {}
+      return null;
+    }
+    const newImage = iconBtn('📷', 'Add photo', 'Add another photo — this one is kept in the part', () => {
+      const J = window.CalibJob;
+      const willKeep = !!J && ((J.isCurrentStored && J.isCurrentStored()) || photoWorthKeeping(assignedRoleLabel()));
+      // Confirm only when something would be thrown away: marks on a photo with no job to
+      // keep it in.
+      if (!willKeep && overlay.ann && overlay.ann.items.length &&
+          !confirm('Start over with a new image? Current annotations will be lost.')) return;
+      const kept = willKeep ? keepCurrentPhoto() : null;
+      // The store refused it (full, say): its own warning is up; don't reload over the marks.
+      if (willKeep && !kept && overlay.ann && overlay.ann.items.length &&
+          !confirm('This photo could not be saved to the part. Start over with a new image anyway?')) return;
+      let wait = Promise.resolve();
+      if (kept) {
+        const msg = kept === 'its side' ? 'Your changes to this photo were saved to the part.'
+          : `This photo was saved to the part as "${kept}"; reopen it from Sides.`;
+        if (overlay._toast) overlay._toast(msg, { autoMs: 4000 });
+        // Long enough to read the line before the page goes (~1.2 s for 12 words).
+        wait = new Promise(res => setTimeout(res, 1200));
       }
+      // The job (other photos, 3D views) must be saved before the page goes: its store
+      // writes complete asynchronously, and a write merely started during unload may not.
+      const save = (J && J.beforeReload) ? J.beforeReload() : Promise.resolve();
+      Promise.all([save, wait]).then(() => window.location.reload());
     });
+    newImage.id = 'cal-tb-new';
+    newImage.classList.add('cal-narrow-icon');
 
     // Calibration chip — the reference size drives every measurement, so surface it up top.
     const calChip = document.createElement('button');
     calChip.type = 'button'; calChip.className = 'cal-icon'; calChip.id = 'cal-tb-scale';
     calChip.innerHTML = '<span class="cal-icon-emoji">📐</span><span class="cal-icon-text"></span>';
-    calChip.onclick = () => openScalePanel();
+    calChip.onclick = () => openScalePanel(true);
 
     function reflectCalChip(){
       const mm = overlay.currentMarkerSizeMM && overlay.currentMarkerSizeMM();
@@ -772,9 +909,11 @@ window.CalibUI = (function(){
       const uncal = !(overlay.isCalibrated && overlay.isCalibrated());
       let text, label;
       const squared = paper && overlay._manualRef && overlay._manualRef.kind === 'squared';
-      if (squared)     { text = 'squared';  label = 'Scale: ruler line, squared up from the part\'s parallel sides (tilt-corrected) — tap to change'; }
-      else if (paper)  { text = 'paper';    label = 'Scale: from a sheet of paper (tilt-corrected) — tap to change'; }
-      else if (manual) { text = 'manual';   label = 'Scale: manual (from a known line) — tap to change'; }
+      // Named for what the user laid down — "manual" and "paper" were the code's words, and a
+      // ruler user never saw the word ruler anywhere on screen.
+      if (squared)     { text = 'ruler ✓ squared'; label = 'Scale: ruler line, squared up from the part\'s parallel sides (tilt-corrected) — tap to change'; }
+      else if (paper)  { text = 'rectangle'; label = 'Scale: from a rectangle of known size (tilt-corrected) — tap to change'; }
+      else if (manual) { text = 'ruler';    label = 'Scale: from a line along your ruler — tap to change'; }
       // "40 mm" on a photo with no scale read as if a scale were set (it is only the size a
       // printed square WOULD be): say what is actually true, and what the chip does.
       else if (uncal)  { text = 'Set scale'; label = 'No scale yet — tap to set one'; }
@@ -791,8 +930,8 @@ window.CalibUI = (function(){
     // The 3D part is assembled across photos, so its way in has to be visible on every photo
     // once it has begun — not only in the export menu, where nobody looked for it.
     const partChip = document.createElement('button');
-    partChip.type = 'button'; partChip.className = 'cal-icon'; partChip.id = 'cal-tb-part';
-    partChip.innerHTML = '<span class="cal-icon-emoji">🧩</span><span class="cal-icon-text"></span>';
+    partChip.type = 'button'; partChip.className = 'cal-icon cal-narrow-icon'; partChip.id = 'cal-tb-part';
+    partChip.innerHTML = '<span class="cal-icon-emoji">🧩</span><span class="cal-icon-text"></span><span class="cal-badge"></span>';
     partChip.onclick = () => window.CalibPart3D && window.CalibPart3D.open();
     let partSig = null;
     function reflectPartChip(){
@@ -802,6 +941,10 @@ window.CalibUI = (function(){
       partSig = sig;
       partChip.style.display = roles.length ? '' : 'none';
       partChip.querySelector('.cal-icon-text').textContent = `Build 3D part (${roles.length})`;
+      partChip.querySelector('.cal-badge').textContent = String(roles.length);
+      // Once a view is assigned, building the part IS the next step: the chip is the accented
+      // primary, not one grey icon among the file buttons.
+      partChip.classList.toggle('cal-btn-primary', roles.length >= 1);
       const label = 'Build the 3D part from its views: ' + roles.join(', ');
       partChip.setAttribute('data-tooltip', label); partChip.setAttribute('aria-label', label);
     }
@@ -945,12 +1088,15 @@ window.CalibUI = (function(){
     const ctxAuto = document.createElement('button'); ctxAuto.type = 'button'; ctxAuto.className = 'cal-ctx-finish';
     ctxAuto.innerHTML = '✨ Auto-trace'; ctxAuto.setAttribute('aria-label', 'Auto-detect the part outline — then tap the part');
     ctxAuto.onclick = () => { if (overlay.armAutoOutline) overlay.armAutoOutline(); reflect(); };
-    // A closed outline is a PROFILE. Give it a depth and it stops being a silhouette and
-    // becomes the solid — which, for extruded trim like a running board or a moulding, is
-    // the entire part. Only shown when a closed outline is selected, so it never adds noise.
+    // A closed outline is a PROFILE. Push it straight through by a thickness and it becomes
+    // the solid — for extruded trim, or a cover's top outline pushed to its height, that is
+    // the whole part. "Depth" read as "length of a running board" to someone who had traced
+    // the TOP, and invited ~700 mm where the cover is ~30 mm tall; Extrude and a question that
+    // works for any view say what it does. Only shown with a closed outline selected.
     const ctxDepth = document.createElement('button'); ctxDepth.type = 'button'; ctxDepth.className = 'cal-ctx-finish';
-    ctxDepth.innerHTML = '⇥ Depth'; ctxDepth.setAttribute('aria-label', 'Set how far this profile extrudes');
-    ctxDepth.title = 'How far this profile runs — turns the outline into a solid';
+    ctxDepth.id = 'cal-ctx-extrude';
+    ctxDepth.innerHTML = '⇥ Extrude'; ctxDepth.setAttribute('aria-label', 'Extrude: push this outline straight through by a thickness');
+    ctxDepth.title = 'Quick solid: push this outline straight through by a thickness';
     ctxDepth.onclick = () => {
       const prof = overlay.selectedProfile && overlay.selectedProfile();
       if (!prof) return;
@@ -960,10 +1106,10 @@ window.CalibUI = (function(){
         + 'background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:12px 14px;'
         + 'box-shadow:0 8px 24px rgba(0,0,0,.6);font:15px Segoe UI,system-ui,sans-serif;color:#eee;'
         + 'max-width:calc(100vw - 16px);';
-      const h = document.createElement('div'); h.textContent = 'How far does this profile run?';
+      const h = document.createElement('div'); h.textContent = 'How thick is the part, straight through this outline?';
       h.style.cssText = 'font-weight:700;margin-bottom:4px;';
       const sub = document.createElement('div');
-      sub.textContent = 'The length it is extruded along — e.g. the full length of a running board. '
+      sub.textContent = 'Traced from above: its height. Ends slope or round? Use 🧩 Use in 3D part. '
         + 'Leave blank to go back to a flat outline.';
       sub.style.cssText = 'font-size:12px;color:#9aa;margin-bottom:10px;max-width:34ch;';
       const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;';
@@ -1044,13 +1190,13 @@ window.CalibUI = (function(){
     ctxRefine.setAttribute('aria-label', 'Refine this outline: straight sides and rounded corners from the photo');
     ctxRefine.title = 'Straight sides on the part\'s edge, and each corner given the radius the photo shows';
     ctxRefine.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected('refine'); };
-    // Corrects the photo's tilt from the outline's two long sides, which are parallel on the
-    // part, and the scale line — no extra reference needed (square_up.py).
+    // Corrects the photo's tilt from the ruler's edges under the scale line, or — when none
+    // are found — the outline's two long sides, which are parallel on the part (square_up.py).
     const ctxSquare = document.createElement('button'); ctxSquare.type = 'button'; ctxSquare.className = 'cal-ctx-finish';
     ctxSquare.id = 'cal-ctx-squareup';
     ctxSquare.innerHTML = '⊞ Square up';
-    ctxSquare.setAttribute('aria-label', 'Square up the photo from this outline\'s two parallel sides');
-    ctxSquare.title = 'The part\'s long sides are parallel: correct the camera tilt from how they narrow in the photo';
+    ctxSquare.setAttribute('aria-label', 'Square up: correct the camera tilt using the ruler (or the part\'s sides)');
+    ctxSquare.title = 'Correct the camera tilt from your ruler\'s edges (or, without them, the part\'s long sides)';
     ctxSquare.onclick = () => { if (overlay.squareUp) overlay.squareUp(); };
     // A symmetric part comes back from a photo lopsided (light on one side, shadow on the
     // other); this averages the outline with its own mirror image.
@@ -1074,7 +1220,7 @@ window.CalibUI = (function(){
     [[ctxStraight, 'Each long side one straight line on the part\'s edge'],
      [ctxRefine, 'Straight sides, and corners rounded as the photo shows'],
      [ctxSym, 'Average with its mirror image, for a symmetric part'],
-     [ctxSquare, 'Correct the photo\'s tilt from the two long sides']].forEach(([b, sub]) => {
+     [ctxSquare, 'Correct camera tilt using the ruler (or the part\'s sides)']].forEach(([b, sub]) => {
       b.classList.add('show'); b.setAttribute('role', 'menuitem');
       b.style.cssText = 'display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;'
         + 'border-radius:10px;padding:9px 12px;min-height:44px;';
@@ -1097,7 +1243,47 @@ window.CalibUI = (function(){
     const onDocClickCloseTidy = (e) => { if (!tidyMenu.contains(e.target) && e.target !== ctxTidy && !ctxTidy.contains(e.target)) closeTidy(); };
     document.addEventListener('click', onDocClickCloseTidy);   // removed in _uiCleanup
     tidyMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeTidy(); ctxTidy.focus(); } });
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxTidy, ctxDepth, ctx3d, ctxFinish);
+    // ⋯ More (phone, with an outline selected): Delete, Not the part and Extrude fold into it
+    // so the row holds only the way forward — Tidy ▾ and Use in 3D part — in one 40 px row.
+    // The menu lists whichever of them would be showing, and runs the real button's action.
+    const ctxMore = document.createElement('button'); ctxMore.type = 'button';
+    ctxMore.className = 'cal-ctx-more'; ctxMore.id = 'cal-ctx-more';
+    // Just the glyph: at 390 px the row has ~306 px beside the zoom buttons, and Tidy ▾ plus
+    // Use in 3D part take ~250 of them — "⋯ More" ran half off the end.
+    ctxMore.innerHTML = '⋯';
+    ctxMore.title = 'More: Delete, Not the part, Extrude';
+    ctxMore.setAttribute('aria-label', 'More actions: delete, not the part, extrude');
+    ctxMore.setAttribute('aria-haspopup', 'menu'); ctxMore.setAttribute('aria-expanded', 'false');
+    const foldable = [ctxDelete, ctxNotPart, ctxDepth];
+    const moreMenu = document.createElement('div'); moreMenu.id = 'cal-more-menu'; moreMenu.setAttribute('role', 'menu');
+    moreMenu.style.cssText = tidyMenu.style.cssText;
+    document.body.appendChild(moreMenu);
+    function closeMore(){ moreMenu.style.display = 'none'; ctxMore.setAttribute('aria-expanded', 'false'); }
+    ctxMore.onclick = () => {
+      if (moreMenu.style.display === 'flex') return closeMore();
+      closeTidy();
+      moreMenu.textContent = '';
+      foldable.filter(b => b.classList.contains('show')).forEach(b => {
+        const item = document.createElement('button'); item.type = 'button'; item.setAttribute('role', 'menuitem');
+        item.className = b.className.replace(/\b(show|cal-ctx-folded)\b/g, '').trim();
+        item.textContent = b.textContent;
+        item.style.cssText = 'display:flex;align-items:center;width:100%;text-align:left;border:none;border-radius:10px;'
+          + 'padding:9px 12px;min-height:44px;font:700 14px Segoe UI,system-ui,sans-serif;cursor:pointer;';
+        item.onclick = (e) => { closeMore(); if (b.onclick) b.onclick(e); reflect(); };
+        moreMenu.appendChild(item);
+      });
+      moreMenu.style.display = 'flex';
+      const r = ctxMore.getBoundingClientRect(), m = moreMenu.getBoundingClientRect();
+      moreMenu.style.left = Math.max(8, Math.min(window.innerWidth - m.width - 8, r.left)) + 'px';
+      moreMenu.style.top = Math.max(8, r.top - m.height - 8) + 'px';
+      ctxMore.setAttribute('aria-expanded', 'true');
+      const first = moreMenu.querySelector('button'); if (first) setTimeout(() => first.focus(), 0);
+    };
+    const onDocClickCloseMore = (e) => { if (!moreMenu.contains(e.target) && !ctxMore.contains(e.target)) closeMore(); };
+    document.addEventListener('click', onDocClickCloseMore);   // removed in _uiCleanup
+    moreMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeMore(); ctxMore.focus(); } });
+    const narrowMq = window.matchMedia ? window.matchMedia('(max-width: 600px)') : null;
+    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxTidy, ctxDepth, ctx3d, ctxMore, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1126,11 +1312,15 @@ window.CalibUI = (function(){
     }
     function maybeShowCoach(){
       if (coachSeenMem) return;
+      // Simple mode's card already carries step 1 with its own Set scale button: the coach on
+      // top of it made two "no scale yet" prompts on the very first photo.
+      if (document.body.classList.contains('camscan-simple')) return;
       // A reopened saved side (tagged by the job loader) already has its scale set and the
       // customer's trace in place — the "set the scale, then measure" coach doesn't apply.
       try { if (rootEl && rootEl.getAttribute && rootEl.getAttribute('data-view-index') != null) return; } catch (e) {}
       let seen = false; try { seen = localStorage.getItem('calib.coachSeen') === '1'; } catch (e) {}
       if (seen) return;
+      dismissToast();
       coach = document.createElement('div'); coach.className = 'cal-coach';
       document.body.classList.add('cal-coach-up');   // its step 1 says what the banner does
       // Tapping the dimmed backdrop dismisses (so a user who follows "tap the photo" isn't
@@ -1139,13 +1329,13 @@ window.CalibUI = (function(){
       const card = document.createElement('div'); card.className = 'cal-coach-card';
       card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true'); card.setAttribute('aria-label', 'Getting started');
       card.innerHTML =
-        '<h3>📏 Measure in three steps</h3>' +
-        '<div class="cal-coach-step"><span class="n">1</span><span><b>Set the scale</b> (the 📐 chip up top): enter your square size, or measure a card / sheet of paper.</span></div>' +
-        '<div class="cal-coach-step"><span class="n">2</span><span>Pick a <b>measuring tool</b> from the toolbar.</span></div>' +
-        '<div class="cal-coach-step"><span class="n">3</span><span><b>Tap points</b> on the photo — real millimetres appear instantly.</span></div>';
+        '<h3>🧩 Photo to 3D part</h3>' +
+        '<div class="cal-coach-step"><span class="n">1</span><span><b>Set the scale</b> (📐) along the ruler: tap two marks along its middle and type the distance.</span></div>' +
+        '<div class="cal-coach-step"><span class="n">2</span><span><b>Trace the outline</b>: draw a box round the part, then tap it. Use <b>Tidy</b> to straighten it.</span></div>' +
+        '<div class="cal-coach-step"><span class="n">3</span><span><b>Use in 3D part</b> (Top, Side or End), then <b>Build 3D part</b> and download it.</span></div>';
       const acts = document.createElement('div'); acts.className = 'cal-coach-actions';
       const setBtn = document.createElement('button'); setBtn.type = 'button'; setBtn.className = 'cal-coach-secondary';
-      setBtn.textContent = '📐 Set the scale'; setBtn.onclick = () => openScalePanel();
+      setBtn.textContent = '📐 Set the scale'; setBtn.onclick = () => openScalePanel(true);
       const goBtn = document.createElement('button'); goBtn.type = 'button'; goBtn.className = 'cal-coach-primary';
       goBtn.textContent = 'Got it'; goBtn.onclick = () => dismissCoach();
       acts.append(setBtn, goBtn); card.appendChild(acts); coach.appendChild(card);
@@ -1159,6 +1349,7 @@ window.CalibUI = (function(){
     overlay._uiCleanup = () => {
       document.removeEventListener('click', onDocClickCloseSave);
       document.removeEventListener('click', onDocClickCloseTidy);
+      document.removeEventListener('click', onDocClickCloseMore);
       document.removeEventListener('camscan-job-changed', reflectPartChip);
     };
     // Let overlay-owned chrome (the KPI "Set a scale" chip) route through the one chooser.
@@ -1190,7 +1381,12 @@ window.CalibUI = (function(){
       if (window.CalibPart3D && window.CalibPart3D.syncSoon) window.CalibPart3D.syncSoon();
       if (prof) ctxDepth.innerHTML = prof.depth_mm > 0
         ? (`⇥ ${prof.depth_mm} mm` + (prof.wall_mm > 0 ? ` · ${prof.wall_mm} wall` : ''))
-        : '⇥ Depth';
+        : '⇥ Extrude';
+      // Phone with an outline selected: fold the secondary actions behind ⋯ More.
+      const fold = !!(prof && narrowMq && narrowMq.matches);
+      foldable.forEach(b => b.classList.toggle('cal-ctx-folded', fold));
+      ctxMore.classList.toggle('show', fold && foldable.some(b => b.classList.contains('show')));
+      if (!fold) closeMore();
       undo.disabled = !(overlay.canUndo && overlay.canUndo());
       redo.disabled = !(overlay.canRedo && overlay.canRedo());
       reflectCalChip();
