@@ -12,6 +12,8 @@ browser (tests/test_job_persist_e2e.py drives the same paths in Chromium):
   - re-assigning a role from the same photo keeps its rotate/flip/covers, and from another
     photo resets them;
   - removing a photo used by the part asks first (cancel keeps it), then flags the view;
+  - a photo removed while on screen is not stored again by a reload or an edit, only by a
+    label tap, which also clears its view's "photo removed" flag;
   - the guidance names the 3D views (Top / Side / End) and puts the ruler on the face.
 
 Plain python; needs node. Prints one [PASS]/[FAIL] line per check and UNIT_RESULT.
@@ -86,6 +88,16 @@ const J = window.CalibJob;
   out.afterOk = { n: J.count(), side: J.part().views.side.photo_removed === true,
                   top: J.part().views.top.photo_removed === true, end: !!J.part().views.end.photo_removed,
                   pts: J.part().views.side.points.length };
+  // Removing the photo ON SCREEN (the second one, which holds End): the overlay still has it,
+  // with marks and a 3D view, yet neither a reload nor an edit may store it again.
+  ov.ann.items.push({ id: 1, type: 'polyline' });
+  out.removeOnScreen = J.removeView(0);
+  await J.beforeReload();
+  out.afterReload = { n: J.count(), flag: J.part().views.end.photo_removed === true,
+                      edit: J.captureCurrent(), n2: J.count() };
+  // A label tap brings it back, and its End view follows it again.
+  out.readd = { ok: J.captureCurrent('End', true), n: J.count(), flag: !!J.part().views.end.photo_removed,
+                stored: J.isCurrentStored() };
   console.log(JSON.stringify(out));
   process.exit(0);                                          // the module's timers would keep node alive
 })().catch(e => { console.log(JSON.stringify({ error: String(e && e.stack || e) })); process.exit(0); });
@@ -135,6 +147,14 @@ def main():
     check("confirming removes the photo and flags only its views",
           o["removeOk"] is True and ao["n"] == 1 and ao["side"] and ao["top"] and not ao["end"]
           and ao["pts"] == 3, f"{ao}")
+
+    ar = o["afterReload"]
+    check("a photo removed while on screen stays removed through a reload and an edit",
+          o["removeOnScreen"] is True and ar["n"] == 0 and ar["flag"] and ar["edit"] is False
+          and ar["n2"] == 0, f"{ar}")
+    rd = o["readd"]
+    check("a label tap re-adds the removed photo and clears its 'photo removed' flag",
+          rd["ok"] is True and rd["n"] == 1 and not rd["flag"] and rd["stored"], f"{rd}")
 
     src = (ROOT / "assets" / "calib.job.js").read_text(encoding="utf-8")
     rec = src[src.index("var RECOMMENDED"):src.index("var EXTRA_LABELS")]

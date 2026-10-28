@@ -247,6 +247,11 @@
   function captureCurrent(label, force){
     var o=overlay();
     if(!o || !o.img || !overlayIsCurrent()) return false;
+    // A photo the user removed while it was on screen stays removed: its marks and its 3D
+    // view still read as "something to keep", so the next reload, New or edit used to store
+    // it again — while its view went on saying "photo removed". Only a label tap brings it back.
+    var gone = (o.__jobRemoved && o.__jobRemoved.img === o.img) ? o.__jobRemoved : null;
+    if(gone && !force) return false;
     var idx=currentOpenIndex();
     if(idx!=null){
       if(label && label!==job.views[idx].label && isDefaultLabel(job.views[idx].label)) job.views[idx].label=label;
@@ -261,7 +266,27 @@
     // photoId() is the upload's own id both before and after this (the stored entry keeps it
     // as its sourceId, and currentOpenIndex() finds the entry by it), so a 3D view assigned
     // from this photo still points at it.
-    return addView(label)!==false && currentOpenIndex()!=null;
+    if(addView(label)===false) return false;
+    if(gone) restoreRemoved(gone);
+    return currentOpenIndex()!=null;
+  }
+  // Bring back a removed photo the user re-added: it answers to its old keys again, so the 3D
+  // views taken from it follow it and stop saying "photo removed".
+  function restoreRemoved(gone){
+    var o=overlay(); if(o) o.__jobRemoved=null;
+    var last=job.views.length-1, e=job.views[last];
+    if(!e || (currentOpenIndex()!=null && currentOpenIndex()!==last)) return;
+    if(gone.photoKey && !e.photoKey) e.photoKey=gone.photoKey;
+    // A reopened side's inline data: id is never matched (see currentOpenIndex), so it is
+    // found by position again, as when it was opened.
+    var el=document.querySelector('.cal-view');
+    if(currentOpenIndex()==null && el && String(e.sourceId||'').indexOf('data:')===0) el.setAttribute('data-view-index', String(last));
+    var keys=entryKeys(gone).concat(entryKeys(e));
+    var pv=job.part3d && job.part3d.views;
+    if(pv) ['top', 'side', 'end', 'cavity'].forEach(function(r){
+      if(pv[r] && keys.indexOf(pv[r].source)>=0) delete pv[r].photo_removed;
+    });
+    save(); changed();
   }
 
   function removeView(i){
@@ -269,6 +294,7 @@
     // once the photo is gone, and the Build dialog would go on saying it "follows its outline".
     // Ask, then flag it (calib.part3d.js shows the flag).
     var e=job.views[i];
+    var onScreen=(currentOpenIndex()===i);
     var roles=entryRoles(e);
     if(roles.length){
       var names=roles.map(function(r){ return ROLE_LABEL[r]; }).join(' and ');
@@ -276,6 +302,11 @@
       roles.forEach(function(r){ job.part3d.views[r].photo_removed=true; });
     }
     job.views.splice(i,1);
+    // The overlay still holds the photo when it was the one on screen: remember it, or the
+    // next capture (reload, New, autosave) would quietly store it again. A new photo or
+    // another side boots a new overlay, which forgets this.
+    var o=overlay();
+    if(onScreen && o && o.img) o.__jobRemoved={ img: o.img, sourceId: e && e.sourceId || null, photoKey: e && e.photoKey || null };
     // A reopened side is tracked by a POSITIONAL data-view-index; the splice shifts every
     // later index, so re-sync the open overlay's tag — otherwise a later syncOpenView/addView
     // writes the open side's record over the WRONG (shifted) view and loses data.

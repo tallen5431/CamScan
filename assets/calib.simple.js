@@ -57,7 +57,13 @@
   function ensureToggle(){
     if(toggleBtn) return;
     toggleBtn=document.createElement('button'); toggleBtn.id='cal-simple-toggle'; toggleBtn.textContent='◂ Simple view';
-    toggleBtn.onclick=function(){ setSimple(true); applyMode(true); };
+    // Leave the tool in hand first: the poll below drops simple mode while one is (placing()),
+    // so from mid-trace or mid-scale the toggle was undone within half a second.
+    toggleBtn.onclick=function(){
+      var o=overlay();
+      if(o && placing(o)){ o._autoOutlineArm=false; try{ if(o.setMode) o.setMode('select'); else o.opts.mode='select'; }catch(e){} }
+      setSimple(true); applyMode(true);
+    };
     document.body.appendChild(toggleBtn);
   }
 
