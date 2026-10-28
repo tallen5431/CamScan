@@ -193,7 +193,9 @@
 
       // --- wiring --------------------------------------------------------------
       requestDraw(){ if(this._destroyed || this._rAF) return; this._rAF=requestAnimationFrame(()=>{ this._rAF=0; if(!this._destroyed) this.redraw(); }); }
-      setMode(m){ this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
+      // A tool change disarms a pending auto-trace tap (a failed trace leaves it armed), so
+      // choosing the Outline tool by hand later places dots, as it says.
+      setMode(m){ if(m!==this.opts.mode) this._autoOutlineArm=false; this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       fitToContainer(){ this.vp.fit(this.canvas, this.img); this._fitK=this.vp.k; this.requestDraw(); }
@@ -279,6 +281,10 @@
             const hit = Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
             this.ann.selectedId = hit ? hit.id : this.ann.selectedId;
             this.drag = hit ? this._makeDragHandle(hit, pt) : null;
+            // Area mode on empty photo: a press may be the start of a drag-out box. Only the
+            // first finger of a fresh box (a second finger turns the gesture into a pinch).
+            this._rectDrag = (!hit && this.opts.mode==='rectangle' && !this.selectedPoints.length && !this._bgTapArm)
+              ? { start:[pt[0],pt[1]], id:ev && ev.pointerId, live:false } : null;
             // Remember the pre-drag state; it is committed to history only if the
             // drag actually moves the geometry (see _updateDrag), so a plain
             // select-click doesn't pollute the undo stack.
@@ -292,6 +298,15 @@
               this.selectedPoints[this._selDrag] = this.opts.snap ? this._maybeSnap(pt) : pt;
               return this.requestDraw();
             }
+            // Drag-out Area box: past 5 css px it is a drag, and the rubber band follows the
+            // finger (drawn by _drawPreview from the start point plus hover).
+            const rd=this._rectDrag;
+            if(rd){
+              const cssMoved=Math.hypot(pt[0]-rd.start[0], pt[1]-rd.start[1])*this.vp.k/(this.vp.dpr||1);
+              if(!rd.live && cssMoved>5){ rd.live=true; this.selectedPoints=[rd.start]; }
+              if(rd.live){ this.hover = this.opts.snap ? this._maybeSnap(pt) : pt; this.requestDraw(); }
+              return;
+            }
             if(!this.drag) return;
             if(!this._dragPushed && this._preDragSnapshot){
               this._undoStack.push(this._preDragSnapshot);
@@ -302,7 +317,21 @@
             this._updateDrag(this.opts.snap ? this._maybeSnap(pt, this.drag && this.drag.item) : pt);
             this.requestDraw();
           },
-          onUp: ()=>{ this.drag=null; this._selDrag=null; },
+          onUp: (pt, ev)=>{
+            this.drag=null; this._selDrag=null;
+            const rd=this._rectDrag; this._rectDrag=null;
+            if(!rd || !rd.live) return;
+            // A second finger (pinch) or a cancelled gesture is not the end of the box.
+            const same = !ev || rd.id==null || ev.pointerId===rd.id;
+            if(!same || (ev && ev.type==='pointercancel') || !Array.isArray(pt)){ this.selectedPoints=[]; this.hover=null; return this.requestDraw(); }
+            const b=this.opts.snap ? this._maybeSnap(pt) : pt;
+            const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
+            this._pushHistory(); Ann.addRectangle(this.ann, rd.start, b, mm, this.opts.units, this.opts.lockMarkerId);
+            this.selectedPoints=[]; this.hover=null;
+            // A short drag (5-9 css px) still ends in the gesture layer's click: not a new corner.
+            this._suppressClick=true;
+            this.requestDraw();
+          },
           onClick: (pt)=>{
             // A press that only grabbed a placed point (no move) must not also place a
             // new one. _suppressClick is reset every onDown, so it can't leak.
@@ -471,7 +500,15 @@
               // thus this very canvas box — firing us back. Re-fitting on that self-caused
               // tick creates a feedback loop (and, mid-drag, a visible zoom/pan jump), so
               // absorb it: refresh the backing store to stay crisp, but do NOT re-fit.
-              if(this._suppressRefit){ this._suppressRefit=false; this.vp._updateBackingStore(); this.requestDraw(); return; }
+              // Except when the view is still at fit: the strip growing (the scale chips arrive
+              // once a scale is set) shortens the canvas, and an unrefit photo then ran ~50 css
+              // px past its bottom on a phone, the end of the part hidden behind the tool grid.
+              // Strip height does not depend on canvas size, so the refit cannot loop.
+              if(this._suppressRefit){
+                this._suppressRefit=false;
+                if(Math.abs(this.vp.k - this._fitK) < 1e-4 && !this.drag && this._selDrag==null) return this._onBoxResize();
+                this.vp._updateBackingStore(); this.requestDraw(); return;
+              }
               this._onBoxResize();
             });
           });
@@ -504,6 +541,7 @@
         // the worst — it carries a live listener bound to THIS (now dead) overlay, so a stray
         // drag would fire retraceDetail() on a discarded store. Retire them all here.
         try{ this._dismissTraceDetail(); }catch(e){}
+        try{ window.CalibToast && window.CalibToast.dismiss(); }catch(e){}
         if(this._armToast){ try{ this._armToast.dismiss(); }catch(e){} this._armToast=null; }
         ['cal-scale-input', 'cal-rect-input', 'cal-verify', 'cal-paper-offer', 'cal-quality']
           .forEach(id=>{ const n=document.getElementById(id); if(n) n.remove(); });
@@ -610,12 +648,11 @@
 
         c.drawImage(this.img,0,0);
         if(this.opts.showGrid) Draw.drawGrid(c, this.img.width, this.img.height);
-        // An unconfirmed "square-ish shape" stops being worth drawing once the user has set a
-        // scale of their own: it was only ever a candidate, and outlined in the reference
-        // colour it reads as if it were still the scale.
-        const ownScale = this.opts.manualMmPerPx || this.opts.manualHomography;
+        // An unconfirmed "square-ish shape" is not drawn at all: it is not the scale, and in the
+        // reserved reference colour with four big handles it read as if it were — on a
+        // customer's top photo, a magenta quad on the concrete before any scale was set.
         const unconfirmed = this.data && this.data.calibration_usable===false && !this._markerConfirmed;
-        if(this.opts.showMarkers && !(ownScale && unconfirmed)) Draw.drawMarkers(c, this.canvas, this.data, this.opts.linePx);
+        if(this.opts.showMarkers && !unconfirmed) Draw.drawMarkers(c, this.canvas, this.data, this.opts.linePx, { confirmed:!!this._markerConfirmed });
         if(Draw.resetLabels) Draw.resetLabels();   // start a fresh label-placement frame
         this._drawAnnotations();
         this._drawPreview();
@@ -698,7 +735,7 @@
               if(closed){
                 const unit=Units.get(this.opts.units);
                 label = this.isCalibrated()
-                  ? `⬡ peri ${this._fmtLen(mm, pxLen)} · A ${unit.areaFromMM2(Measure.polygonArea(mctx, pts)).toFixed(1)} ${unit.areaLabel}`
+                  ? `⬡ peri ${this._fmtLen(mm, pxLen)} · A ${unit.areaFromMM2(Measure.polygonArea(mctx, pts)).toFixed(this._areaDp(unit))} ${unit.areaLabel}`
                   : `⬡ outline`;
               }
               // Anchor the label above the shape's bounding box (top-centre), NOT on a middle
@@ -717,7 +754,8 @@
             c.lineWidth=sel?selW:linePx; c.strokeStyle=sel?C.selected:C.rectangle; c.strokeRect(x1,y1,x2-x1,y2-y1);
             let rlabel;
             if(this.isCalibrated()){
-              rlabel = `${unit.fromMM(rm.w).toFixed(3)}×${unit.fromMM(rm.h).toFixed(3)} ${unit.label} • A ${unit.areaFromMM2(rm.area).toFixed(3)} ${unit.areaLabel}`;
+              const dp=this._lenDp(unit);
+              rlabel = `${unit.fromMM(rm.w).toFixed(dp)}×${unit.fromMM(rm.h).toFixed(dp)} ${unit.label} • A ${unit.areaFromMM2(rm.area).toFixed(this._areaDp(unit))} ${unit.areaLabel}`;
             }else{
               const pw=Math.abs(x2-x1), ph=Math.abs(y2-y1);
               rlabel = `${Math.round(pw)}×${Math.round(ph)} px • A ${Math.round(pw*ph)} px²`;
@@ -758,9 +796,9 @@
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(a[0],a[1]); c.lineTo(b[0],b[1]); c.stroke(); c.restore();
           const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
           if(this.opts.mode==='setscale'){
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — click 2nd point`, this._lblScale());
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `set scale — tap 2nd point`, this._lblScale());
           } else if(this.opts.mode==='verifyscale'){
-            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `verify — click 2nd point`, this._lblScale());
+            Draw.boxLabel(c, this.canvas, mid[0], mid[1], `verify — tap 2nd point`, this._lblScale());
           } else {
             const mm=Measure.length(this._measureCtx(null), a[0],a[1], b[0],b[1]);
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this._lblScale());
@@ -906,16 +944,16 @@
               if(a.depth_mm>0){
                 const d=unit.fromMM(a.depth_mm), vol=unit.areaFromMM2(Measure.polygonArea(ctx,pts))*d;
                 return {label:'Extrusion',
-                        text:`profile ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel} · extruded ${d.toFixed(2)} ${unit.label} · vol ${vol.toFixed(1)} ${unit.areaLabel}·${unit.label}`,
+                        text:`profile ${this._fmtLen(mm,px)} · A ${ar.toFixed(this._areaDp(unit))} ${unit.areaLabel} · extruded ${d.toFixed(2)} ${unit.label} · vol ${vol.toFixed(1)} ${unit.areaLabel}·${unit.label}`,
                         copy:d.toFixed(3)};
               }
-              return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
+              return {label:'Outline', text:`peri ${this._fmtLen(mm,px)} · A ${ar.toFixed(this._areaDp(unit))} ${unit.areaLabel}`, copy:unit.fromMM(mm).toFixed(3)}; }
             let pa=0; for(let i=0;i<pts.length;i++){ const q0=pts[i], q1=pts[(i+1)%pts.length]; pa+=q0[0]*q1[1]-q1[0]*q0[1]; } pa=Math.abs(pa)/2;
             return {label:'Outline', text:`peri ${Math.round(px)} px · A ${Math.round(pa)} px²`, copy:String(Math.round(px))};
           }
           return {label:'Path', text:this._fmtLen(mm,px), copy:cal?unit.fromMM(mm).toFixed(3):String(Math.round(px))}; }
         if(a.type==='rectangle'){ const [x1,y1,x2,y2]=a.rect; const rm=Measure.rect(ctx,x1,y1,x2,y2);
-          if(cal){ const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); return {label:'Rect', text:`${w.toFixed(3)}×${h.toFixed(3)} ${unit.label} · A ${ar.toFixed(3)} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
+          if(cal){ const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); const dp=this._lenDp(unit); return {label:'Rect', text:`${w.toFixed(dp)}×${h.toFixed(dp)} ${unit.label} · A ${ar.toFixed(this._areaDp(unit))} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
           const pw=Math.abs(x2-x1),ph=Math.abs(y2-y1); return {label:'Rect', text:`${Math.round(pw)}×${Math.round(ph)} px · A ${Math.round(pw*ph)} px²`, copy:`${Math.round(pw)}x${Math.round(ph)}`}; }
         if(a.type==='angle'){ const ang=Measure.angle(ctx,a.a,a.v,a.b); return {label:'Angle', text:`${ang.toFixed(2)}°`, copy:ang.toFixed(2)}; }
         if(a.type==='circle'){ const cm=Measure.circle(ctx, a); let t=this._fmtLen(cm.diameterMM, 2*a.radius);
@@ -1013,8 +1051,14 @@
         const a = (id != null) ? this.ann.items.find(it => it.id === id && it.type === 'polyline' && it.closed)
                                : this.selectedProfile();
         if(!a) return null;
+        // No scale, no profile. The DXF builder falls back to 1 mm/px, and a view synced from
+        // that (Clear, to redo the scale) went from 200x90 to 400x180 "mm" with no warning.
+        // (An unconfirmed candidate's mm_per_px is no scale either: _scaleForPoint refuses it.)
+        const candidate = this.data && this.data.calibration_usable===false && !this._markerConfirmed;
+        const scale = this.getScale() || (candidate ? 0 : (this.data?.mm_per_px || 0));
+        if(!(scale > 0) && !this.opts.manualHomography) return null;
         const req = Xport._buildDXFRequest(this._dataForMeasure(), { items:[a] },
-                      { image_height:this._imgH(), mm_per_px:this.getScale()||this.data?.mm_per_px||0,
+                      { image_height:this._imgH(), mm_per_px:scale,
                         allowHomography:this._allowHomography() });
         const g = (req.geometry||[]).find(x => x && x.type==='polyline' && x.closed);
         if(!g || !Array.isArray(g.points) || g.points.length < 3) return null;
@@ -1069,7 +1113,7 @@
         try{ return Xport.renderAnnotatedDataURL(this.img, this._dataForMeasure(), this._exportStore(),
                  { showGrid:this.opts.showGrid, showMarkers:this.opts.showMarkers, units:this.opts.units,
                    labelScale:this.opts.labelScale, linePx:this.opts.linePx,
-                   allowHomography:this._allowHomography(), maxDim:maxDim||1600 }); }
+                   allowHomography:this._allowHomography(), maxDim:maxDim||1600, markerConfirmed:!!this._markerConfirmed }); }
         catch(e){ return null; }
       }
       // One view's complete record for the submission packet.
@@ -1246,12 +1290,17 @@
       // Format a length/area for a label: real units when calibrated, raw PIXELS
       // otherwise — so an uncalibrated measurement reads as "128 px", never a fake
       // "0.000 mm" that looks like a genuine zero-length result.
+      // On screen, lengths to 0.1 mm and areas to whole mm² (or the same step in cm / in): a
+      // photo measures to about a millimetre, and '155.536×564.446 mm · A 87791.898 mm²'
+      // claimed a thousand times that. CSV and copy keep full precision.
+      _lenDp(u){ return ({mm:1, cm:2, in:3})[u.label] ?? 3; }
+      _areaDp(u){ return ({mm:0, cm:2, in:3})[u.label] ?? 3; }
       _fmtLen(mm, pxDist){
-        if(this.isCalibrated()){ const u=Units.get(this.opts.units); return `${u.fromMM(mm).toFixed(3)} ${u.label}`; }
+        if(this.isCalibrated()){ const u=Units.get(this.opts.units); return `${u.fromMM(mm).toFixed(this._lenDp(u))} ${u.label}`; }
         return `${Math.round(pxDist)} px`;
       }
       _fmtArea(mm2, pxArea){
-        if(this.isCalibrated()){ const u=Units.get(this.opts.units); return `${u.areaFromMM2(mm2).toFixed(3)} ${u.areaLabel}`; }
+        if(this.isCalibrated()){ const u=Units.get(this.opts.units); return `${u.areaFromMM2(mm2).toFixed(this._areaDp(u))} ${u.areaLabel}`; }
         return `${Math.round(pxArea)} px²`;
       }
 
@@ -1378,13 +1427,14 @@
           update(m, kind){
             if(!gone && !el.parentNode){
               if(window.__calLastToast && window.__calLastToast.parentNode) window.__calLastToast.parentNode.removeChild(window.__calLastToast);
-              document.body.appendChild(el); window.__calLastToast=el;
+              document.body.appendChild(el); window.__calLastToast=el; window.__calLastToastApi=api;
               follow();
             }
             place();
             text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
           dismiss(){ gone=true; clearInterval(placer); if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
         };
+        window.__calLastToastApi=api;   // CalibToast.dismiss() reaches it (and its placer)
         if(opts.autoMs) timer=setTimeout(api.dismiss, opts.autoMs);
         return api;
       }
@@ -1445,28 +1495,63 @@
         // clutter, a large cast shadow, or a nearby object can't derail the trace.
         this._lastAutoRoi = this._roiForSeed(this._lastAutoSeed);
         if(!(this._autoSimplify > 0)) this._autoSimplify = 0.0006;   // default detail level
-        this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, false);
+        // Tracing the same part again — the success message's own advice for a missed shadow
+        // is "draw an Area box round the part, then tap it again" — must replace the first
+        // outline, not stack a second one over it that then has to be told apart by its edges
+        // and deleted by hand. Same part: the tap is inside the last outline, or the new Area
+        // box holds it.
+        const replace = this._samePartAsLastTrace(this._lastAutoSeed, this._lastAutoRoi);
+        this._runAutoTrace(this._lastAutoSeed, this._autoSimplify, replace, true);
+      }
+
+      // Whether a new trace at `seed` (inside Area box `roi`, if any) is of the part the last
+      // auto-trace outlined, while that outline is still on the photo.
+      _samePartAsLastTrace(seed, roi){
+        const t=this._tracedOuter, ids=this._autoAddedIds||[];
+        if(!t || !ids.includes(t.id)) return false;
+        const outer=this.ann.items.find(a=>a.id===t.id && a.type==='polyline');
+        if(!outer || !Array.isArray(outer.pts) || outer.pts.length<3) return false;
+        if(this._inPoly(seed, outer.pts)) return true;
+        if(Array.isArray(roi) && roi.length===4){
+          const xs=outer.pts.map(p=>p[0]), ys=outer.pts.map(p=>p[1]);
+          return Math.min.apply(null,xs)>=roi[0] && Math.max.apply(null,xs)<=roi[0]+roi[2] &&
+                 Math.min.apply(null,ys)>=roi[1] && Math.max.apply(null,ys)<=roi[1]+roi[3];
+        }
+        return false;
+      }
+      _inPoly(p, poly){
+        if(!Array.isArray(p)) return false;
+        let inside=false;
+        for(let i=0, j=poly.length-1; i<poly.length; j=i++){
+          const [xi,yi]=poly[i], [xj,yj]=poly[j];
+          if(((yi>p[1])!==(yj>p[1])) && (p[0] < (xj-xi)*(p[1]-yi)/((yj-yi)||1e-12)+xi)) inside=!inside;
+        }
+        return inside;
       }
 
       // Pick the Area (rectangle) annotation to use as the trace ROI: the smallest box that
-      // contains the seed, or — if the seed is off any box / absent — the smallest box overall.
-      // Returns [x, y, w, h] in image coords, or null when no usable box is drawn.
+      // contains the seed. A box the tap is not inside is an ordinary Area measurement
+      // somewhere else on the photo, not a region round this part, so it is neither sent nor
+      // touched. Returns [x, y, w, h] in image coords, or null when no box holds the seed.
       _roiForSeed(seed){
         try{
           const norm=r=>{ const x1=Math.min(r[0],r[2]), y1=Math.min(r[1],r[3]),
                                 x2=Math.max(r[0],r[2]), y2=Math.max(r[1],r[3]);
                           return [x1, y1, x2-x1, y2-y1]; };
+          this._lastAutoRoiId=null;
           let cands=((this.ann && this.ann.items) || [])
             .filter(a=>a && a.type==='rectangle' && Array.isArray(a.rect) && a.rect.length===4)
-            .map(a=>norm(a.rect)).filter(b=>b[2]>4 && b[3]>4);
+            .map(a=>({ b:norm(a.rect), a:a })).filter(c=>c.b[2]>4 && c.b[3]>4);
+          if(!Array.isArray(seed)) return null;
+          cands=cands.filter(c=>seed[0]>=c.b[0] && seed[0]<=c.b[0]+c.b[2] &&
+                                seed[1]>=c.b[1] && seed[1]<=c.b[1]+c.b[3]);
           if(!cands.length) return null;
-          if(Array.isArray(seed)){
-            const inside=cands.filter(b=>seed[0]>=b[0] && seed[0]<=b[0]+b[2] &&
-                                         seed[1]>=b[1] && seed[1]<=b[1]+b[3]);
-            if(inside.length) cands=inside;
-          }
-          cands.sort((a,b)=>a[2]*a[3]-b[2]*b[3]);   // most specific (smallest) box wins
-          return cands[0];
+          cands.sort((p,q)=>p.b[2]*p.b[3]-q.b[2]*q.b[3]);   // most specific (smallest) box wins
+          // Only remembered here: the box stays an ordinary measurement until the trace inside
+          // it succeeds, and only then is it removed (see _runAutoTrace), so a failed trace
+          // leaves it exactly as drawn and undo brings it back as the user's rectangle.
+          this._lastAutoRoiId=cands[0].a.id;
+          return cands[0].b;
         }catch(e){ return null; }
       }
 
@@ -1512,13 +1597,18 @@
                                              fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) } };
       }
 
-      _runAutoTrace(seed, simplify, isRetrace){
+      // isRetrace: replace what the last auto-trace added (Detail slider, Not the part, or a
+      // tap on the same part again). fromTap: the user tapped the photo to start this one, so
+      // the messages are a fresh trace's and a failure leaves the tool armed for another tap.
+      _runAutoTrace(seed, simplify, isRetrace, fromTap){
         if(!this.img){ return; }
         const self=this;
         const req=this._traceRequest(seed, simplify);
         if(!req) return;
         const sentScale=req.sentScale;
-        const toast=this._toast(isRetrace ? 'Re-tracing…' : 'Finding the outline…');
+        const fresh = !isRetrace || !!fromTap;
+        const roiId = this._lastAutoRoi ? this._lastAutoRoiId : null;
+        const toast=this._toast(fresh ? 'Finding the outline…' : 'Re-tracing…');
         // A photo whose colours mislead the quick trace falls back to a careful one that takes
         // several seconds (6-10 s measured on real customer photos). Say so, so it never
         // looks hung.
@@ -1531,16 +1621,31 @@
               const mm=self.getScale() || (self.data && self.data.mm_per_px) || 0;
               self._pushHistory();
               // On a re-trace, remove what the previous auto-trace added so a detail change
-              // REPLACES the outline + holes instead of stacking new geometry on top.
+              // REPLACES the outline + holes instead of stacking new geometry on top. The new
+              // outline takes over the old one's id (and the holes theirs, in order, when the
+              // count matches): a 3D-part view follows its outline by id, and with a fresh id a
+              // nudge of the Detail slider after assigning it cut the view loose — it kept the
+              // old copy, ignored a later scale change and said its outline was deleted.
+              let oldOuter=null, oldHoles=[];
               if(isRetrace && Array.isArray(self._autoAddedIds) && self._autoAddedIds.length){
                 const ids=new Set(self._autoAddedIds);
+                const t=self._tracedOuter;
+                if(t && ids.has(t.id) && self.ann.items.some(a=>a.id===t.id)) oldOuter=t.id;
+                oldHoles=self._autoAddedIds.filter(id=>id!==oldOuter && self.ann.items.some(a=>a.id===id));
                 self.ann.items = self.ann.items.filter(function(a){ return !ids.has(a.id); });
               }
+              // A successful trace inside an Area box has used it up: the box goes in the same
+              // undo step (after the snapshot above, so undo restores it untouched), and tap,
+              // box, tap leaves the one outline and nothing else.
+              if(roiId!=null) self.ann.items = self.ann.items.filter(function(a){ return !(a.id===roiId && a.type==='rectangle'); });
               self._autoAddedIds = [];
               const pts=j.points.map(p=>[p[0]/sentScale, p[1]/sentScale]);   // back to image coords
               Ann.addPolyline(self.ann, pts, mm, self.opts.units, self.opts.lockMarkerId, true);
-              self._autoAddedIds.push(self.ann.selectedId);
-              self._tracedOuter={ id:self.ann.selectedId, json:JSON.stringify(self.ann.items[self.ann.items.length-1].pts) };
+              if(oldOuter!=null){ self.ann.items[self.ann.items.length-1].id=oldOuter; self.ann.selectedId=oldOuter; }
+              const outerId=self.ann.selectedId;
+              self._autoAddedIds.push(outerId);
+              self._tracedOuter={ id:outerId, json:JSON.stringify(self.ann.items[self.ann.items.length-1].pts) };
+              const newHoles=[];
               let nPts=pts.length, nHoles=0;
               // Interior holes come back typed: a round bore as a TRUE circle (perfect in the
               // DXF), a hex / 12-point socket or slot as a corner-kept polygon. Each is added
@@ -1549,16 +1654,19 @@
                 if(h && h.shape==='circle' && h.r>0){
                   const c=[h.cx/sentScale, h.cy/sentScale], edge=[c[0]+h.r/sentScale, c[1]];
                   Ann.addCircle(self.ann, c, edge, mm, self.opts.units, self.opts.lockMarkerId);
-                  self._autoAddedIds.push(self.ann.selectedId); nHoles++;
+                  newHoles.push(self.ann.items[self.ann.items.length-1]); nHoles++;
                 }else{
                   const raw=(h && Array.isArray(h.points)) ? h.points : (Array.isArray(h) ? h : null);
                   if(raw && raw.length>=3){
                     const hp=raw.map(p=>[p[0]/sentScale, p[1]/sentScale]);
                     Ann.addPolyline(self.ann, hp, mm, self.opts.units, self.opts.lockMarkerId, true);
-                    self._autoAddedIds.push(self.ann.selectedId); nPts+=hp.length; nHoles++;
+                    newHoles.push(self.ann.items[self.ann.items.length-1]); nPts+=hp.length; nHoles++;
                   }
                 }
               });
+              if(oldHoles.length && oldHoles.length===newHoles.length) newHoles.forEach(function(h, i){ h.id=oldHoles[i]; });
+              newHoles.forEach(function(h){ self._autoAddedIds.push(h.id); });
+              self.ann.selectedId = newHoles.length ? newHoles[newHoles.length-1].id : outerId;
               self.setMode('select'); self.requestDraw();
               const tail = nHoles ? (' + '+nHoles+' hole'+(nHoles>1?'s':'')) : '';
               // A shadow across the part is what the plain trace misses most, and the fix is one
@@ -1566,18 +1674,30 @@
               // "not the part", and the shadowed end comes back (see auto_outline._segment).
               const boxed = !!self._lastAutoRoi;
               toast.update('Outline'+tail+' traced'+(boxed ? ' inside your Area box' : '')+' — drag any dot to fix it'+
-                (boxed || isRetrace ? ', or use the Detail slider.'
-                                    : '. Missed a part in shadow? Draw an Area box round the part, then tap it again.'), 'ok');
-              setTimeout(toast.dismiss, isRetrace ? 1400 : (boxed ? 2800 : 6000));
+                (boxed || !fresh ? ', or use the Detail slider.'
+                                 : '. Missed a part in shadow? Draw an Area box round the part, then tap it again.'), 'ok');
+              setTimeout(toast.dismiss, !fresh ? 1400 : (boxed ? 2800 : 6000));
               self._showTraceDetail(nPts, nHoles);
             }else{
               // The server says WHY when it can be specific (a trace covering the whole frame
-              // means the tap had no edge to find); fall back to the generic advice otherwise.
-              const why = (j && typeof j.hint === 'string' && j.hint) ? j.hint
-                        : (isRetrace ? 'Re-trace found nothing — try a different detail level.'
-                                     : 'No part found there — tap right on the part, or trace it by hand.');
+              // means the tap had no edge to find); otherwise the advice that works on a dark
+              // part in shadow: the tap was usually right on the part (a customer's top photo
+              // failed from a tap in the middle of the cover) and an Area box round it traced it.
+              const hint = (j && typeof j.hint === 'string' && j.hint) ? j.hint : null;
+              const why = hint || (fresh ? 'Couldn\'t separate the part from the background here. Draw a box round the part (▭ Area), then tap it again.'
+                                         : 'Re-trace found nothing — try a different detail level.');
               toast.update(why, 'err');
-              setTimeout(toast.dismiss, (j && j.hint) ? 6000 : 3400);
+              if(fresh && !self._destroyed){
+                // Still armed: the next tap traces again. It used to drop silently into placing
+                // hand-trace dots, joined by a dashed line, with nothing on screen saying so.
+                if(self.opts.mode!=='outline') self.setMode('outline');
+                self._autoOutlineArm=true;
+                if(self._armToast && self._armToast!==toast) self._armToast.dismiss();
+                self._armToast=toast;
+                setTimeout(function(){ toast.dismiss(); if(self._armToast===toast) self._armToast=null; }, 9000);
+              }else{
+                setTimeout(toast.dismiss, hint ? 6000 : 3400);
+              }
             }
           })
           .catch(function(){ clearTimeout(slowNote); toast.update('Auto-trace unavailable — trace by hand instead.', 'err'); setTimeout(toast.dismiss, 3000); });
@@ -1592,18 +1712,21 @@
         let el=document.getElementById('cal-trace-detail');
         if(!el){
           el=document.createElement('div'); el.id='cal-trace-detail';
+          // Wraps on a phone: as one fixed row it needed ~460 px, and on a 390 px screen its
+          // Done ran off the right edge (measured: 350-407 px).
           el.style.cssText='position:fixed;left:50%;bottom:132px;transform:translateX(-50%);z-index:60;'+
-            'display:flex;gap:9px;align-items:center;background:#12171c;color:#e8eef2;border:1px solid #2a3a44;'+
-            'border-radius:12px;padding:9px 13px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:600 13px Segoe UI,system-ui,sans-serif;max-width:94vw;';
+            'display:flex;flex-wrap:wrap;gap:9px;align-items:center;background:#12171c;color:#e8eef2;border:1px solid #2a3a44;'+
+            'border-radius:12px;padding:9px 13px;box-shadow:0 8px 28px rgba(0,0,0,.5);font:600 13px Segoe UI,system-ui,sans-serif;'+
+            'box-sizing:border-box;max-width:calc(100vw - 16px);';
           const lab=document.createElement('span'); lab.textContent='Detail'; lab.style.color='#9fb2bb';
           const s1=document.createElement('span'); s1.textContent='simpler'; s1.style.cssText='color:#76767e;font-size:11px;';
           const rng=document.createElement('input'); rng.type='range'; rng.id='cal-trace-detail-rng';
-          rng.min='0'; rng.max='100'; rng.step='1'; rng.style.cssText='width:150px;accent-color:#00d4ff;cursor:pointer;';
+          rng.min='0'; rng.max='100'; rng.step='1'; rng.style.cssText='flex:1 1 120px;min-width:80px;width:auto;accent-color:#00d4ff;cursor:pointer;';
           rng.setAttribute('aria-label','Trace detail');
           const s2=document.createElement('span'); s2.textContent='finer'; s2.style.cssText='color:#76767e;font-size:11px;';
           const cnt=document.createElement('span'); cnt.id='cal-trace-detail-cnt'; cnt.style.cssText='color:#9fb2bb;font-size:11px;min-width:60px;text-align:right;';
           const done=document.createElement('button'); done.type='button'; done.textContent='✓ Done';
-          done.style.cssText='min-height:32px;padding:5px 12px;border-radius:8px;border:none;background:#00d4ff;color:#04222b;font-weight:600;cursor:pointer;';
+          done.style.cssText='margin-left:auto;min-height:32px;padding:5px 12px;border-radius:8px;border:none;background:#00d4ff;color:#04222b;font-weight:600;cursor:pointer;';
           done.onclick=function(){ self._dismissTraceDetail(); };
           rng.addEventListener('change', function(){
             const t=parseInt(rng.value,10)/100;
@@ -1611,6 +1734,19 @@
           });
           el.appendChild(lab); el.appendChild(s1); el.appendChild(rng); el.appendChild(s2); el.appendChild(cnt); el.appendChild(done);
           document.body.appendChild(el);
+          // Sit above the selected outline's buttons and the simple card, measured the way
+          // the toast's place() does: at a fixed 132 px it covered "Use in 3D part" and the
+          // card's text on a phone. They appear a moment after the trace, so look again.
+          const place=function(){
+            let topY=window.innerHeight-132;
+            document.querySelectorAll('.cal-context button.show, #cal-simple').forEach(function(n){
+              const r=n.getBoundingClientRect();
+              if(r.height>0 && r.bottom>window.innerHeight*0.45 && r.top<topY) topY=r.top;
+            });
+            el.style.bottom=Math.round(Math.min(window.innerHeight*0.6, window.innerHeight-topY+8))+'px';
+          };
+          place();
+          el.__placer=setInterval(function(){ if(!el.isConnected) clearInterval(el.__placer); else place(); }, 400);
         }
         const rng=document.getElementById('cal-trace-detail-rng');
         if(rng && document.activeElement!==rng){
@@ -1837,7 +1973,7 @@
           .catch(function(){ toast.update('Symmetric needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
       }
 
-      _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el) el.remove(); }
+      _dismissTraceDetail(){ const el=document.getElementById('cal-trace-detail'); if(el){ clearInterval(el.__placer); el.remove(); } }
 
       // Ask for the real length of a just-drawn line and set the working scale from it.
       // The UI may provide onNeedScaleInput(pixelLen, apply) for an inline field; otherwise
@@ -1860,7 +1996,7 @@
       _inlineScaleInput(pixelLen, done, unit, mid, ends){
         const prev=document.getElementById('cal-scale-input'); if(prev) prev.remove();
         const box=document.createElement('div'); box.id='cal-scale-input';
-        box.style.cssText='position:fixed;z-index:40;background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
+        box.style.cssText='position:fixed;z-index:40;box-sizing:border-box;background:#0e0e0e;border:2px solid #00d4ff;border-radius:10px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.6);display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:calc(100vw - 16px);font:15px Segoe UI,system-ui,sans-serif;color:#eee;';
         const lab=document.createElement('span'); lab.textContent='Line length:'; lab.style.cssText='font-weight:600;';
         // 16px font stops iOS from auto-zooming on focus; 44px min-height meets the touch
         // target the rest of the UI enforces (this input is the ONLY calibration path when
@@ -1887,6 +2023,26 @@
         presets.style.cssText='flex:1 1 100%;display:flex;flex-wrap:wrap;gap:6px;align-items:center;border-top:1px solid #242424;padding-top:8px;margin-top:2px;';
         const plab=document.createElement('span'); plab.textContent='…or tap what you measured across:';
         plab.style.cssText='flex:1 1 100%;font-size:12px;color:#9aa;';
+        // A ruler or tape first: it is what most people lay on the part. A steel rule runs
+        // past its last mark (the hole tab, about 15 mm on a customer's 30 cm rule), so a line
+        // drawn end to end and called "30 cm" read every size 4.7-6.3% small on that photo.
+        const rhint=document.createElement('span');
+        rhint.textContent='Ruler or tape: start and end on numbered marks, not the ruler\'s physical ends.';
+        rhint.style.cssText='flex:1 1 100%;font-size:12px;color:#cfe6ee;';
+        presets.appendChild(rhint);
+        for(const p of [
+          {t:'📏 6 in',  mm:152.4, h:'6 inches between two marks (152.4 mm)'},
+          {t:'📏 12 in', mm:304.8, h:'12 inches between two marks (304.8 mm)'},
+          {t:'📏 15 cm', mm:150,   h:'15 cm between two marks (150 mm)'},
+          {t:'📏 30 cm', mm:300,   h:'30 cm between two marks (300 mm)'},
+          {t:'📏 1 m',   mm:1000,  h:'1 m of tape between two marks (1000 mm)'},
+        ]){
+          const b=document.createElement('button'); b.type='button';
+          b.textContent=`${p.t} · ${p.mm}`; b.title=p.h; b.setAttribute('aria-label',p.h);
+          b.style.cssText='min-height:40px;padding:6px 11px;background:#151a1f;color:#cfe6ee;border:1px solid #29414c;border-radius:8px;font-size:13px;cursor:pointer;';
+          b.onclick=()=>finishMM(p.mm);
+          presets.appendChild(b);
+        }
         presets.appendChild(plab);
         for(const p of [
           {t:'💳 Card',    mm:85.6,   h:'ID / credit-card long edge (85.6 mm, ISO standard)'},
@@ -1926,26 +2082,73 @@
         }catch(e){ /* the job layer is optional; presets above still work */ }
 
         box.append(lab,inp,us,ok,cancel,presets); document.body.appendChild(box);
-        // Anchor ABOVE the drawn line (never below): the soft keyboard opens from the
-        // bottom, so a box placed under the finger/midpoint gets covered on phones. Fall
-        // back below only if there's no room above, and keep it out of the lower ~45%.
+        // The tap that placed point 2 is still going: its click arrives after this box is up.
+        this._swallowGhostClick(box);
+        // Anchor ABOVE the drawn line where it fits: the soft keyboard opens from the bottom,
+        // so a box placed under the finger/midpoint gets covered on phones. Never over either
+        // end of the line (that is where the ghost click lands, and what the user is checking).
         try{
-          const r=this.canvas.getBoundingClientRect();
-          const [dx,dy]=this.vp.imageToCanvas(mid[0],mid[1]);
-          const cssX=r.left + dx*(r.width/Math.max(1,this.canvas.width));
-          const cssY=r.top  + dy*(r.height/Math.max(1,this.canvas.height));
-          const bw=box.offsetWidth, bh=box.offsetHeight;
-          let top = cssY - bh - 16;
-          if(top < 8) top = cssY + 16;                       // no room above → drop below
-          top = Math.max(8, Math.min(top, window.innerHeight*0.45)); // stay clear of the keyboard band
-          box.style.left=Math.max(8, Math.min(window.innerWidth-bw-8, cssX-bw/2))+'px';
-          box.style.top =top+'px';
+          const ep=(ends && ends.length) ? ends : [mid];
+          this._placeClearOf(box, ep.map(p=>this._imgToCss(p)), this._imgToCss(mid), true);
         }catch(e){ box.style.left='50%'; box.style.top='24%'; box.style.transform='translateX(-50%)'; }
         const finish=(val)=>{ box.remove(); done(val); };
         ok.onclick=()=>finish(inp.value);
         cancel.onclick=()=>finish(null);
         inp.addEventListener('keydown',(e)=>{ e.stopPropagation(); if(e.key==='Enter'){ e.preventDefault(); finish(inp.value); } else if(e.key==='Escape'){ e.preventDefault(); finish(null); } });
         setTimeout(()=>{ inp.focus(); if(inp.select) inp.select(); },0);
+      }
+
+      // An image point as a page (CSS) position, for placing floating boxes beside it.
+      _imgToCss(p){
+        const r=this.canvas.getBoundingClientRect();
+        const [dx,dy]=this.vp.imageToCanvas(p[0],p[1]);
+        return [r.left + dx*(r.width/Math.max(1,this.canvas.width)), r.top + dy*(r.height/Math.max(1,this.canvas.height))];
+      }
+
+      // A box that opens on pointerup sits under the finger when the browser's own click for
+      // that tap arrives, and the click presses whatever is there. On a customer phone that
+      // was the length box's "Letter" chip: a 666 px line became 279.4 mm (the ruler span was
+      // 127 mm), the box never showed, and nothing said so. Clicks inside the box during the
+      // first 400 ms are that tap's, not the user's, so they are dropped.
+      _swallowGhostClick(box){
+        const t0=performance.now();
+        const h=(e)=>{
+          if(performance.now()-t0>400 || !box.isConnected){ document.removeEventListener('click', h, true); return; }
+          const r=box.getBoundingClientRect();
+          const inside=box.contains(e.target) || (e.clientX>=r.left && e.clientX<=r.right && e.clientY>=r.top && e.clientY<=r.bottom);
+          if(inside){ e.preventDefault(); e.stopPropagation(); }
+        };
+        document.addEventListener('click', h, true);
+        setTimeout(()=>document.removeEventListener('click', h, true), 450);
+      }
+
+      // Put a fixed box where its rect holds none of `pts` (CSS px, with a fingertip's margin
+      // round each): above the anchor, below it, then to either side, else centred at the
+      // top. keyboard=true keeps its top in the upper 45% while any spot there will do, so a
+      // soft keyboard opening from the bottom does not cover it.
+      _placeClearOf(box, pts, anchor, keyboard){
+        const W=window.innerWidth, H=window.innerHeight, bw=box.offsetWidth, bh=box.offsetHeight, pad=14;
+        const ys=pts.map(p=>p[1]).concat([anchor[1]]), xs=pts.map(p=>p[0]).concat([anchor[0]]);
+        const minY=Math.min.apply(null, ys), maxY=Math.max.apply(null, ys);
+        const minX=Math.min.apply(null, xs), maxX=Math.max.apply(null, xs);
+        const cx=l=>Math.max(8, Math.min(W-bw-8, l));
+        const cands=[
+          [cx(anchor[0]-bw/2), minY-bh-16],
+          [cx(anchor[0]-bw/2), maxY+16],
+          [minX-bw-16, Math.max(8, anchor[1]-bh/2)],
+          [maxX+16, Math.max(8, anchor[1]-bh/2)],
+        ];
+        const clear=(l,t)=>!pts.some(p=>p[0]>=l-pad && p[0]<=l+bw+pad && p[1]>=t-pad && p[1]<=t+bh+pad);
+        const fits=(l,t)=>l>=0 && t>=8 && l+bw<=W+0.5 && t+bh<=H-8;
+        let pick=null;
+        for(const strict of (keyboard ? [true, false] : [false])){
+          for(const c of cands){ if(fits(c[0], c[1]) && clear(c[0], c[1]) && (!strict || c[1]<=H*0.45)){ pick=c; break; } }
+          if(pick) break;
+        }
+        if(!pick) pick=[cx((W-bw)/2), 8];
+        box.style.transform='none';
+        box.style.left=Math.round(pick[0])+'px';
+        box.style.top=Math.round(pick[1])+'px';
       }
 
       // Measurement `data` to feed CalibMeasure. When a manual paper-rectangle scale is
@@ -2131,6 +2334,17 @@
         const uu=document.createElement('span'); uu.textContent='mm'; uu.style.color='#9aa';
         custom.append(wIn, times, hIn, uu, mkBtn('Set','primary', ()=>{ if(applyWH(parseFloat(wIn.value), parseFloat(hIn.value)) ) box.remove(); }));
         box.append(title, sub, row, custom); document.body.appendChild(box);
+        // Opened by the 4th corner's tap, whose click is still to come (see _swallowGhostClick):
+        // dropped, and the box kept off all four corners so that click lands on the photo.
+        this._swallowGhostClick(box);
+        try{
+          const cs=imgPts.map(p=>this._imgToCss(p)), r=box.getBoundingClientRect();
+          const onCorner=cs.some(p=>p[0]>=r.left-14 && p[0]<=r.right+14 && p[1]>=r.top-14 && p[1]<=r.bottom+14);
+          if(onCorner){
+            const c=cs.reduce((s,p)=>[s[0]+p[0]/cs.length, s[1]+p[1]/cs.length], [0,0]);
+            this._placeClearOf(box, cs, c, false);
+          }
+        }catch(e){ /* the default spot, top centre, still works */ }
         box.addEventListener('keydown',(e)=>{ e.stopPropagation(); if(e.key==='Escape'){ e.preventDefault(); cleanup(); } });
       }
 
@@ -2320,13 +2534,18 @@
                                            : (n ? `✏️ Paper scale — corner ${Math.min(n+1,4)} of 4`
                                                 : '✏️ Paper scale — tap the 4 corners of the sheet');
         if(m==='verifyscale') return n>=2 ? '✏️ Verify — enter the real length'
-                                          : (n ? '✏️ Verify — click the 2nd point'
+                                          : (n ? '✏️ Verify — tap the 2nd point'
                                                : '✏️ Verify — draw across something of known size');
+        // Square up reads the ruler's edges either side of this line, so it has to run down
+        // the ruler's middle; and its ends belong on marks (see the length box's ruler hint).
+        if(m==='setscale') return n>=2 ? '✏️ Set scale — type the length between your two marks'
+                                       : `✏️ Set scale — tap one end of the ruler, then the other, along its middle (${n+1} of 2)`;
+        if(m==='rectangle' && !n) return '✏️ Area — drag, or tap two corners';
         if(m==='pan') return '';
         if(m==='select') return this.ann.selectedId!=null ? '✏️ Select — item selected (Delete removes it)' : '✏️ Select — tap a measurement';
         if(m==='note') return '✏️ Note — tap to place';
         if(m==='polyline') return n ? `✏️ Path — ${n} point(s) · double-tap or Enter to finish` : '✏️ Path — tap to start';
-        return `✏️ ${name} — click point ${Math.min(n+1,total)} of ${total}`;
+        return `✏️ ${name} — tap point ${Math.min(n+1,total)} of ${total}`;
       }
 
       // The bottom status strip. Built as wrapping chips (a single DOM path for the
@@ -2345,12 +2564,15 @@
         // and hovers don't churn the strip.
         const specs=[]; // {text, cls?, action?}
         const rd=this._selectedReadout();
-        if(rd){ specs.push({text:`🔎 ${rd.label}: ${rd.text}`, cls:'cal-chip--lead'}); specs.push({text:'C to copy', cls:'cal-chip--muted'}); }
+        // "C to copy" is a keyboard shortcut; a phone gets a Copy chip to tap instead.
+        const coarse = !!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches);
+        if(rd){ specs.push({text:`🔎 ${rd.label}: ${rd.text}`, cls:'cal-chip--lead'});
+                specs.push(coarse ? {text:'📋 Copy', cls:'cal-chip--action', action:'copy'} : {text:'C to copy', cls:'cal-chip--muted'}); }
         else { const th=this._toolHint(); if(th) specs.push({text:th, cls:'cal-chip--lead'}); }
 
         if(s<=0){
           specs.push({text:'⚠️ Not calibrated', cls:'cal-chip--warn'});
-          specs.push({text:'📐 Set a scale', cls:'cal-chip--action', action:true});
+          specs.push({text:'📐 Set a scale', cls:'cal-chip--action', action:'scale'});
         }else{
           // A manual scale is user-defined (trusted); only auto-detected marker scale
           // carries a confidence, so only it can be flagged approximate.
@@ -2411,8 +2633,10 @@
         for(const x of specs){
           if(x.action){
             const b=document.createElement('button'); b.type='button'; b.className='cal-chip cal-chip--action';
-            b.textContent=x.text; b.setAttribute('aria-label','Set a scale');
-            b.onclick=()=>{ if(this._openScalePanel){ this._openScalePanel(); } else { this.setMode('setscale'); } };
+            b.textContent=x.text;
+            if(x.action==='copy'){ b.setAttribute('aria-label','Copy the value'); b.onclick=()=>this._copySelected(); }
+            else{ b.setAttribute('aria-label','Set a scale');
+                  b.onclick=()=>{ if(this._openScalePanel){ this._openScalePanel(); } else { this.setMode('setscale'); } }; }
             el.appendChild(b);
           }else{
             const sp=document.createElement('span'); sp.className='cal-chip'+(x.cls?' '+x.cls:''); sp.textContent=x.text; el.appendChild(sp);
@@ -2439,7 +2663,7 @@
       // Gated like saveCSV/saveDXF/saveSVG: an uncalibrated PNG now labels honestly in pixels,
       // and the confirm says exactly that, so the customer isn't handed a scale-less drawing
       // believing it carries millimetres.
-      savePNG(){ if(!this._confirmUncalibrated()) return; Xport.exportPNG(this.img, this._dataForMeasure(), this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, this._allowHomography()); }
+      savePNG(){ if(!this._confirmUncalibrated()) return; Xport.exportPNG(this.img, this._dataForMeasure(), this._exportStore(), this.opts.showGrid, this.opts.showMarkers, this.opts.units, this.opts.labelScale, this.opts.linePx, this._allowHomography(), !!this._markerConfirmed); }
       saveJSON(){
         // The exported homography maps to different spaces depending on its source: the
         // auto marker homography maps px -> UNIT square (scale by marker_size_mm), while a
@@ -2513,6 +2737,19 @@
     }
 
     window.CalibrationOverlay = window.CalibrationOverlay || CalibrationOverlay;
+
+    // The page-wide message spot (see _toast). A message belongs to the photo it was about:
+    // "Saved as the Top view… 🧩 Build 3D part" stayed up to 8 s over the NEXT photo's
+    // Set-scale card, its button over the card's row. dismiss() takes the current one down
+    // and stops its placement timer; the overlay calls it when its photo goes away.
+    window.CalibToast = window.CalibToast || {
+      dismiss(){
+        const api=window.__calLastToastApi; window.__calLastToastApi=null;
+        if(api){ try{ api.dismiss(); }catch(e){} }
+        const el=window.__calLastToast; window.__calLastToast=null;
+        if(el && el.parentNode) el.parentNode.removeChild(el);
+      }
+    };
 
     function initScan(){
       document.querySelectorAll('.cal-view').forEach(el=>{
