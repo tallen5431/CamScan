@@ -858,9 +858,12 @@ def export_part():
     """A part built from several traced views — see part_builder.
 
     Body: { views: { top|side|end: {points, mm_per_px, image_height, rot, flip_h, flip_v,
+                                    scale, rot_deg, keep_tilt,
                                     source, covers: all|start|end (side only)},
                      cavity: {..same.., view, align, open, depth_mm} },
-            depth_mm, clearance_mm, wall_mm, mirror, upside_down, preview, format: stl|step|obj }
+            depth_mm, clearance_mm, wall_mm, mirror, upside_down, preview, format: stl|step|obj,
+            known_mm: {length, width, height}, axis_source: {length|width|height: view},
+            ends: {slope_deg, radius_mm} }
 
     Each outline arrives exactly as the DXF/STL exports send it and goes through the same
     pixel->mm rule (_points_mm). `source` identifies the photo an outline was traced on: a
@@ -868,8 +871,12 @@ def export_part():
 
     preview=true returns JSON (normalised outlines, the result's silhouette in all three
     views, fits and warnings) so the user can check the views line up before building.
-    Otherwise returns the file: STL by default, or STEP / OBJ for editing in CAD. 400 for
-    malformed input, 422 with a reason for a part that cannot be built.
+    Otherwise returns the file: STL by default, or STEP / OBJ for editing in CAD. Only the
+    STL is turned for printing (a cover plate-down); STEP and OBJ come as traced, Z up, which
+    is how a CAD user expects to find the part. 400 for malformed input, 422 with a reason for
+    a part that cannot be built — and, when views disagree, `detail` {view, axis, have_mm,
+    want_mm, setter} so the dialog can offer the fix (JSON for a preview, the
+    X-CamScan-Detail header for a download).
     """
     from flask import Response, jsonify
     try:
@@ -901,9 +908,20 @@ def export_part():
         covers = entry.get("covers") or "all"
         if covers not in ("all", "start", "end"):
             raise ValueError(f"{what} coverage must be all, start or end")
+        # The dialog's Match buttons and fine turn; part_builder checks their ranges.
+        scale = _num(entry.get("scale"), 1.0)
+        rot_deg = _num(entry.get("rot_deg"), 0.0)
         return {"points": pts, "rot": rot, "flip_h": bool(entry.get("flip_h")),
                 "flip_v": bool(entry.get("flip_v")), "covers": covers,
+                "scale": scale, "rot_deg": rot_deg, "keep_tilt": bool(entry.get("keep_tilt")),
                 "source": str(entry.get("source") or "")[:500]}
+
+    def _obj(value, what):
+        if value is None or value == "":
+            return None
+        if not isinstance(value, dict):
+            raise ValueError(f"{what} is not an object")
+        return value
 
     try:
         views = {}
@@ -923,18 +941,37 @@ def export_part():
         depth_mm = _num(data.get("depth_mm"))
         clearance_mm = _num(data.get("clearance_mm"), 0.0)
         wall_mm = _num(data.get("wall_mm"))
-    except (TypeError, ValueError) as e:
+        known = _obj(data.get("known_mm"), "known_mm")
+        known_mm = {k: _num(known.get(k)) for k in ("length", "width", "height")} if known else None
+        axis_src = _obj(data.get("axis_source"), "axis_source")
+        axis_source = ({str(k)[:20]: (str(v)[:20] if v else None) for k, v in axis_src.items()}
+                       if axis_src else None)
+        ends_in = _obj(data.get("ends"), "ends")
+        ends = ({"slope_deg": _num(ends_in.get("slope_deg"), 0.0),
+                 "radius_mm": _num(ends_in.get("radius_mm"), 0.0)} if ends_in else None)
+    except (TypeError, ValueError, OverflowError) as e:
         return f"Invalid input: {e}", 400
 
     preview = bool(data.get("preview"))
+    # STL for the printer; STEP and OBJ for CAD, where the part has to be EDITED — see
+    # cad_export: one face per flat face of the part instead of one per triangle.
+    fmt = data.get("format") or "stl"
+    if not preview and fmt not in ("stl", "step", "obj"):
+        return "Format must be stl, step or obj", 400
+    import json as _json
     try:
+        # The preview reports what the STL download would be, as it always has.
         res = build_part(views, depth_mm=depth_mm, cavity=cavity, clearance_mm=clearance_mm,
                          wall_mm=wall_mm, mirror=bool(data.get("mirror")),
-                         upside_down=bool(data.get("upside_down")), preview=preview)
+                         upside_down=bool(data.get("upside_down")), preview=preview,
+                         known_mm=known_mm, axis_source=axis_source, ends=ends,
+                         for_print=preview or fmt == "stl")
     except PartError as e:
+        detail = getattr(e, "detail", None)
         if preview:
-            return jsonify(ok=False, error=str(e)), 422
-        return str(e), 422
+            return jsonify(ok=False, error=str(e), detail=detail), 422
+        return Response(str(e), status=422, mimetype="text/plain", headers=(
+            {"X-CamScan-Detail": _json.dumps(detail, ensure_ascii=True)} if detail else {}))
     except Exception as e:
         print(f"[Part] error: {e}")
         return "3D part build failed", 500
@@ -943,11 +980,6 @@ def export_part():
     if preview:
         return jsonify(ok=True, preview=res["preview"], info=info)
 
-    # STL for the printer; STEP and OBJ for CAD, where the part has to be EDITED — see
-    # cad_export: one face per flat face of the part instead of one per triangle.
-    fmt = data.get("format") or "stl"
-    if fmt not in ("stl", "step", "obj"):
-        return "Format must be stl, step or obj", 400
     fd, path = tempfile.mkstemp(suffix="." + fmt)
     os.close(fd)
     try:
@@ -970,7 +1002,6 @@ def export_part():
             os.unlink(path)
         except OSError:
             pass
-    import json as _json
     name = ("part-mirrored" if info.get("mirrored") else "part") + "." + fmt
     mime = {"stl": "model/stl", "step": "model/step", "obj": "model/obj"}[fmt]
     return Response(payload, mimetype=mime, headers={
@@ -979,7 +1010,8 @@ def export_part():
         "X-CamScan-Volume-MM3": f"{info.get('volume_mm3', 0):.1f}",
         # Everything the UI reports (fits, warnings, size), ASCII-safe for a header.
         "X-CamScan-Info": _json.dumps({k: info[k] for k in ("kind", "size_mm", "fits", "warnings",
-                                                            "mirrored", "upside_down", "note") if k in info},
+                                                            "mirrored", "upside_down", "plate_down",
+                                                            "orientation", "deskew", "note") if k in info},
                                       ensure_ascii=True)})
 
 

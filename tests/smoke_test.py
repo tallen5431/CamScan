@@ -2248,7 +2248,7 @@ def main():
         d12 = _tf12.mkdtemp()
         st12 = _ce12.write_step(toe12["tris"], d12 + "/c.step")
         ok12 = v_ok and plate_ok and rep12["watertight"] and rep12["oriented"] and st12["faces"] > 6 \
-            and toe12["info"]["kind"] == "shell" and toe12["info"]["upside_down"] is True
+            and toe12["info"]["kind"] == "shell" and toe12["info"]["plate_down"] is True
         check("a hollow cover from several views: exact wall, open underneath, plate-down, exports", ok12,
               f"box volume exact={v_ok}, bed {bed:.0f} mm2 / rim {rim:.0f} mm2, toe cover "
               f"{rep12['volume_mm3']:.0f} mm3 closed={rep12['watertight']}, STEP faces {st12['faces']}")
