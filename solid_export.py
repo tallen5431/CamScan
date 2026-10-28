@@ -708,10 +708,96 @@ def manifold_tris(man) -> np.ndarray:
     v = np.asarray(mesh.vert_properties, dtype=np.float64)[:, :3]
     t = np.asarray(mesh.tri_verts, dtype=np.int64)
     key = np.round(v * 1e6).astype(np.int64)            # the same quantum mesh_report pairs by
-    _u, weld = np.unique(key, axis=0, return_inverse=True)
+    _u, first, weld = np.unique(key, axis=0, return_index=True, return_inverse=True)
     w = weld.reshape(-1)[t]
     keep = (w[:, 0] != w[:, 1]) & (w[:, 1] != w[:, 2]) & (w[:, 2] != w[:, 0])
-    return v[t[keep]]
+    V = v[first]
+    return V[unsliver(V, w[keep])]
+
+
+def unsliver(V: np.ndarray, F: np.ndarray) -> np.ndarray:
+    """Remove zero-area triangles — three corners on one line — without opening the surface.
+
+    Manifold can leave such a sliver where two near-parallel faces meet (measured: opening a
+    rounded cover underneath, where the opening's top sits 0.01 mm above the inside's floor,
+    and where a rounded inner offset meets a chamfer). It is closed by vertex index, but by
+    position its long edge p-q is met on the other side by the two short edges p-m and m-q:
+    a slicer, mesh_report and a CAD face all see a hole. The sliver says the edge is really
+    p-m-q, so: drop it, and split the triangle across p-q at m. The surface stays closed.
+
+    One pass over a directed-edge index, so the cost grows with the number of triangles, not
+    with slivers x triangles (a 12k-triangle cover with 45 slivers took 28 s the slow way).
+    F is (T, 3) vertex indices into V; returns the new (T', 3)."""
+    F = np.asarray(F, dtype=np.int64).reshape(-1, 3)
+    if len(F) == 0:
+        return F
+    P = V[F]
+    cr = np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
+    span = np.max(np.stack([np.linalg.norm(P[:, 1] - P[:, 0], axis=1),
+                            np.linalg.norm(P[:, 2] - P[:, 0], axis=1),
+                            np.linalg.norm(P[:, 2] - P[:, 1], axis=1)]), axis=0)
+
+    def flat(cross, sp):
+        return cross <= 1e-9 * max(sp, 1e-12) ** 2
+    bad = np.nonzero(cr <= 1e-9 * np.maximum(span, 1e-12) ** 2)[0]
+    if len(bad) == 0:
+        return F
+    tris = [list(map(int, f)) for f in F]
+    alive = [True] * len(tris)
+    edge = {}                                   # directed edge (u, v) -> triangle index
+    for ti, (a, b, c) in enumerate(tris):
+        edge[(a, b)] = ti; edge[(b, c)] = ti; edge[(c, a)] = ti
+
+    def is_flat(tri):
+        Q = V[tri]
+        c_ = float(np.linalg.norm(np.cross(Q[1] - Q[0], Q[2] - Q[0])))
+        sp = max(float(np.linalg.norm(Q[1] - Q[0])), float(np.linalg.norm(Q[2] - Q[0])),
+                 float(np.linalg.norm(Q[2] - Q[1])))
+        return flat(c_, sp)
+
+    def drop(ti):
+        a, b, c = tris[ti]
+        alive[ti] = False
+        for e in ((a, b), (b, c), (c, a)):
+            if edge.get(e) == ti:
+                del edge[e]
+
+    def add(tri):
+        ti = len(tris)
+        tris.append(tri); alive.append(True)
+        a, b, c = tri
+        edge[(a, b)] = ti; edge[(b, c)] = ti; edge[(c, a)] = ti
+        return ti
+
+    queue = list(map(int, bad))
+    guard = 4 * len(tris) + 16
+    while queue and guard > 0:
+        guard -= 1
+        ti = queue.pop()
+        if not alive[ti] or not is_flat(tris[ti]):
+            continue
+        a, b, c = tris[ti]
+        # The middle vertex m and the long edge p->q as this sliver runs it.
+        best = None
+        for m, (p_, q_) in ((a, (b, c)), (b, (c, a)), (c, (a, b))):
+            d = float(np.linalg.norm(V[q_] - V[p_]))
+            if best is None or d > best[0]:
+                best = (d, m, p_, q_)
+        _d, m, p_, q_ = best
+        drop(ti)
+        # The neighbour runs that edge the other way: q->p. Split it at m.
+        tj = edge.get((q_, p_))
+        if tj is None or not alive[tj]:
+            continue
+        tri = tris[tj]
+        k = next(i for i in range(3) if tri[i] == q_ and tri[(i + 1) % 3] == p_)
+        r = tri[(k + 2) % 3]
+        drop(tj)
+        for new in ([q_, m, r], [m, p_, r]):
+            nt = add(new)
+            if is_flat(new):
+                queue.append(nt)              # the neighbour was a sliver too: keep going
+    return np.asarray([t_ for t_, ok in zip(tris, alive) if ok], dtype=np.int64).reshape(-1, 3)
 
 
 def _manifold_shell(o, cavs, plate, through, depth, wall) -> Optional[np.ndarray]:

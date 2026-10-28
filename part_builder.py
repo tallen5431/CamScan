@@ -107,6 +107,7 @@ class View:
         self.lo = base.min(axis=0)
         self.pts = base - self.lo
         self.scale = np.ones(2)
+        self.shift = np.zeros(2)          # where _extend_side moved it along the part
 
     def _orient(self, q: np.ndarray) -> np.ndarray:
         q = _quarter_turns(np.asarray(q, float), self.turns)
@@ -118,7 +119,7 @@ class View:
 
     def place(self, q: np.ndarray) -> np.ndarray:
         """Another outline from the SAME photo, put through this view's exact transform."""
-        return (self._orient(q) - self.lo) * self.scale
+        return (self._orient(q) - self.lo) * self.scale + self.shift
 
     @property
     def extent(self) -> np.ndarray:
@@ -148,21 +149,24 @@ def _hollow(solid, vs, size, wall: float, info: Dict[str, Any]):
     if 2 * w >= min(X, Y) or w >= Z:
         raise PartError("The wall is as thick as the part, so it would be solid. Use a thinner "
                         "wall, or leave the wall empty for a solid part.")
-    inner = mf.Manifold.cube([X - 2 * w, Y - 2 * w, Z - w]).translate([w, w, 0.0])
+    # The inside, carried straight down out of the bottom so the cover opens underneath: in
+    # each view that looks at the part from the side, the space under the inside's floors is
+    # inside too (see _open_below). This used to extend the inside's lowest slice — taken
+    # 0.01 mm above its floor — downward. That thin layer left edges where four faces met, so
+    # round covers often failed to close, and a piece of the inside with a higher floor (a
+    # stepped underside) stayed sealed inside the print.
+    inner = mf.Manifold.cube([X - 2 * w, Y - 2 * w, Z - w + 2 * _MARGIN]).translate([w, w, -2 * _MARGIN])
     for role, view in vs.items():
         cs = _cross_section(view.pts).offset(-w, mf.JoinType.Round)
         if cs.is_empty():
             raise PartError(f"The {role} view is thinner than two walls, so there is no inside.")
+        if AXES[role][1] == 2:                         # this view's up is the part's height
+            cs = _open_below(cs, -3 * _MARGIN)
         n_ax = AXES[role][2]
         inner = inner ^ _prism(cs, role, -_MARGIN, size[n_ax] + _MARGIN)
-    if inner.is_empty() or inner.volume() <= 0:
+    above = inner ^ mf.Manifold.cube([X, Y, Z]).translate([0.0, 0.0, 0.0])
+    if inner.is_empty() or above.is_empty() or above.volume() <= 0:
         raise PartError("The views leave no inside for that wall — try a thinner wall.")
-    # Open the bottom: continue the inside's lowest slice straight down out of the part.
-    zlo = float(inner.bounding_box()[2])
-    foot = inner.slice(zlo + 0.01)
-    if foot.is_empty():
-        raise PartError("Could not open the cover underneath.")
-    inner = inner + mf.Manifold.extrude(foot, zlo + _MARGIN + 0.01).translate([0.0, 0.0, -_MARGIN])
     shell = solid - inner
     if shell.is_empty() or shell.volume() <= 0:
         raise PartError("Hollowing left nothing — try a thinner wall.")
@@ -171,17 +175,49 @@ def _hollow(solid, vs, size, wall: float, info: Dict[str, Any]):
     return shell
 
 
+_FLOOR_SLOPE = math.tan(math.radians(30.0))
+
+
+def _open_below(cs, floor: float):
+    """A view's shrunk outline (the inside, seen from the side), with the space under each of
+    its floors added, down to `floor`.
+
+    A floor is an edge with the inside above it that is nearly level (under 30 degrees). A
+    steeper edge with the inside above it is a wall leaning out over the bottom — the sloped
+    toe of a step-pad cover — and what is under it is that wall, which must stay."""
+    pieces = [cs]
+    for ring in cs.to_polygons():
+        r = np.asarray(ring, float)
+        if signed_area(r) < 0:
+            r = r[::-1]            # outer rings counter-clockwise: the inside is left of each edge
+            hole = True
+        else:
+            hole = False
+        for (x0, y0), (x1, y1) in zip(r, np.roll(r, -1, axis=0)):
+            dx = (x0 - x1) if hole else (x1 - x0)       # > 0: the inside is above this edge
+            if dx <= 1e-9 or abs(y1 - y0) > _FLOOR_SLOPE * dx:
+                continue
+            quad = np.array([[x0, y0], [x1, y1], [x1, floor], [x0, floor]])
+            pieces.append(mf.CrossSection([_ccw(quad)]))
+    return mf.CrossSection.batch_boolean(pieces, mf.OpType.Add)
+
+
 def _extend_side(view: "View", length: float, covers: str) -> None:
     """Make a side profile of one end into a profile of the whole length: place it at its
     end, and carry its cut edge's height across the rest. The height there is read off the
     profile itself, a sliver in from the cut, so it is whatever the trace says it is."""
     pts = view.pts
     lp = float(np.ptp(pts[:, 0]))
-    view.covered = lp
-    if lp >= length:
-        return
+    view.covered = min(lp, length)
     if covers == "end":
+        # Its far end is the part's far end — also when it reads a little longer than the
+        # part (within the fit tolerance): then its near end is what overhangs and is cut
+        # off, not the shaped toe.
         pts = pts + [length - lp, 0.0]
+        view.shift = view.shift + [length - lp, 0.0]
+    if lp >= length:
+        view.pts = pts
+        return
     cs = _cross_section(pts)
     sliver = min(2.0, 0.02 * lp)
     cut = lp if covers == "start" else length - lp
@@ -365,6 +401,11 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
             # build_shell delivers it plate-down; that turn is its own inverse, so undo it to
             # draw the cover as traced, on top of its outline.
             out["preview"] = _preview_from_tris(_print_orientation(tris, Z), vs, None)
+        # Plate-down already, as the shaped covers below are after their own turn; "upside
+        # down" turns it back, as it does for them.
+        if upside_down:
+            tris = _print_orientation(tris, Z)
+        info["upside_down"] = not upside_down
         if mirror:
             tris = _mirror_tris(tris)
         info["mirrored"] = bool(mirror)

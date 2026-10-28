@@ -6,6 +6,7 @@ import os, base64, uuid, time, tempfile, math
 # and OOM-kill the process — a classic decompression bomb. 50 MP comfortably covers real
 # phone/DSLR photos while refusing pathological inputs. Override with MAX_IMAGE_PIXELS.
 MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", 50 * 1000 * 1000))
+MAX_PROFILE_HOLES = 64
 # Let OpenCV decode up to a small margin PAST our cap, so an image just over the limit still
 # decodes far enough for _decode_b64_image's explicit pixel check to reject it with the clear
 # "image is too large, resize it" message — instead of imdecode raising first and surfacing a
@@ -500,7 +501,7 @@ def on_upload(contents, filename):
     focal_px = None
     try:
         from camera_geometry import focal_px_from_jpeg_bytes
-        focal_px = focal_px_from_jpeg_bytes(raw_bytes, img.shape[1])
+        focal_px = focal_px_from_jpeg_bytes(raw_bytes, img.shape[1], img.shape[0])
     except Exception as e:
         print(f"[App] EXIF focal unavailable: {e}")
     print(f"[App] Focal: {focal_px if focal_px else 'not in EXIF — assuming a typical phone lens'}")
@@ -775,6 +776,12 @@ def export_stl():
         r = _ring(g)
         if r is not None:
             holes.append(r)
+    # A trace finds at most a handful of holes. The cover builder rasterises every hole over
+    # the whole part, once per pass, so an unbounded count is unbounded time and memory
+    # (measured: 100 tiny holes in a 10 KB request took 1.8 GB).
+    if len(holes) > MAX_PROFILE_HOLES:
+        return (f"Too many holes in the profile ({len(holes)}; at most {MAX_PROFILE_HOLES}). "
+                "Delete the stray closed outlines inside the part."), 400
 
     wall_raw = outer_item.get("wall_mm")
     info = {"kind": "solid", "note": None}
@@ -889,7 +896,7 @@ def export_part():
             raise ValueError(f"{what} points are not usable")
         try:
             rot = int(entry.get("rot") or 0) % 4
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):     # OverflowError: JSON Infinity
             raise ValueError(f"{what} rotation is not a number")
         covers = entry.get("covers") or "all"
         if covers not in ("all", "start", "end"):
@@ -1032,7 +1039,7 @@ def api_plane():
     if w is None or h is None:
         return jsonify(ok=False, error="bad_image_size"), 400
 
-    focal = _pos("focal_px") or default_focal_px(w)
+    focal = _pos("focal_px") or default_focal_px(w, h)
 
     try:
         height_mm = float(data.get("height_mm", 0.0))
@@ -1123,10 +1130,14 @@ def api_trace():
                 # NaN/Infinity reaches an int() deep in the segmenter and raises, turning a
                 # bad box into a 500 — this endpoint's contract is to degrade to 200 {ok:false}.
                 # `roi` and `seed` are already screened this way; screen `exclude` too.
-                if all(math.isfinite(v) for v in vals):
+                # Finite is not enough: 1e300 overflows the int the box is drawn with. Nothing
+                # off the photo by more than its own size can exclude anything on it.
+                if all(math.isfinite(v) and abs(v) <= 1e6 for v in vals):
                     exclude.append(vals)
         except (TypeError, ValueError):
             continue
+        if len(exclude) >= 64:                 # as the fg/bg taps are capped
+            break
 
     try:
         simplify = min(0.05, max(0.0003, float(data.get("simplify", 0.0006))))
@@ -1221,6 +1232,11 @@ def api_straighten():
             return jsonify(ok=False, error="bad_image"), 400
         if img.shape[0] * img.shape[1] > MAX_IMAGE_PIXELS:
             return jsonify(ok=False, error="too_large"), 400
+        # The search for each side's edge scales with the outline's size, so an outline far
+        # bigger than the photo it was traced on is not one — and was minutes and gigabytes.
+        h_, w_ = img.shape[:2]
+        if any(not (-w_ <= x <= 2 * w_ and -h_ <= y <= 2 * h_) for x, y in ring):
+            return jsonify(ok=False, error="bad_points"), 400
     # "refine" also gives each corner the radius the photo shows (it needs the photo).
     refine = data.get("mode") == "refine"
     if refine and img is None:
@@ -1343,6 +1359,8 @@ def api_square_up():
         if want == "ruler" and res_r is None:
             raise err_r or SquareUpError("Could not find the ruler's edges along the scale line — "
                                          "draw it along the middle of the ruler.")
+        if want == "part" and res_p is None:
+            raise SquareUpError("This outline has no two long parallel sides to square up from.")
         if res_r is None and res_p is None:
             raise err_r or SquareUpError("Could not square up this photo.")
     except SquareUpError as e:
@@ -1396,23 +1414,38 @@ def _decode_data_url(durl):
 
 
 def _submission_lines(data):
-    """Human-readable summary lines shared by the email body and the saved record."""
-    brief = data.get("brief") or {}
+    """Human-readable summary lines shared by the email body and the saved record.
+
+    Everything here is the customer's JSON, and it is read only after the record and images
+    are written — so a field of the wrong type must be shown, not crash the request (a
+    quantity typed as a number, restored from a saved job, did, and left an orphan record)."""
+    def text(v):
+        return "" if v is None or isinstance(v, (dict, list)) else str(v).strip()
+
+    def obj(v):
+        return v if isinstance(v, dict) else {}
+    brief = obj(data.get("brief"))
     lines = ["Part submission — Datum Laboratories", ""]
     for k, label in (("part", "Part"), ("material", "Material"), ("quantity", "Quantity"),
                      ("whatBroke", "What broke / needed"), ("contact", "Contact"), ("notes", "Notes")):
-        v = (brief.get(k) or "").strip()
+        v = text(brief.get(k))
         if v:
             lines.append(f"{label}: {v}")
     lines.append("")
-    for i, v in enumerate(data.get("views") or []):
-        scale = v.get("scale") or {}
-        src = scale.get("source") or "no scale"
+    views = data.get("views")
+    for i, v in enumerate(views if isinstance(views, list) else []):
+        v = obj(v)
+        scale = obj(v.get("scale"))
+        src = text(scale.get("source")) or "no scale"
         if scale.get("perspective"):
             src += " (tilt-corrected)"
-        lines.append(f"— {v.get('label') or ('View ' + str(i + 1))}  [{src}]")
-        for m in (v.get("measurements") or []):
-            lines.append(f"    {m.get('label', '')}: {m.get('text', '')}")
+        lines.append(f"— {text(v.get('label')) or ('View ' + str(i + 1))}  [{src}]")
+        ms = v.get("measurements")
+        for m in (ms if isinstance(ms, list) else []):
+            if isinstance(m, dict):
+                lines.append(f"    {text(m.get('label'))}: {text(m.get('text'))}")
+            else:
+                lines.append(f"    {text(m)}")
     return lines
 
 
@@ -1555,6 +1588,8 @@ def submit_part():
         return {"ok": False, "error": "No views to submit — add at least one."}, 400
     if not all(isinstance(v, dict) for v in views):
         return {"ok": False, "error": "Malformed submission — each view must be an object."}, 400
+    if data.get("brief") is not None and not isinstance(data.get("brief"), dict):
+        return {"ok": False, "error": "Malformed submission — the part details must be an object."}, 400
 
     # Refuse rather than fill the volume (see MAX_SUBMISSIONS_BYTES). Checked before we write
     # anything, so a refused submission leaves no partial record behind, and the customer gets

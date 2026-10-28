@@ -196,7 +196,7 @@ def _pattern_verified(outer_rect, inner_rects) -> bool:
 
 
 def _record_marker(overlay: np.ndarray,
-                   mapped: List[Tuple[int, int]],
+                   mapped: List[Tuple[float, float]],
                    edge_len_mm: float,
                    source: str,
                    distortion_deg: float,
@@ -219,8 +219,9 @@ def _record_marker(overlay: np.ndarray,
     mm_per_px = float(edge_len_mm) / float(px_edge)
 
     # Draw the square in YELLOW (0,255,255) with black-outlined corner dots.
-    cv2.polylines(overlay, [np.array(mapped, np.int32)], True, (0, 255, 255), line_thickness)
-    for (gx, gy) in mapped:
+    drawn = [(int(round(gx)), int(round(gy))) for (gx, gy) in mapped]
+    cv2.polylines(overlay, [np.array(drawn, np.int32)], True, (0, 255, 255), line_thickness)
+    for (gx, gy) in drawn:
         cv2.circle(overlay, (gx, gy), 10, (0, 0, 0), -1)
         cv2.circle(overlay, (gx, gy), 7, (0, 255, 255), -1)
 
@@ -239,7 +240,7 @@ def _record_marker(overlay: np.ndarray,
         "source": source,
         "confidence": _marker_confidence(source, distortion_deg, homography is not None),
         "distortion_deg": round(float(distortion_deg), 1),
-        "corners": [{"x": int(a), "y": int(b)} for (a, b) in mapped],
+        "corners": [{"x": round(float(a), 2), "y": round(float(b), 2)} for (a, b) in mapped],
     }
     if homography is not None:
         marker["homography"] = homography
@@ -544,8 +545,11 @@ def calibrate_image(img_bgr: np.ndarray,
         if corners_local:
             # Map corners back to full image coords
             denom = (DOWNSCALE_FACTOR if DOWNSCALE_FACTOR > 0 else 1.0)
-            mapped: List[Tuple[int,int]] = [
-                (ox + int(cx / denom), oy + int(cy / denom))
+            # Sub-pixel: the corners come from edge fits, and cutting them to whole pixels
+            # cost the scale and the tilt correction up to ~1% on an 80 px marker. They are
+            # rounded only where they are drawn.
+            mapped: List[Tuple[float, float]] = [
+                (ox + float(cx) / denom, oy + float(cy) / denom)
                 for (cx, cy) in corners_local
             ]
 
@@ -562,7 +566,7 @@ def calibrate_image(img_bgr: np.ndarray,
             # tilt-corrected. See edge_finder._contour_quad_and_distortion.
             quad_measured = bool(edge_metrics.get("quad_measured", True))
             homography_corners = (
-                [(ox + int(qx / denom), oy + int(qy / denom)) for (qx, qy) in quad_crop]
+                [(ox + float(qx) / denom, oy + float(qy) / denom) for (qx, qy) in quad_crop]
                 if (quad_crop and quad_measured) else None
             )
             if quad_crop and not quad_measured:
@@ -662,11 +666,11 @@ def calibrate_image(img_bgr: np.ndarray,
             allow_border=True,  # a full-frame square legitimately touches the edge
         )
         if corners_plain:
-            mapped = [(int(cx), int(cy)) for (cx, cy) in corners_plain]
+            mapped = [(float(cx), float(cy)) for (cx, cy) in corners_plain]
             # Full-frame detection → no crop offset/downscale, so the true corners
             # map with identity.
             quad_plain = plain_metrics.get("quad")
-            homography_corners = [(int(qx), int(qy)) for (qx, qy) in quad_plain] if quad_plain else None
+            homography_corners = [(float(qx), float(qy)) for (qx, qy) in quad_plain] if quad_plain else None
             plain_distortion = float(plain_metrics.get("distortion_deg", 0.0))
             marker = _record_marker(overlay, mapped, edge_len_mm, "plain", plain_distortion, line_thickness, homography_corners)
             if marker is not None:
@@ -738,7 +742,7 @@ def calibrate_image(img_bgr: np.ndarray,
         from camera_geometry import (default_focal_px, working_distance_mm,
                                      pose_from_homography, parallax_error_pct)
         f_px, f_src = (float(focal_px), "exif") if (focal_px and focal_px > 0) else \
-                      (default_focal_px(W), "assumed")
+                      (default_focal_px(W, H), "assumed")
         camera["focal_px"] = round(f_px, 1)
         camera["focal_source"] = f_src
         edge_px = next((m.get("edge_px") for m in markers if m.get("edge_px")), None)

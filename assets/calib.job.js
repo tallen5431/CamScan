@@ -1008,22 +1008,43 @@
     return Promise.race([persist(), limit]);
   }
 
-  // Autosave a REOPENED side shortly after each edit, so its record is current long before
-  // any unload. Hooked on the overlay's undo-history push, which every edit goes through.
-  var _autoTimer = null;
+  // Autosave a REOPENED side shortly after each change, so its record is current long before
+  // any unload. Not every change goes through the undo history: a dragged dot is pushed
+  // straight onto it, and a new scale, Square up, undo and redo never touch it — all of
+  // those were saved only by the unload write, which a phone may cut short. Every change
+  // does redraw, though: so after the drawing settles, compare what would be stored with
+  // what was, and save when it differs. (Hovering redraws too; it changes nothing stored.)
+  var _autoTimer = null, _autoSig = null, _autoOverlay = null;
+  function _storedSig(o){
+    try{
+      return JSON.stringify([o.ann && o.ann.items, o.opts && o.opts.manualMmPerPx, o.opts && o.opts.manualHomography,
+                             o._manualRef, o._scaleLine, !!o._markerConfirmed, o._refExtentPx,
+                             o.data && o.data.marker_size_mm, o.opts && o.opts.units]);
+    }catch(e){ return null; }
+  }
+  function _autoCheck(){
+    _autoTimer = null;
+    var o = overlay();
+    if(!o || currentOpenIndex() == null) return;
+    var sig = _storedSig(o);
+    if(o !== _autoOverlay){ _autoOverlay = o; _autoSig = sig; return; }   // just opened: nothing changed yet
+    if(sig !== _autoSig){ _autoSig = sig; try{ syncOpenView(); }catch(e){} }
+  }
   function hookAutosave(){
     var o = overlay();
-    if(!o || o.__jobAutosave || typeof o._pushHistory !== 'function') return;
-    var orig = o._pushHistory.bind(o);
-    o._pushHistory = function(){
+    if(!o || o.__jobAutosave || typeof o.requestDraw !== 'function') return;
+    var orig = o.requestDraw.bind(o);
+    o.requestDraw = function(){
       var r = orig.apply(null, arguments);
       if(currentOpenIndex() != null){
         if(_autoTimer) clearTimeout(_autoTimer);
-        _autoTimer = setTimeout(function(){ _autoTimer = null; try{ syncOpenView(); }catch(e){} }, 1200);
+        _autoTimer = setTimeout(_autoCheck, 1200);
       }
       return r;
     };
     o.__jobAutosave = true;
+    _autoOverlay = null;
+    setTimeout(_autoCheck, 0);   // take the as-opened state as the baseline
   }
 
   // Boot: add the button, keep its state in sync as the viewer appears/disappears.

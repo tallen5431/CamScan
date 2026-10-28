@@ -2291,6 +2291,170 @@ def main():
     except Exception as e:
         check("/api/export/part builds, previews, and refuses junk cleanly", False, repr(e))
 
+    # 8r13) Covers and parts — bugs a review reproduced, each checked here:
+    #       a round cover from several views failed to close (the opening's thin layer left
+    #       edges four faces met at); a cover whose underside steps up kept a sealed void; a
+    #       side view of the end slightly longer than the top lost its toe; a same-photo
+    #       cavity on that view landed at the wrong end; a Top-only cover ignored "upside
+    #       down"; and slivers made STEP export quadratic.
+    try:
+        import part_builder as _pb13
+        import time as _t13
+        from solid_export import mesh_report as _mr13, unsliver as _us13
+        import cad_export as _ce13
+        bad13 = []
+        a13 = np.linspace(0, 2 * np.pi, 400, endpoint=False)
+        circle = np.c_[200 * np.cos(a13) + 300, 200 * np.sin(a13) + 300].tolist()
+        try:
+            r13 = _pb13.build_part({"top": {"points": circle},
+                                    "side": {"points": [[0, 0], [400, 0], [400, 30], [0, 30]]}}, wall_mm=2)
+            if not _mr13(r13["tris"])["watertight"]:
+                bad13.append("round cover not watertight")
+        except _pb13.PartError as e:
+            bad13.append(f"round cover refused: {e}")
+        # Stepped underside: one shell, no enclosed void (a second, negative-volume shell).
+        lob = [[0, 0], [40, 0], [40, 18], [50, 18], [50, 0], [90, 0], [90, 40], [50, 40], [50, 22],
+               [40, 22], [40, 40], [0, 40]]
+        r13 = _pb13.build_part({"top": {"points": lob},
+                                "side": {"points": [[0, 0], [45, 0], [45, 10], [90, 10], [90, 30], [0, 30]]}},
+                               wall_mm=2)
+        t13 = r13["tris"]
+        V13 = np.round(t13.reshape(-1, 3) * 1e4).astype(np.int64)
+        _u, inv13 = np.unique(V13, axis=0, return_inverse=True)
+        inv13 = inv13.reshape(-1, 3)
+        par = list(range(len(_u)))
+
+        def _f(x):
+            while par[x] != x:
+                par[x] = par[par[x]]; x = par[x]
+            return x
+        for a_, b_, c_ in inv13:
+            par[_f(a_)] = _f(b_); par[_f(b_)] = _f(c_)
+        if len({_f(t_[0]) for t_ in inv13}) != 1:
+            bad13.append("stepped cover has a sealed void")
+        # The end's side view, 5% longer than the top: the toe (right end, 5 mm high) stays.
+        top13 = [[0, 0], [100, 0], [100, 40], [0, 40]]
+        r13 = _pb13.build_part({"top": {"points": top13},
+                                "side": {"points": [[0, 0], [105, 0], [105, 5], [95, 20], [0, 20]], "covers": "end"}})
+        v13 = r13["tris"].reshape(-1, 3)
+        z_end = v13[np.abs(v13[:, 0] - 99.6) < 0.6, 2].max()
+        if abs(z_end - 5.0) > 0.6:
+            bad13.append(f"toe lost: height at the end {z_end:.1f} mm, not 5")
+        # Same-photo cavity on a side view of the last 30 mm: the slot lands at x 75..85.
+        r13 = _pb13.build_part({"top": {"points": top13},
+                                "side": {"points": [[0, 0], [30, 0], [30, 5], [20, 20], [0, 20]], "covers": "end"}},
+                               cavity={"points": [[5, 0], [15, 0], [15, 10], [5, 10]], "view": "side",
+                                       "same_photo": True}, preview=True)
+        res13 = r13["preview"]["views"]["side"]["result"]
+        xs13 = sorted({round(float(x), 1) for ring in res13 for x, z in ring if abs(z - 10.0) < 1e-6})
+        if xs13 != [75.0, 85.0]:
+            bad13.append(f"same-photo cavity placed at {xs13}, not [75, 85]")
+        # Top-only cover: "upside down" changes what sits on the bed.
+        def _bed(t):
+            n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]); z = t[:, :, 2].max(1)
+            return float(np.linalg.norm(n[(n[:, 2] < 0) & (z < 1e-6)], axis=1).sum() / 2)
+        beds = [_bed(_pb13.build_part({"top": {"points": top13}}, depth_mm=20, wall_mm=2, upside_down=u)["tris"])
+                for u in (False, True)]
+        if not (beds[0] > 3000 and beds[1] < 1000):
+            bad13.append(f"Top-only cover ignores upside down: bed areas {beds}")
+        # Slivers: resolved in one pass, and the surface stays closed.
+        n_sl = 3000
+        Vs = np.array([[0, 0, 0], [2, 0, 0], [1, 0, 0], [1, 1, 0], [1, -1, 0]], float)
+        Fs = np.array([[0, 2, 1], [0, 1, 3], [1, 0, 4]])   # a sliver on edge 0-1 (2 lies on it)
+        out = _us13(Vs, Fs)
+        if len(out) != 3:
+            bad13.append(f"unsliver gave {len(out)} triangles, not 3")
+        flat_left = sum(1 for f in out if np.linalg.norm(np.cross(Vs[f[1]] - Vs[f[0]], Vs[f[2]] - Vs[f[0]])) < 1e-12)
+        if flat_left:
+            bad13.append(f"unsliver left {flat_left} zero-area triangles")
+        R = 200
+        tt = np.linspace(0, 2 * np.pi, n_sl // 15, endpoint=False)
+        big = _pb13.build_part({"top": {"points": np.c_[R * np.cos(tt) + R, R * np.sin(tt) + R].tolist()},
+                                "side": {"points": [[0, 0], [2 * R, 0]] + np.c_[np.linspace(2 * R, 0, 100),
+                                         30 + 10 * np.sin(np.linspace(2 * R, 0, 100) / 40)].tolist()}},
+                               wall_mm=2)
+        t0 = _t13.time()
+        import tempfile as _tf13
+        with _tf13.NamedTemporaryFile(suffix=".step") as fh:
+            _ce13.write_step(big["tris"], fh.name)
+        dt13 = _t13.time() - t0
+        if dt13 > 10:
+            bad13.append(f"STEP of a {len(big['tris'])}-triangle cover took {dt13:.1f} s")
+        check("covers: round and stepped covers close, end views keep their toe, cavities and "
+              "upside-down land right, slivers are quick", not bad13,
+              "; ".join(bad13) or f"STEP of a {len(big['tris'])}-triangle cover in {dt13:.1f} s")
+    except Exception as e:
+        check("covers: round and stepped covers close, end views keep their toe, cavities and "
+              "upside-down land right, slivers are quick", False, repr(e))
+
+    # 8r14) Untrusted input the review found turning into a 500, minutes of work or gigabytes,
+    #       and the portrait-photo focal length.
+    try:
+        import app as _app14
+        import base64
+        import time
+        from camera_geometry import default_focal_px as _df14
+        import camera_geometry as _cg14
+        cli14 = _app14.server.test_client()
+        bad14 = []
+        sq = {"points": [[0, 0], [100, 0], [100, 40], [0, 40]], "mm_per_px": 1, "image_height": 0}
+        with _quiet():
+            c = cli14.post("/api/export/part", data='{"views":{"top":{"points":[[0,0],[100,0],[100,40],[0,40]],'
+                           '"mm_per_px":1,"image_height":0,"rot":Infinity}},"depth_mm":5}',
+                           content_type="application/json").status_code
+            if c != 400:
+                bad14.append(f"rot Infinity -> {c}")
+            holes = [{"type": "polyline", "closed": True, "points": [[10 + i, 10], [10.5 + i, 10], [10.5 + i, 10.5]],
+                      "mm_per_px": 1} for i in range(80)]
+            c = cli14.post("/api/export/stl", json={"geometry": [dict(sq, type="polyline", closed=True, depth_mm=5,
+                                                                      wall_mm=1)] + holes}).status_code
+            if c != 400:
+                bad14.append(f"80 holes -> {c}")
+            t0 = time.time()
+            tiny = "data:image/png;base64," + base64.b64encode(
+                cv2.imencode(".png", np.zeros((8, 8, 3), np.uint8))[1].tobytes()).decode()
+            c = cli14.post("/api/outline/straighten", json={"image": tiny, "points": (np.array(
+                [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 1.2], [0.2, 0.9], [0.9, 0.1], [0.1, 0.1]]) * 1e7).tolist()}).status_code
+            if c != 400 or time.time() - t0 > 5:
+                bad14.append(f"huge outline on a tiny photo -> {c} in {time.time() - t0:.1f}s")
+            j = cli14.post("/api/square_up", json={"outline": [[500, 50], [900, 450], [500, 450], [100, 450]],
+                                                    "ruler": [[0, 0], [100, 0]], "ruler_mm": 100,
+                                                    "image_w": 1000, "image_h": 800, "reference": "part"})
+            if j.status_code != 200 or j.get_json().get("ok") is not False:
+                bad14.append(f"square up, no sides -> {j.status_code}")
+            c = cli14.post("/api/trace", json={"image": tiny, "seed": [4, 4],
+                                                "exclude": [[1e300, 1e300, 10, 10]]}).status_code
+            if c != 200:
+                bad14.append(f"trace exclude 1e300 -> {c}")
+            old_dir = _app14.SUBMISSIONS_DIR
+            import tempfile as _tf14
+            with _tf14.TemporaryDirectory() as td:
+                _app14.SUBMISSIONS_DIR = td
+                try:
+                    r = cli14.post("/api/submit", json={"brief": {"quantity": 2, "part": ["x"]},
+                                                         "views": [{"label": "Top", "measurements": ["12 mm", 3]}]})
+                finally:
+                    _app14.SUBMISSIONS_DIR = old_dir
+            if r.status_code >= 500:
+                bad14.append(f"submit with a numeric quantity -> {r.status_code}")
+        # Same lens, portrait or landscape: one focal length (it was 25% short on portrait).
+        if _df14(1200, 1600) != _df14(1600, 1200):
+            bad14.append("assumed focal depends on orientation")
+        orig = _cg14.exif_focal_35mm
+        _cg14.exif_focal_35mm = lambda d: 26.0               # a 26 mm (35 mm-equivalent) lens
+        try:
+            fl = _cg14.focal_px_from_jpeg_bytes(b"", 1600, 1200)
+            fp = _cg14.focal_px_from_jpeg_bytes(b"", 1200, 1600)
+        finally:
+            _cg14.exif_focal_35mm = orig
+        if fl is None or abs(fl - fp) > 1e-9:
+            bad14.append(f"EXIF focal landscape {fl} vs portrait {fp}")
+        check("untrusted input stays a clean 4xx/ok:false, fast; focal length is orientation-free",
+              not bad14, "; ".join(bad14) or "rot Infinity, 80 holes, huge outline, sideless square up, "
+                                              "1e300 exclude, numeric brief; portrait focal = landscape")
+    except Exception as e:
+        check("untrusted input stays a clean 4xx/ok:false, fast; focal length is orientation-free", False, repr(e))
+
     # 8r12) Square up from the ruler. A ruler is a rectangle for certain; a part may not be —
     #       measured on the customer's step-pad photo, the cover's sides widened 5.9% down the
     #       photo but the ruler lying on it only 1.2% over its own length, so squaring up from
