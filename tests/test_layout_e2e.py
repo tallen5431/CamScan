@@ -5,7 +5,9 @@ Each check is a layout or routing fault that cost a step on the way from a few p
 
   1. 📷 Add photo (was "New") keeps the photo: upload, scale, trace, assign Top, press it —
      after the reload the part holds that photo (CalibJob.count()==1) and the landing no
-     longer says "no photos saved". It used to keep the Top view and drop its photo.
+     longer says "no photos saved". It used to keep the Top view and drop its photo. A
+     photo the user already added as "Front" keeps that name (and is recaptured with the
+     marks made since), rather than being renamed "View 1" and dropping off the checklist.
   2. Desktop rail (1400x900): the column overflowed at BOTH ends and its top, Select, was
      clipped where it could not be scrolled to. It must start at or below the rail's top.
   3. Set-scale chooser: the ruler comes first, every button is a 44 px touch target (Apply,
@@ -158,6 +160,34 @@ def check_new_keeps_photo(browser, errors, dialogs):
     return note.replace("\n", " ")
 
 
+STORED_VIEWS = ("(async()=>{await window.CalibJob.flush();const j=await window.CalibJob.persisted();"
+                "return j?j.views.map(v=>({label:v.label,at:v.capturedAt})):[];})()")
+
+
+def check_add_photo_keeps_label(browser, errors, dialogs):
+    ctx, pg = _page(browser, 1280, 900, False, True, errors, dialogs)
+    _upload(pg, _photo())
+    _close_chooser(pg)
+    pg.evaluate(f"{OV}.setManualScaleFromPixels(360, 180, [[220,400],[580,400]])")
+    pg.evaluate("window.CalibJob.addView('Front')")
+    before = pg.evaluate(STORED_VIEWS)
+    assert [v["label"] for v in before] == ["Front"], f"setup: {before}"
+    # A mark made after the photo was added must not be lost by Add photo either.
+    pg.evaluate(f"(()=>{{const o={OV};window.CalibAnn.addPolyline(o.ann,[[200,200],[400,200],[400,400]],"
+                "o.getScale()||0.5,o.opts.units,null,false);o.requestDraw();})()")
+    pg.wait_for_timeout(20)
+    with pg.expect_navigation(timeout=20000):
+        pg.locator("#cal-tb-new").click()
+        pg.wait_for_function("document.body.innerText.includes('saved to the part as \"Front\"')", timeout=5000)
+    pg.wait_for_function("window.CalibJob && window.CalibJob.ready", timeout=15000)
+    pg.evaluate("window.CalibJob.ready")
+    after = pg.evaluate(STORED_VIEWS)
+    assert [v["label"] for v in after] == ["Front"], f"Add photo relabelled the stored photo: {after}"
+    assert after[0]["at"] > before[0]["at"], f"Add photo did not recapture the later marks: {before} -> {after}"
+    assert not dialogs, f"Add photo asked when the photo was kept: {dialogs}"
+    ctx.close()
+
+
 def check_desktop(browser, errors, dialogs):
     ctx, pg = _page(browser, 1400, 900, False, True, errors, dialogs)
     _upload(pg, _photo())
@@ -271,13 +301,14 @@ def main():
                 _skip(f"cannot launch chromium: {e}")
             errors, dialogs = [], []
             note = check_new_keeps_photo(browser, errors, dialogs)
+            check_add_photo_keeps_label(browser, errors, dialogs)
             nbtn = check_desktop(browser, errors, dialogs)
             bar_h, top_h = check_phone(browser, errors, dialogs)
             check_first_run_simple(browser, errors, dialogs)
             assert not errors, f"page errors: {errors}"
             assert not dialogs, f"unexpected dialogs: {dialogs}"
             browser.close()
-        print(f"E2E_RESULT: PASS (Add photo kept the Top photo, landing: {note!r}; Select inside the rail at "
+        print(f"E2E_RESULT: PASS (Add photo kept the Top photo, landing: {note!r}; a 'Front' photo kept its name; Select inside the rail at "
               f"1400x900; {nbtn} chooser buttons >=44 px, ruler first; phone context row {bar_h:.0f} px, Tidy/3D/More "
               f"tappable, top bar one row {top_h:.0f} px with 3 views; first run in simple mode shows one prompt)")
         return 0

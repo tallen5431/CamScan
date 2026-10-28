@@ -499,13 +499,8 @@ window.CalibUI = (function(){
         () => go('setscale'));
       rulerBtn.id = 'cal-scale-ruler';
       card.appendChild(rulerBtn);
-      // 2 — a rectangle (tilt-corrected).
-      card.appendChild(mkBig('📄', 'A rectangle you know the size of (tilt-corrected)',
-        'Tap its 4 corners — a sheet of paper, or a square you lay out with a ruler. '
-        + 'Best for big parts: the reference should cover a good part of what you measure.',
-        () => go('setscalerect')));
-
-      // 3 — printed square / marker: pick a size.
+      // 2 — printed square / marker: pick a size. Second: it is the most exact reference
+      // when the user has one, but few do.
       const sqHead = document.createElement('div');
       sqHead.innerHTML = '<b>🟩 I printed a square or the CamScan marker</b><br>' +
         '<span style="color:#9aa;font-size:12px;">Tap its printed edge size:</span>';
@@ -527,6 +522,12 @@ window.CalibUI = (function(){
       otherBtn.onclick = () => { closeScalePanel(); openCalibration(); };
       sizeRow.appendChild(otherBtn);
       card.appendChild(sizeRow);
+
+      // 3 — a rectangle (tilt-corrected).
+      card.appendChild(mkBig('📄', 'A rectangle you know the size of (tilt-corrected)',
+        'Tap its 4 corners — a sheet of paper, or a square you lay out with a ruler. '
+        + 'Best for big parts: the reference should cover a good part of what you measure.',
+        () => go('setscalerect')));
 
       // 4 — the plane the feature actually sits in. This is the biggest single source of
       // error in the app and the only one the user can neither see nor guess: the reference's
@@ -851,47 +852,65 @@ window.CalibUI = (function(){
       return !!(role || (overlay.isCalibrated && overlay.isCalibrated()) ||
                 (overlay.ann && overlay.ann.items.length));
     }
-    // Store the photo on screen in the part. Returns the label it is kept under, or null.
+    // Store the photo on screen in the part. Resolves to the label it is kept under, or null.
     function keepCurrentPhoto(){
       const J = window.CalibJob;
-      if (!J) return null;
+      if (!J) return Promise.resolve(null);
       const role = assignedRoleLabel();
       try {
         // A reopened side is already in the part: persist its edits in place, no relabel.
-        if (J.isCurrentStored && J.isCurrentStored()) { if (J.syncOpen) J.syncOpen(); return role || 'its side'; }
-        if (!photoWorthKeeping(role)) return null;
-        const n = (J.count && J.count()) || 0;
-        const label = role || ('View ' + (J.hasCurrent && J.hasCurrent() ? n : n + 1));
+        if (J.isCurrentStored && J.isCurrentStored()) { if (J.syncOpen) J.syncOpen(); return Promise.resolve(role || 'its side'); }
+        // Already added under a name the user chose ("Front" from a label chip): addView
+        // replaces the label in place, so recapturing as "View 1" or "Side" would put Front
+        // back on the checklist as missing. Recapture under the stored name; the job API has
+        // no sync label read, so take it from the committed store.
+        if (J.hasCurrent && J.hasCurrent()) {
+          const v = document.querySelector('.cal-view');
+          const sid = v && v.getAttribute('data-json');
+          return Promise.resolve(J.flush && J.flush())
+            .then(() => (J.persisted ? J.persisted() : null))
+            .then(stored => {
+              const rec = stored && (stored.views || []).find(x => x.sourceId === sid);
+              if (!rec || !rec.label) return 'its side';
+              J.addView(rec.label);   // same entry (dedup by sourceId), latest marks
+              return rec.label;
+            })
+            .catch(() => 'its side');
+        }
+        if (!photoWorthKeeping(role)) return Promise.resolve(null);
+        const label = role || ('View ' + (((J.count && J.count()) || 0) + 1));
         // The shared capture, where the job layer has it; otherwise the same steps by hand.
         if (typeof J.captureCurrent === 'function') J.captureCurrent(label);
         else if (J.addView) J.addView(label);
-        if ((J.hasCurrent && J.hasCurrent()) || (J.isCurrentStored && J.isCurrentStored())) return label;
+        if ((J.hasCurrent && J.hasCurrent()) || (J.isCurrentStored && J.isCurrentStored())) return Promise.resolve(label);
       } catch (e) {}
-      return null;
+      return Promise.resolve(null);
     }
     const newImage = iconBtn('📷', 'Add photo', 'Add another photo — this one is kept in the part', () => {
       const J = window.CalibJob;
-      const willKeep = !!J && ((J.isCurrentStored && J.isCurrentStored()) || photoWorthKeeping(assignedRoleLabel()));
+      const willKeep = !!J && ((J.isCurrentStored && J.isCurrentStored()) || (J.hasCurrent && J.hasCurrent()) ||
+                               photoWorthKeeping(assignedRoleLabel()));
       // Confirm only when something would be thrown away: marks on a photo with no job to
       // keep it in.
       if (!willKeep && overlay.ann && overlay.ann.items.length &&
           !confirm('Start over with a new image? Current annotations will be lost.')) return;
-      const kept = willKeep ? keepCurrentPhoto() : null;
-      // The store refused it (full, say): its own warning is up; don't reload over the marks.
-      if (willKeep && !kept && overlay.ann && overlay.ann.items.length &&
-          !confirm('This photo could not be saved to the part. Start over with a new image anyway?')) return;
-      let wait = Promise.resolve();
-      if (kept) {
-        const msg = kept === 'its side' ? 'Your changes to this photo were saved to the part.'
-          : `This photo was saved to the part as "${kept}"; reopen it from Sides.`;
-        if (overlay._toast) overlay._toast(msg, { autoMs: 4000 });
-        // Long enough to read the line before the page goes (~1.2 s for 12 words).
-        wait = new Promise(res => setTimeout(res, 1200));
-      }
-      // The job (other photos, 3D views) must be saved before the page goes: its store
-      // writes complete asynchronously, and a write merely started during unload may not.
-      const save = (J && J.beforeReload) ? J.beforeReload() : Promise.resolve();
-      Promise.all([save, wait]).then(() => window.location.reload());
+      (willKeep ? keepCurrentPhoto() : Promise.resolve(null)).then(kept => {
+        // The store refused it (full, say): its own warning is up; don't reload over the marks.
+        if (willKeep && !kept && overlay.ann && overlay.ann.items.length &&
+            !confirm('This photo could not be saved to the part. Start over with a new image anyway?')) return;
+        let wait = Promise.resolve();
+        if (kept) {
+          const msg = kept === 'its side' ? 'Your changes to this photo were saved to the part.'
+            : `This photo was saved to the part as "${kept}"; reopen it from Sides.`;
+          if (overlay._toast) overlay._toast(msg, { autoMs: 4000 });
+          // Long enough to read the line before the page goes (~1.2 s for 12 words).
+          wait = new Promise(res => setTimeout(res, 1200));
+        }
+        // The job (other photos, 3D views) must be saved before the page goes: its store
+        // writes complete asynchronously, and a write merely started during unload may not.
+        const save = (J && J.beforeReload) ? J.beforeReload() : Promise.resolve();
+        Promise.all([save, wait]).then(() => window.location.reload());
+      });
     });
     newImage.id = 'cal-tb-new';
     newImage.classList.add('cal-narrow-icon');

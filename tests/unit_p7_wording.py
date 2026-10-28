@@ -59,9 +59,11 @@ def main():
     for name, s in gone.items():
         check(name, s not in src, "gone" if s not in src else f"still has {s!r}")
 
-    # The ruler option is offered before the printed marker.
+    # Ruler first, printed marker second, rectangle after.
     i_ruler, i_marker = src.find("Ruler or tape on the part"), src.find("I printed a square")
-    check("ruler before marker", 0 <= i_ruler < i_marker, f"ruler@{i_ruler} marker@{i_marker}")
+    i_rect = src.find("A rectangle you know the size of")
+    check("ruler, then marker, then rectangle", 0 <= i_ruler < i_marker < i_rect,
+          f"ruler@{i_ruler} marker@{i_marker} rectangle@{i_rect}")
 
     # Chooser button classes carry a 44 px touch target themselves.
     m = re.search(r"\.cal-coach-primary, \.cal-coach-secondary\{([^}]*)\}", src)
