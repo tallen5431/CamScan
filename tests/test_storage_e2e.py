@@ -190,7 +190,7 @@ def main():
                         "window.CalibAnn.addPolyline(o.ann,[[200,200],[400,200],[400,400],[200,400]],o.getScale()||0.25,o.opts.units,null,true);"
                         "o.requestDraw();})()")
             with pg.expect_navigation(timeout=20000):
-                pg.locator('button[aria-label="Upload a new image"]').click()
+                pg.locator('#cal-tb-new').click()
             _ready(pg)
             s2 = pg.evaluate(STORED)
             assert s2["polys"][2] >= 2, f"edit just before New was lost: {s2['polys']}"
