@@ -1322,24 +1322,43 @@
         const el=document.createElement('div');
         el.style.cssText='position:fixed;left:50%;bottom:88px;transform:translateX(-50%);z-index:70;'+
           'background:#12171c;color:#e8eef2;border:1px solid #2a3a44;border-radius:10px;padding:10px 14px;'+
-          'font:600 13px Segoe UI,system-ui,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:90vw;text-align:center;';
+          'font:600 13px Segoe UI,system-ui,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:90vw;text-align:center;'+
+          // It can sit over the photo: taps go through it to the photo, except on its buttons.
+          'pointer-events:none;';
         const text=document.createElement('span'); text.textContent=msg; el.appendChild(text);
         let timer=null;
         // Optional action button ({label, fn}): a message that says "now do X" should let
         // you do X from where you are reading it, not send you hunting through menus.
-        if(opts.action){
+        // opts.actions: several, the first one highlighted.
+        (opts.actions || (opts.action ? [opts.action] : [])).forEach(function(act, i){
           const b=document.createElement('button'); b.type='button'; b.className='cal-toast-action';
-          b.textContent=opts.action.label;
-          b.style.cssText='margin-left:10px;min-height:34px;padding:5px 12px;border-radius:8px;border:none;'+
-            'background:#00d4ff;color:#04222b;font:700 13px Segoe UI,system-ui,sans-serif;cursor:pointer;';
-          b.onclick=()=>{ api.dismiss(); opts.action.fn(); };
+          b.textContent=act.label;
+          b.style.cssText='margin-left:10px;min-height:34px;padding:5px 12px;border-radius:8px;'+
+            (i ? 'border:1px solid #2a3a44;background:#1b2229;color:#e8eef2;' : 'border:none;background:#00d4ff;color:#04222b;')+
+            'font:700 13px Segoe UI,system-ui,sans-serif;cursor:pointer;pointer-events:auto;';
+          b.onclick=()=>{ api.dismiss(); act.fn(); };
           el.appendChild(b);
-        }
+        });
         // One message at a time: they all sit in the same spot, so a newer one replaces the
         // last rather than printing over it — page-wide, since each photo has its own overlay.
         if(window.__calLastToast && window.__calLastToast!==el && window.__calLastToast.parentNode) window.__calLastToast.parentNode.removeChild(window.__calLastToast);
         window.__calLastToast=el;
         document.body.appendChild(el);
+        // Above whatever sits along the bottom right now — the selected outline's buttons,
+        // the trace's Detail bar — so the message never covers the buttons it talks about.
+        // Never higher than the middle of the screen.
+        const place=()=>{
+          let topY=window.innerHeight-88;
+          document.querySelectorAll('.cal-context button.show, #cal-trace-detail').forEach(function(n){
+            const r=n.getBoundingClientRect();
+            if(r.height>0 && r.bottom>window.innerHeight*0.45 && r.top<topY) topY=r.top;
+          });
+          el.style.bottom=Math.round(Math.min(window.innerHeight*0.55, window.innerHeight-topY+10))+'px';
+        };
+        place();
+        // The buttons it must clear can appear a moment later (a trace finishing selects
+        // the new outline): look again.
+        const placer=setInterval(()=>{ if(!el.parentNode) clearInterval(placer); else place(); }, 400);
         const self=this;
         let gone=false;
         const api={
@@ -1349,8 +1368,9 @@
               if(window.__calLastToast && window.__calLastToast.parentNode) window.__calLastToast.parentNode.removeChild(window.__calLastToast);
               document.body.appendChild(el); window.__calLastToast=el;
             }
+            place();
             text.textContent=m; el.style.borderColor = kind==='err' ? '#e06a4a' : (kind==='ok' ? '#3fae74' : '#2a3a44'); },
-          dismiss(){ gone=true; if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
+          dismiss(){ gone=true; clearInterval(placer); if(timer) clearTimeout(timer); if(el.parentNode) el.parentNode.removeChild(el); }
         };
         if(opts.autoMs) timer=setTimeout(api.dismiss, opts.autoMs);
         return api;
@@ -1489,7 +1509,7 @@
         // A photo whose colours mislead the quick trace falls back to a careful one that takes
         // several seconds (6-10 s measured on real customer photos). Say so, so it never
         // looks hung.
-        const slowNote=setTimeout(()=>{ try{ toast.update('Still tracing — this photo needs the slower, careful method (about 10 s)…'); }catch(e){} }, 3500);
+        const slowNote=setTimeout(()=>{ try{ toast.update('Still tracing — this photo needs the slower, careful method (a few seconds)…'); }catch(e){} }, 3500);
         fetch(this._apiUrl('api/trace'), { method:'POST', headers:{'Content-Type':'application/json'},
             body:JSON.stringify(req.body) })
           .then(r=>{ clearTimeout(slowNote); return r.json(); })
@@ -1620,7 +1640,7 @@
         let durl=null; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){}   // none: straighten by the dots alone
         const self=this, id=a.id;
         if(refine && !durl){ this._toast('Refine needs the photo, which could not be read here.', {autoMs:3000}); return Promise.resolve(false); }
-        const toast=this._toast(refine ? (fromTrace ? 'Refining — re-tracing at full detail (up to ~10 s)…' : 'Refining…') : 'Straightening…');
+        const toast=this._toast(refine ? (fromTrace ? 'Refining — re-tracing at full detail (a few seconds)…' : 'Refining…') : 'Straightening…');
         const fine = fromTrace ? (function(){
           const req=self._traceRequest(self._lastAutoSeed, 0.0003);
           if(!req) return Promise.resolve(src);
@@ -1666,11 +1686,15 @@
           .catch(function(){ toast.update((refine?'Refine':'Straighten')+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
       }
 
-      // Square up (square_up.py): the selected outline's two long sides are parallel on the
-      // part, so where they converge in the photo says how the camera was tilted; with the
-      // scale line, every measurement and export is then corrected for that tilt. Undo puts
-      // the plain line scale back.
-      squareUp(){
+      // Square up (square_up.py): two edges that are parallel on the part converge in a photo
+      // taken at an angle, and where they meet says how the camera was tilted; with the scale
+      // line, every measurement and export is then corrected for that tilt. The ruler under
+      // the scale line is the first choice — it is a rectangle for certain, which the part may
+      // not be (ruler_check.py finds its edges in a crop of the photo round the line) — and the
+      // part's own long sides are used when no ruler edges are found. The message reports how
+      // the other one reads once squared up, which is the check on the result, and offers it
+      // instead. Undo puts the plain line scale back.
+      squareUp(reference){
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<4){
           this._toast('Select the part\'s traced outline first — Square up uses its two long sides.', {autoMs:3200});
@@ -1685,23 +1709,70 @@
         const cam=this.data && this.data.camera;
         const focal=(cam && cam.focal_source==='exif' && cam.focal_px>0) ? cam.focal_px : null;
         const self=this;
+        // The photo round the scale line, at full resolution (capped), for the ruler's edges.
+        let rulerImage=null, rulerBox=null;
+        if(reference!=='part'){
+          try{
+            const L=Math.hypot(line.b[0]-line.a[0], line.b[1]-line.a[1]), m=0.3*L+20;
+            const x0=Math.max(0, Math.floor(Math.min(line.a[0], line.b[0])-m)), y0=Math.max(0, Math.floor(Math.min(line.a[1], line.b[1])-m));
+            const x1=Math.min(W, Math.ceil(Math.max(line.a[0], line.b[0])+m)), y1=Math.min(H, Math.ceil(Math.max(line.a[1], line.b[1])+m));
+            const k=Math.min(1, 2400/Math.max(1, x1-x0, y1-y0));
+            if(x1-x0>8 && y1-y0>8){
+              const cnv=document.createElement('canvas');
+              cnv.width=Math.max(1, Math.round((x1-x0)*k)); cnv.height=Math.max(1, Math.round((y1-y0)*k));
+              cnv.getContext('2d').drawImage(this.img, x0, y0, x1-x0, y1-y0, 0, 0, cnv.width, cnv.height);
+              rulerImage=cnv.toDataURL('image/jpeg', 0.92); rulerBox=[x0, y0, k];
+            }
+          }catch(e){ rulerImage=null; rulerBox=null; }
+        }
+        const u=Units.get(this.opts.units), dp=(u.label==='mm'?1:(u.label==='cm'?2:3));
+        const len=mm=>u.fromMM(mm).toFixed(dp)+' '+u.label;
+        const r1=v=>Math.round(v*10)/10;
         const toast=this._toast('Squaring up…');
         return fetch(this._apiUrl('api/square_up'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ outline:a.pts, ruler:[line.a, line.b], ruler_mm:line.mm, image_w:W, image_h:H, focal_px:focal }) })
+            body:JSON.stringify({ outline:a.pts, ruler:[line.a, line.b], ruler_mm:line.mm, image_w:W, image_h:H, focal_px:focal,
+                                  ruler_image:rulerImage, ruler_box:rulerBox, reference:reference||'auto' }) })
           .then(r=>r.json())
           .then(function(j){
             if(!j || !j.ok){ toast.update((j && j.error) || 'Could not square up this photo.', 'err'); setTimeout(toast.dismiss, 5000); return false; }
             const prev={ mm:self.opts.manualMmPerPx, H:self.opts.manualHomography, ref:self._manualRef, ext:self._refExtentPx };
-            self.setManualRectScale(j.H, self.opts.manualMmPerPx, { kind:'squared', tilt_deg:j.tilt_deg,
-                                     focal_source:j.focal_source, sides:j.sides }, self._refExtentPx);
-            toast.dismiss();
-            const msg='Squared up: the camera was tilted '+(Math.round(j.tilt_deg*10)/10)+'° along the part (its sides narrowed '+
-              (Math.round(j.width_change_pct*10)/10)+'% end to end). Measurements and exports now correct for it.'+
-              (j.focal_source==='assumed' ? ' The camera\'s focal length was assumed — the original photo from the phone carries the exact one.' : '');
-            self._toast(msg, { autoMs:9000, action:{ label:'Undo', fn:function(){
+            const undo=function(){
               if(prev.H) self.setManualRectScale(prev.H, prev.mm, prev.ref, prev.ext);
               else { self.opts.manualHomography=null; self._manualRef=prev.ref; self.opts.manualMmPerPx=prev.mm; self._rescaleAnnotations(); self.requestDraw(); }
-            } } });
+            };
+            if(self._manualRef && self._manualRef.kind==='squared' && self._squarePrev) Object.assign(prev, self._squarePrev);   // switching: undo goes all the way back
+            self.setManualRectScale(j.H, self.opts.manualMmPerPx, { kind:'squared', tilt_deg:j.tilt_deg, reference:j.reference,
+                                     focal_source:j.focal_source, sides:j.sides, ruler_edges:j.ruler_edges }, self._refExtentPx);
+            self._squarePrev=prev;
+            toast.dismiss();
+            const tilt=r1(j.tilt_deg)+'°';
+            let msg;
+            if(j.reference==='ruler'){
+              msg='Squared up from the ruler\'s edges: the camera was tilted '+tilt+'.';
+              const rw=j.ruler_check && j.ruler_check.width_mm;
+              if(rw) msg+=' The ruler reads '+len((rw[0]+rw[1])/2)+' wide — if yours is, the correction is right.';
+              const p=j.part;
+              if(p && p.width_mm){
+                // A ruler is short next to the part: the taper is good to about ± 2 standard
+                // errors (taper_sigma_mm), so only a taper well beyond that is called one.
+                const d=Math.abs(p.width_mm[1]-p.width_mm[0]), pm=2*(p.taper_sigma_mm||0);
+                msg+= d>Math.max(1, pm)
+                  ? ' The part\'s long sides are NOT parallel: '+len(p.width_mm[0])+' wide at one end, '+len(p.width_mm[1])+' at the other ('+len(d)+(pm?' ± '+len(pm):'')+
+                    ') — it tapers, or its side walls show at one end. The outline keeps that taper.'
+                  : ' The part\'s long sides agree with the ruler: parallel to within '+len(Math.max(d, pm))+'.';
+              }
+            } else {
+              msg='Squared up from the part\'s long sides: the camera was tilted '+tilt+' along the part (its sides narrowed '+
+                r1(j.width_change_pct)+'% end to end).';
+              const c=j.ruler_check;
+              if(c && c.width_mm) msg+=' Check: the ruler now reads '+len(c.width_mm[0])+' and '+len(c.width_mm[1])+' wide at its two ends'+
+                (c.width_change_pct>0.6 ? ' ('+r1(c.width_change_pct)+'% apart — a true rectangle reads the same; the part may not be one).' : ' — square.');
+              else if(reference!=='part') msg+=' (No ruler edges found along the scale line to check it against.)';
+            }
+            if(j.focal_source==='assumed' && j.tilt_deg>3) msg+=' The camera\'s focal length was assumed — the original photo from the phone carries the exact one.';
+            const alt=j.other ? { label: j.other==='ruler' ? 'Use the ruler instead' : 'Use the part\'s sides instead',
+                                   fn:function(){ self.ann.selectedId=a.id; self.squareUp(j.other); } } : null;
+            self._toast(msg, { autoMs:16000, actions: alt ? [alt, { label:'Undo', fn:undo }] : [{ label:'Undo', fn:undo }] });
             return true;
           })
           .catch(function(){ toast.update('Square up needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });

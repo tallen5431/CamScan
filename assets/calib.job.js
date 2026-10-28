@@ -233,21 +233,53 @@
     btn.style.cssText='position:fixed;z-index:38;left:12px;bottom:calc(var(--cal-kpi-h, 46px) + 14px);'+
       'min-height:44px;padding:9px 15px;border-radius:22px;border:none;background:#00d4ff;color:#04222b;'+
       'font:600 14px Segoe UI,system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.5);cursor:pointer;display:none;';
+    _btnFloat=btn.style.cssText;
     btn.onclick=openPanel;
     document.body.appendChild(btn);
+    var st=document.createElement('style');
+    // Phone: the button shows the icon and count only, and the Sides bar sits left of the
+    // Simple view toggle instead of under it.
+    st.textContent='@media (max-width: 600px){ #cal-job-btn .cal-job-long{ display:none; }'+
+      ' #cal-job-btn{ padding:6px 9px !important; }'+
+      ' #cal-side-switcher{ left:10px !important; right:auto !important; margin:0 !important; max-width:calc(100vw - 150px) !important; } }';
+    document.head.appendChild(st);
   }
-  var _btnSig=null;
+  var _btnSig=null, _btnFloat=null;
+  // Where the button lives. Floating over the bottom-left corner, it sat on top of the
+  // selected outline's buttons (Delete, Tidy…) on a desktop and behind the trace's Detail
+  // bar on a phone. So while a photo is open it goes in that photo's top bar, beside Export;
+  // it only floats when there is no top bar to hold it.
+  function dockHost(){
+    var bars=document.querySelectorAll('.cal-view .cal-tb-right');
+    for(var i=0;i<bars.length;i++){ if(bars[i].getClientRects().length) return bars[i]; }
+    return null;
+  }
   function reflectButton(){
     ensureButton();
     var show = !!document.querySelector('.cal-view') || job.views.length>0;
-    // Idempotence guard: writing btn.innerHTML is itself a DOM mutation, and this runs
-    // from a subtree MutationObserver — so skip the write when nothing shown changed, or
-    // the write would re-trigger the observer forever and hang the page.
-    var sig = (show?'1':'0')+'|'+job.views.length;
-    if(sig===_btnSig) return;
+    var host = show ? dockHost() : null;
+    // Moving the button is itself a DOM mutation, and this runs from a subtree
+    // MutationObserver: only move it when it is not already where it belongs.
+    if(host && btn.parentNode!==host){
+      host.insertBefore(btn, host.firstChild);
+      btn.style.cssText='display:none;align-items:center;gap:0;min-height:40px;padding:6px 12px;border-radius:999px;'+
+        'border:none;background:#00d4ff;color:#04222b;font:600 13px Segoe UI,system-ui,sans-serif;cursor:pointer;white-space:nowrap;';
+    } else if(!host && btn.parentNode!==document.body){
+      document.body.appendChild(btn);
+      btn.style.cssText=_btnFloat;
+    }
+    // Idempotence guard: writing btn.innerHTML is itself a DOM mutation too — skip the
+    // write when nothing shown changed, or the write would re-trigger the observer forever
+    // and hang the page.
+    var sig = (show?'1':'0')+'|'+job.views.length+'|'+(host?'d':'f');
+    if(sig===_btnSig && btn.style.display===(show?'inline-flex':'none')) return;
     _btnSig=sig;
     btn.style.display = show ? 'inline-flex' : 'none';
-    btn.innerHTML = '📋 Submit to Datum' + (job.views.length ? ' ('+job.views.length+')' : '');
+    // A phone's top bar has room for the icon and the count, not the words.
+    btn.innerHTML = '📋<span class="cal-job-long">&nbsp;Submit to Datum</span>' +
+      (job.views.length ? '<span>&nbsp;<span class="cal-job-long">(</span>'+job.views.length+'<span class="cal-job-long">)</span></span>' : '');
+    btn.setAttribute('aria-label', 'Submit to Datum' + (job.views.length ? ' ('+job.views.length+' views)' : ''));
+    btn.title='Submit to Datum';
   }
 
   function chip(label, onClick, primary){
@@ -576,7 +608,9 @@
     _switchSig=sig;
     if(!_switcher){
       _switcher=document.createElement('div'); _switcher.id='cal-side-switcher';
-      _switcher.style.cssText='position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:37;'+
+      // Centred with margins, not left:50% + translate: that version could only grow to half
+      // the screen's width and wrapped to two rows on a phone, over the Simple view toggle.
+      _switcher.style.cssText='position:fixed;top:54px;left:0;right:0;margin:0 auto;width:max-content;z-index:37;'+
         'display:flex;gap:7px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:calc(100vw - 20px);'+
         'background:#12171c;border:1px solid #26323b;border-radius:12px;box-shadow:0 8px 26px rgba(0,0,0,.5);padding:7px 11px;';
       document.body.appendChild(_switcher);
@@ -997,6 +1031,9 @@
     render();   // reflectButton + ensureLandingLoad + renderSideSwitcher (all signature-guarded)
     hookAutosave();
     new MutationObserver(function(){ render(); hookAutosave(); }).observe(document.documentElement, {childList:true, subtree:true});
+    // Showing another photo can be a style change, which the observer above does not see;
+    // the Submit button must follow it into that photo's top bar.
+    setInterval(reflectButton, 1000);
     // The top-bar 'New' button reloads the page; syncOpenView otherwise runs only on
     // switch/save/submit, so flush the open reopened side back into the job here too — else a
     // reload rehydrates it from its pre-edit snapshot and the new marks are silently lost.

@@ -74,14 +74,27 @@ re-draw in CAD.
      straightened corner is sharp, a cover's usually is not — or keeps it sharp if that is
      what the photo shows. If the outline is still as traced (or as Straighten left it), Refine
      first re-traces it at full detail with the same Area box and taps, so gentle curves the
-     first trace smoothed away come back (up to ~10 s). Use either; both undo in one step.
+     first trace smoothed away come back (a few seconds). Use either; both undo in one step.
      Photo taken at an angle? With the scale set from a line along your ruler, select the
-     outline and press "⊞ Square up": the part's two long sides are parallel, so how they
-     narrow in the photo gives the camera's tilt, and every measurement and export is
-     corrected for it (exact for tilt along the part; within ~1% with a few degrees sideways
-     as well). It uses the photo's focal length when the original photo carries it, and says
-     when it had to assume one. A rectangle of known size on the face (Set scale) is exact
-     in every case.
+     outline and press "⊞ Square up". A ruler is a rectangle: its two edges are parallel, so
+     how they narrow in the photo gives the camera's tilt, and every measurement and export
+     is corrected for it. CamScan finds the ruler's edges itself, along the scale line (draw
+     it down the middle of the ruler, lying flat on the part's face). The message then says:
+       - the tilt it corrected;
+       - how wide the ruler reads — compare it with your ruler: if they match, the
+         correction is right;
+       - whether the part's own long sides come out parallel. If not, it gives the width at
+         each end, ± how sure it is: the part tapers, or its side walls show at one end.
+         The outline keeps that taper.
+     No ruler edges along the line (a tape, a printed scale)? It uses the part's two long
+     sides instead — that assumes the part is a true rectangle — and the message offers to
+     switch between the two. Measured on a customer's step-pad photo, the cover's sides
+     narrowed about twice as much as the ruler lying on it: squaring up from the cover would
+     have over-corrected and hidden a ~3.6 mm taper.
+     Exact for tilt along the part; within ~1-2% with a few degrees sideways as well. It uses
+     the photo's focal length when the original photo carries it; a photo sent through a chat
+     app has lost it, and the upload message says so. A rectangle of known size on the face
+     (Set scale) is exact in every case.
   2) Select the outline and press "⇥ Depth". Enter how far the shape runs.
      For a COVER, also fill in the wall thickness (see below).
   3) 💾 menu → "Save STL (3D print)".

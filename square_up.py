@@ -51,7 +51,12 @@ def _seg(s, what):
 
 
 def square_up(side1: Sequence, side2: Sequence, ruler: Sequence, ruler_mm: float,
-              image_w: float, image_h: float, focal_px: Optional[float] = None) -> Dict[str, Any]:
+              image_w: float, image_h: float, focal_px: Optional[float] = None,
+              min_converge_deg: float = _MIN_CONVERGE_DEG) -> Dict[str, Any]:
+    """`min_converge_deg`: edges closer to parallel than this are taken as parallel. A
+    part's sides traced by hand or by the trace need the default; a ruler's two edges, fitted
+    to a fraction of a pixel along their whole length, converge by far less than that and
+    still mean it (see ruler_check.py)."""
     a1, b1 = _seg(side1, "The first side")
     a2, b2 = _seg(side2, "The second side")
     ra, rb = _seg(ruler, "The scale line")
@@ -87,7 +92,7 @@ def square_up(side1: Sequence, side2: Sequence, ruler: Sequence, ruler_mm: float
 
     K = np.array([[f, 0.0, W / 2.0], [0.0, f, Hh / 2.0], [0.0, 0.0, 1.0]])
     Ki = np.linalg.inv(K)
-    if angle < _MIN_CONVERGE_DEG:
+    if angle < float(min_converge_deg):
         # Already parallel in the photo: the plane is square to the camera along the part.
         d1 = np.array([d1_img[0], d1_img[1], 0.0])
     else:

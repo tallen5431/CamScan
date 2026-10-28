@@ -267,6 +267,14 @@ def main():
             with pg.expect_response(lambda r: "/api/square_up" in r.url) as sr:
                 _tidy(pg, "#cal-ctx-squareup")
             assert sr.value.json().get("ok"), f"square up refused: {sr.value.json()}"
+            # The photo round the scale line goes along, for the ruler's edges; this photo has
+            # no ruler there, so the part's sides are used and the message says so.
+            sq_body = json.loads(sr.value.request.post_data)
+            assert str(sq_body.get("ruler_image") or "").startswith("data:image/jpeg") and \
+                len(sq_body.get("ruler_box") or []) == 3, "Square up did not send the photo round the ruler"
+            assert sr.value.json().get("reference") == "part", sr.value.json()
+            pg.wait_for_function("[...document.querySelectorAll('.cal-toast-action')].some(b=>b.textContent==='Undo')"
+                                 " && document.body.innerText.includes('part\\'s long sides')", timeout=5000)
             pg.wait_for_function(f"{O}.opts.manualHomography && {O}._manualRef && {O}._manualRef.kind==='squared'",
                                  timeout=5000)
             pg.wait_for_function("document.getElementById('cal-tb-scale').innerText.includes('squared')", timeout=5000)

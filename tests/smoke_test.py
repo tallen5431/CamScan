@@ -2291,6 +2291,165 @@ def main():
     except Exception as e:
         check("/api/export/part builds, previews, and refuses junk cleanly", False, repr(e))
 
+    # 8r12) Square up from the ruler. A ruler is a rectangle for certain; a part may not be —
+    #       measured on the customer's step-pad photo, the cover's sides widened 5.9% down the
+    #       photo but the ruler lying on it only 1.2% over its own length, so squaring up from
+    #       the cover's sides over-corrected (the ruler then read 1.25% wide the other way).
+    #       Rendered boards with a ruler on them, tilted along the board, one of them tapered:
+    #       the ruler's edges are found, the size comes back, and the taper is measured rather
+    #       than squared away.
+    try:
+        import base64 as _b64r
+        import math as _mr
+        from ruler_check import find_ruler_edges as _fre, ruler_report as _rrep
+        from square_up import square_up as _sqr, long_sides as _lsr
+
+        def _rotr(ax, deg):
+            t = _mr.radians(deg); c, s_ = _mr.cos(t), _mr.sin(t)
+            return {"x": np.array([[1, 0, 0], [0, c, -s_], [0, s_, c]]),
+                    "y": np.array([[c, 0, s_], [0, 1, 0], [-s_, 0, c]])}[ax]
+
+        def _board_photo(pitch, taper=0.0, ruler=True, ss=8):
+            # Drawn straight into the photo, each shape projected exactly and supersampled:
+            # warping a flat texture instead blurs edges unevenly along a tilted ruler, which
+            # is an error of the renderer, not of the finder, and measured as one.
+            K = np.array([[1200.0, 0, 600], [0, 1200.0, 800], [0, 0, 1]])
+            R = _rotr("x", 180) @ _rotr("x", pitch)
+            C = np.array([85.0, 350.0, 0.0]) + R.T @ np.array([0, 0, -900.0])
+            P = K @ np.column_stack([R[:, 0], R[:, 1], -R @ C])
+
+            def pj(x, y):
+                q = P @ np.array([x, y, 1.0]); return (q[:2] / q[2]).tolist()
+
+            def big(x, y):
+                return np.round(((np.array(pj(x, y)) + 0.5) * ss - 0.5) * 16).astype(np.int32)
+            g = np.full((1600 * ss, 1200 * ss), 150, np.uint8)
+            cv2.fillPoly(g, [np.array([big(0, 0), big(170, 0), big(170 + taper, 700), big(0, 700)])], 60,
+                         cv2.LINE_8, 4)
+            if ruler:                              # 28 x 305 mm, ticks along both edges
+                cv2.fillPoly(g, [np.array([big(60, 250), big(88, 250), big(88, 555), big(60, 555)])], 205,
+                             cv2.LINE_8, 4)
+                for i in range(193):
+                    y = 255 + i * 25.4 / 16
+                    cv2.line(g, tuple(big(88 - (10 if i % 16 == 0 else 3.5), y)), tuple(big(88, y)), 40,
+                             ss // 3, cv2.LINE_8, 4)
+                for i in range(300):
+                    cv2.line(g, tuple(big(60, 252 + i)), tuple(big(60 + (8 if i % 10 == 0 else 3), 252 + i)), 40,
+                             ss // 3, cv2.LINE_8, 4)
+            g = cv2.resize(g, (1200, 1600), interpolation=cv2.INTER_AREA).astype(np.float32)
+            g = cv2.GaussianBlur(g, (0, 0), 0.9)
+            g = np.clip(g + np.random.default_rng(7).normal(0, 3, g.shape), 0, 255).astype(np.uint8)
+            return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), pj
+
+        bad12 = []
+        rows12 = []
+        for pitch, taper in ((0, 0), (15, 0), (30, 0), (15, 6)):
+            img12, pj12 = _board_photo(pitch, taper)
+            ra, rb = pj12(62, 255), pj12(62, 509)                  # a 254 mm scale line on it
+            e12 = _fre(img12, ra, rb)
+            if not e12:
+                bad12.append(f"pitch {pitch}: no ruler edges"); continue
+            r12 = _sqr(e12[0], e12[1], [ra, rb], 254.0, 1200, 1600, 1200.0, min_converge_deg=0.0)
+            c4 = [pj12(0, 0), pj12(170, 0), pj12(170 + taper, 700), pj12(0, 700)]
+            wb = _rrep([[c4[0], c4[3]], [c4[1], c4[2]]], r12["H"])["width_mm"]
+            Hm = np.array(r12["H"])
+
+            def _tp(p_):
+                q = Hm @ np.array([p_[0], p_[1], 1.0]); return q[:2] / q[2]
+            L12 = float(np.hypot(*(_tp(c4[3]) - _tp(c4[0]))))
+            err = max(abs(wb[0] / 170 - 1), abs(wb[1] / (170 + taper) - 1), abs(L12 / 700 - 1))
+            rows12.append((pitch, taper, err, wb))
+            if err > 0.015 or abs(r12["tilt_deg"] - pitch) > 1.5:
+                bad12.append(f"pitch {pitch} taper {taper}: widths {wb} length {L12:.1f} tilt {r12['tilt_deg']}")
+            if taper:
+                # The board's own sides would square the taper away — that is the failure mode.
+                outline = []
+                for i in range(4):
+                    a_, b_ = np.array(c4[i]), np.array(c4[(i + 1) % 4])
+                    outline += [(a_ + (b_ - a_) * t).tolist() for t in np.linspace(0, 1, 12, endpoint=False)]
+                sd = _lsr(outline)
+                rp = _sqr(sd[0], sd[1], [ra, rb], 254.0, 1200, 1600, 1200.0)
+                wp = _rrep(sd, rp["H"])["width_mm"]
+                if abs(wp[1] - wp[0]) > 0.5:
+                    bad12.append(f"part-side squaring kept a taper? {wp}")
+                if abs(abs(wb[1] - wb[0]) - taper) > 1.0:
+                    bad12.append(f"taper read {abs(wb[1] - wb[0]):.2f} mm, true {taper}")
+        plain, _pjn = _board_photo(15, ruler=False)
+        if _fre(plain, _pjn(62, 255), _pjn(62, 509)) is not None:
+            bad12.append("ruler edges found where there is no ruler")
+        # The endpoint, as the app calls it: a crop round the scale line, at a scale.
+        import app as _app12
+        cli12 = _app12.server.test_client()
+        img12, pj12 = _board_photo(15, 6)
+        ra, rb = pj12(62, 255), pj12(62, 509)
+        x0, y0 = int(min(ra[0], rb[0]) - 120), int(min(ra[1], rb[1]) - 120)
+        crop = img12[y0:int(max(ra[1], rb[1]) + 120), x0:int(max(ra[0], rb[0]) + 120)]
+        crop = cv2.resize(crop, None, fx=0.8, fy=0.8, interpolation=cv2.INTER_AREA)
+        durl = "data:image/png;base64," + _b64r.b64encode(cv2.imencode(".png", crop)[1].tobytes()).decode()
+        c4 = [pj12(0, 0), pj12(170, 0), pj12(176, 700), pj12(0, 700)]
+        outline = []
+        for i in range(4):
+            a_, b_ = np.array(c4[i]), np.array(c4[(i + 1) % 4])
+            outline += [(a_ + (b_ - a_) * t).tolist() for t in np.linspace(0, 1, 12, endpoint=False)]
+        body12 = {"outline": outline, "ruler": [ra, rb], "ruler_mm": 254, "image_w": 1200, "image_h": 1600, "focal_px": 1200,
+                  "ruler_image": durl, "ruler_box": [x0, y0, 0.8]}
+        with _quiet():
+            j_auto = cli12.post("/api/square_up", json=body12).get_json()
+            j_part = cli12.post("/api/square_up", json=dict(body12, reference="part")).get_json()
+            j_junk = cli12.post("/api/square_up", json=dict(body12, ruler_box=["x", 0, float("nan")])).get_json()
+            c_none = cli12.post("/api/square_up", json=dict(body12, ruler_image=None, reference="ruler")).get_json()
+        if not (j_auto.get("ok") and j_auto.get("reference") == "ruler" and j_auto.get("other") == "part"):
+            bad12.append(f"auto did not use the ruler: {str(j_auto)[:160]}")
+        elif abs(abs(j_auto["part"]["width_mm"][1] - j_auto["part"]["width_mm"][0]) - 6) > 1.0:
+            bad12.append(f"endpoint taper {j_auto['part']['width_mm']}")
+        if not (j_part.get("ok") and j_part.get("reference") == "part" and j_part.get("other") == "ruler"
+                and abs(j_part["ruler_check"]["width_change_pct"]) > 0.8):
+            bad12.append(f"reference=part not honoured: {str(j_part)[:160]}")
+        if not (j_junk.get("ok") and j_junk.get("reference") == "part"):
+            bad12.append(f"junk ruler box not ignored: {str(j_junk)[:160]}")
+        if c_none.get("ok") is not False:
+            bad12.append(f"reference=ruler without a ruler should refuse: {c_none}")
+        check("Square up from the ruler: tilt and size come back, a tapered part's taper is measured",
+              not bad12, "; ".join(bad12) or
+              "worst size error {:.2f}% over pitch 0-30 deg; taper read {:.2f} mm (true 6); the board's "
+              "own sides square it away; no ruler -> none; endpoint auto=ruler, part honoured, junk "
+              "box ignored".format(100 * max(r_[2] for r_ in rows12),
+                                   abs(rows12[-1][3][1] - rows12[-1][3][0])))
+    except Exception as e:
+        check("Square up from the ruler: tilt and size come back, a tapered part's taper is measured", False, repr(e))
+
+    # 2g7) Tracing runs GrabCut coarse to fine; it must give what one full-size pass gives,
+    #      and the same answer every time.
+    try:
+        import time as _t7
+        import auto_outline as _ao7
+        rng7 = np.random.default_rng(3)
+        im7 = np.clip(rng7.normal(150, 18, (1300, 980, 3)), 0, 255).astype(np.uint8)
+        cv2.ellipse(im7, (470, 640), (260, 470), 8, 0, 360, (60, 64, 70), -1)
+        cv2.rectangle(im7, (300, 300), (700, 1000), (52, 55, 60), -1)
+        im7 = cv2.GaussianBlur(im7, (0, 0), 1.2)
+        gc0 = np.full(im7.shape[:2], cv2.GC_BGD, np.uint8)
+        gc0[120:1200, 160:820] = cv2.GC_PR_FGD
+        cv2.circle(gc0, (470, 640), 25, cv2.GC_FGD, -1)
+        t0 = _t7.time()
+        full = gc0.copy()
+        cv2.setRNGSeed(1)
+        cv2.grabCut(im7, full, None, np.zeros((1, 65)), np.zeros((1, 65)), 5, cv2.GC_INIT_WITH_MASK)
+        t_full = _t7.time() - t0
+        t0 = _t7.time()
+        cf = _ao7._grabcut_coarse_fine(im7, gc0.copy(), 5)
+        t_cf = _t7.time() - t0
+        cf2 = _ao7._grabcut_coarse_fine(im7, gc0.copy(), 5)
+        fa = (full == 1) | (full == 3)
+        fb = (cf == 1) | (cf == 3)
+        iou7 = float((fa & fb).sum() / max(1, (fa | fb).sum()))
+        same7 = bool(np.array_equal(cf, cf2))
+        check("tracing coarse to fine matches one full-size pass, faster and repeatable",
+              iou7 > 0.99 and same7 and t_cf < t_full,
+              f"IoU {iou7:.4f}, {t_full:.2f}s -> {t_cf:.2f}s, repeatable={same7}")
+    except Exception as e:
+        check("tracing coarse to fine matches one full-size pass, faster and repeatable", False, repr(e))
+
     # 8s) The same physical part appears in every photo of a job, so a length measured in a
     #     view that HAD a usable reference is a valid reference in a view that had none. That
     #     is what rescues a real set like this customer's: a ruler lying in the part's plane
