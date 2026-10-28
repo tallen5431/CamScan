@@ -132,6 +132,9 @@ def _real_server(pg, notes):
     st = _status(pg)
     assert "Scale End to match Top ×0.893" in st and "Scale Top to match End ×1.120" in st, f"match buttons: {st!r}"
     assert pg.is_disabled("#cal-part-build"), "download enabled on a refused build"
+    #    STEP and OBJ are off too, and all three look it (the disabled STL kept opacity 1).
+    assert pg.is_disabled("#cal-part-build-step") and pg.is_disabled("#cal-part-build-obj"), "STEP/OBJ live on a refusal"
+    assert pg.evaluate("getComputedStyle(document.getElementById('cal-part-build')).opacity") == "0.45"
     with pg.expect_response(lambda r: "/api/export/part" in r.url, timeout=20000) as fixed:
         pg.click('#cal-part-status button[data-match="end"]')
     fj = fixed.value.json()

@@ -11,7 +11,10 @@ cover that prompted them:
     at the End role it fits;
   * the server's "End is 12% wider than Top" refusal: read back into {view, axis, sizes}
     whether or not the server sends it as data;
-  * a 3 mm cover downloaded plate-down with the box unticked: never "upside down".
+  * a 3 mm cover downloaded plate-down with the box unticked: never "upside down";
+  * a cover whose deck barely touches the bed: never "ready to print";
+  * a fit warning said once, Match buttons that say what else they move, and none for a view
+    a typed size pins; a photo scale change after a Match clears the Match.
 
     python tests/unit_p2_build_dialog.py
 
@@ -65,6 +68,59 @@ out.solidFlip = R.describe({ size_mm: [200, 90, 25], kind: 'solid', upside_down:
 out.fits = R.describe({ size_mm: [679, 164.6, 79.7], deskew: [{ view: 'top', deg: 1.1 }],
                         fits: [{ view: 'end', axis: 'width', pct: 6.7, have_mm: 175.7, want_mm: 164.6, setter: 'top', kind: 'rescale' }] });
 out.oldFits = R.describe({ size_mm: [200, 90, 25], fits: [{ view: 'end', axis: 'width', pct: 3.2 }] });
+// A cover whose deck is not on the bed: from an older server (says "ready to print") and the
+// current one (says it is not).
+const bedW = 'Only 2% of the deck lies on the bed — the top edge of the End trace is curved or sloped, so the print may come loose.';
+out.bedOld = R.describe({ size_mm: [679, 155, 50], kind: 'shell', wall_mm: 3, plate_down: true, warnings: [bedW],
+                          orientation: 'plate-down, open side up — ready to print (no supports)',
+                          note: 'Hollow, 3.0 mm walls, open underneath; downloads plate-down, open side up — ready to print (no supports).' });
+out.bedNew = R.describe({ size_mm: [679, 155, 50], kind: 'shell', wall_mm: 3, plate_down: true, warnings: [bedW], bed_contact: 0.02,
+                          orientation: 'plate-down, open side up — but the deck is not flat on the bed, not ready to print' });
+out.bedFallback = R.describe({ size_mm: [679, 155, 50], kind: 'shell', upside_down: true, warnings: [bedW] });
+// A fit over 3% comes with a linked warning: one line, not two.
+const fw = "The end view's width is 7.7% off the top view's (170.7 vs 158.5 mm); the whole end view was rescaled to match, so its other size moved with it. Check that photo's reference.";
+out.fitOnce = R.describe({ size_mm: [700, 158.5, 47], warnings: [fw, 'Something else.'],
+                           fits: [{ view: 'end', axis: 'width', pct: 7.66, have_mm: 170.65, want_mm: 158.5, setter: 'top', kind: 'rescale', warning: fw }] });
+// A typed length the ends trim, and the ends said once.
+out.trimmed = R.describe({ size_mm: [698.7, 160.2, 51.2], ends: { slope_deg: 30, radius_mm: 0 },
+                           note: 'Ends: 30° slope (typed — there is no Side view).',
+                           fits: [{ view: 'top', axis: 'length', pct: -3.0, have_mm: 678.8, want_mm: 700, setter: 'known', kind: 'rescale', final_mm: 698.74 }] });
+out.parts = R.describeParts({ size_mm: [679, 164.6, 79.7], warnings: ['A warning.'] });
+// The raised-face note: a cover whose Top was scaled from a ruler line with no offset.
+window.CalibJob = { part: () => ({ views: { top: { size_mm: [679, 164.6], ruler: true, plane_mm: 0 } }, opts: {} }) };
+out.raised = R.describe({ size_mm: [679, 164.6, 45], kind: 'shell', wall_mm: 3 });
+out.raisedSolid = R.describe({ size_mm: [679, 164.6, 45], kind: 'solid' });
+window.CalibJob = { part: () => ({ views: { top: { size_mm: [679, 164.6], ruler: true, plane_mm: -45 } }, opts: {} }) };
+out.raisedSet = R.describe({ size_mm: [679, 164.6, 45], kind: 'shell', wall_mm: 3 });
+// Match buttons: both ways, each saying what else moves; only one when a typed size pins the setter.
+window.CalibJob = { part: () => ({ views: { top: { size_mm: [620, 155] }, end: { size_mm: [155, 60] } }, opts: {} }) };
+out.matchBoth = R.matchButtons({ view: 'end', axis: 'width', have_mm: 175, want_mm: 165, setter: 'top' }, { top: [700, 165], end: [175, 50] });
+out.matchPinned = R.matchButtons({ view: 'end', axis: 'width', have_mm: 155, want_mm: 175, setter: 'known', setter_pinned: true, setter_view: 'top' });
+out.measured = R.measuredLine({ deskew: [{ view: 'end', deg: -9.92 }], measured_mm: { end: [185.17, 59.18] } });
+out.needOne = R.needsDepth({ top: { size_mm: [700, 175] } }, {});
+out.needTyped = R.needsDepth({ top: { size_mm: [700, 175] } }, { depth: 50 });
+out.needKnown = R.needsDepth({ top: { size_mm: [700, 175] } }, { known: { height: 50 } });
+out.needTwo = R.needsDepth({ top: { size_mm: [700, 175] }, end: { size_mm: [175, 50] } }, {});
+// sync(): the photo's own scale changed under a Match factor (a raised-face offset): the
+// factor goes, from every view on that photo, and a toast says so. A moved dot keeps it.
+const toasts = [];
+const prof = { points: [[0, 0], [100, 0], [100, 30]], mm_per_px: 0.5172, image_height: 1000, size_mm: [100, 30] };
+const ov = { ann: { items: [{ id: 7, type: 'polyline', closed: true }] }, isCalibrated: () => true,
+             partProfile: () => prof, opts: { manualMmPerPx: 0.5172 }, featureHeightMM: () => 0,
+             _toast: (m) => { toasts.push(m); return {}; } };
+document.querySelector = (q) => q === '.cal-view' ? { __overlay: ov } : null;
+const job = { p: { views: { top: { ann_id: 7, source: 'ph1', points: prof.points, mm_per_px: 0.5172, image_height: 1000,
+                                   scale: 1.10564, scale_undo: 1, scale_note: 'matched to End width' },
+                            cavity: { ann_id: 99, source: 'ph1', scale: 1.10564, scale_undo: 1 } }, opts: {} },
+              part() { return this.p; }, photoId: () => 'ph1', savePart() {} };
+window.CalibJob = job;
+prof.points = [[0, 0], [101, 0], [100, 30]];                 // a dragged dot: same mm/px
+window.CalibPart3D.sync();
+out.syncDot = { scale: job.p.views.top.scale, toasts: toasts.length };
+prof.mm_per_px = 0.5552;                                     // the offset: 7.35% on the mm/px
+window.CalibPart3D.sync();
+out.syncScale = { top: job.p.views.top.scale === undefined, cavity: job.p.views.cavity.scale === undefined,
+                  undo: job.p.views.top.scale_undo === undefined, toast: toasts[0] || '' };
 console.log(JSON.stringify(out));
 """
 
@@ -129,10 +185,49 @@ def main():
     f = o["fits"]
     check("a fit shows both readings and who set it",
           "Width: Top 164.6 mm, End 175.7 mm (6.7% apart) — using Top" in f and 'data-use-axis="width"' in f
-          and 'data-role="end"' in f and ">Use End<" in f, f)
+          and 'data-role="end"' in f and ">Use End’s width<" in f
+          and 'title="Use End’s width: Top is stretched to 175.7 mm in width, its length stays as measured"' in f, f)
     check("a deskew is reported", "Top view turned 1.1° to square it." in f, f)
     check("a fit from a server without readings keeps the old wording",
           "The end view was stretched 3.2% in width to match." in o["oldFits"], o["oldFits"])
+
+    for key in ("bedOld", "bedNew", "bedFallback"):
+        t = o[key]
+        check(f"a deck that is not on the bed is never called ready to print ({key})",
+              "of the deck lies on the bed" in t and "ready to print" not in t.replace("not ready to print", ""), t)
+    t = o["fitOnce"]
+    check("a fit over 3% is said once, on its fit line, with the advice",
+          t.count("7.7%") == 1 and "Check that photo’s reference." in t and "Something else." in t, t)
+    t = o["trimmed"]
+    check("a typed length the ends trim says so on its fit line",
+          "using your number; the views trim it to 698.7 mm" in t, t)
+    check("the typed ends are said once", t.count("Ends:") == 1, t)
+    pp = o["parts"]
+    check("the result splits into the Part summary and the notes",
+          len(pp["summary"]) == 1 and pp["summary"][0].startswith("Part:") and any("A warning." in n for n in pp["notes"])
+          and any("pieces" in n for n in pp["notes"]), str(pp))
+    check("a cover whose Top came from a ruler line, no offset, gets the raised-face note with its height",
+          "Measuring a raised face → −45 mm" in o["raised"], o["raised"])
+    check("...not on a solid part, nor once an offset is set",
+          "raised face" not in o["raisedSolid"] and "raised face" not in o["raisedSet"],
+          o["raisedSolid"] + " | " + o["raisedSet"])
+    mb = o["matchBoth"]
+    check("Match buttons each say what else they move",
+          "Scale End to match Top ×0.943 — its height too, 50 → 47 mm" in mb
+          and "Scale Top to match End ×1.061 — its length too, 700 → 742 mm" in mb and "Measuring a raised face" in mb, mb)
+    mp = o["matchPinned"]
+    check("no 'Scale Top' button when a typed size pins the Top; a note says why",
+          mp.count("data-match=") == 1 and 'data-match="end"' in mp and "Scale End to match your width" in mp
+          and "Top is set by the size you typed" in mp, mp)
+    check("a refusal shows a turned view's measured size",
+          "End as measured: 185.2 × 59.2 mm, after turning it 9.9°" in o["measured"], o["measured"])
+    check("one view, nothing typed: no preview request (needsDepth); typed depth, known height or two views: request",
+          o["needOne"] == "height" and o["needTyped"] is None and o["needKnown"] is None and o["needTwo"] is None,
+          f'{o["needOne"]} {o["needTyped"]} {o["needKnown"]} {o["needTwo"]}')
+    check("a moved dot keeps the Match factor", o["syncDot"] == {"scale": 1.10564, "toasts": 0}, str(o["syncDot"]))
+    ss = o["syncScale"]
+    check("a photo scale change under a Match clears it from every view on that photo, with a toast",
+          ss["top"] and ss["cavity"] and ss["undo"] and "Match ×1.106 was removed" in ss["toast"], str(ss))
 
     ok = all(results)
     print("UNIT_RESULT: " + ("PASS" if ok else "FAIL"))

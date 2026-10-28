@@ -154,8 +154,11 @@ def main():
             pg.wait_for_function("window.CalibJob.part().views.top", timeout=5000)
             top0 = pg.evaluate("window.CalibJob.part().views.top")
             pts0 = pg.evaluate(f"JSON.stringify({POLYS}[0].pts)")
+            # Assigning closes the Detail bar (it sat over the outline the save message asks the
+            # user to check); the same re-trace the slider makes at 'simpler' still follows.
+            pg.wait_for_selector("#cal-trace-detail", state="detached", timeout=5000)
             with pg.expect_response(lambda r: "/api/trace" in r.url):
-                pg.eval_on_selector("#cal-trace-detail-rng", "el=>{el.value='0';el.dispatchEvent(new Event('change'));}")
+                pg.evaluate(f"{OV}.retraceDetail(0.003)")
             pg.wait_for_function(f"JSON.stringify(({POLYS}[0]||{{}}).pts)!=={json.dumps(pts0)}", timeout=20000)
             after = pg.evaluate(f"{POLYS}.map(a=>a.id)")
             assert after == [top0["ann_id"]], f"re-trace changed the outline's id: {after} vs {top0['ann_id']}"

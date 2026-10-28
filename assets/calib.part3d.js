@@ -148,6 +148,18 @@
     }catch(e){ /* best effort: the view itself is saved either way */ }
   }
 
+  // How the open photo got its scale, kept on the view: a ruler line (not markers or a squared
+  // reference) with no raised-face offset is the case where a hollow cover's Top reads short,
+  // since from above its outline is the lower edge while the ruler lay on the deck.
+  function scaleFacts(o){
+    var out = {};
+    try{
+      out.ruler = !!(o && o.opts && o.opts.manualMmPerPx > 0 && !o.opts.manualHomography);
+      out.plane_mm = (o && typeof o.featureHeightMM === 'function') ? (Number(o.featureHeightMM()) || 0) : 0;
+    }catch(e){}
+    return out;
+  }
+
   // ---- assigning the selected outline to a view -----------------------------------------
   // `forced`: the user saw the size warning and chose Save anyway. From the toast it holds the
   // outline and photo that warning was about, since the toast stays up 30 s and the selection
@@ -194,7 +206,11 @@
       });
     }
     if(role === 'cavity' && !p.opts.cavity_view) p.opts.cavity_view = 'end';
+    if(nv && !kept) Object.assign(nv, scaleFacts(o));
     job.savePart();
+    // The trace's Detail bar stayed open through the assignment, over the very end of the
+    // outline the "Saved as…" message asks the user to check.
+    try{ if(o._dismissTraceDetail) o._dismissTraceDetail(); }catch(e){}
     // Larger first, whichever way the photo was held: "160 × 134", never "134 × 160".
     var s = prof.size_mm ? prof.size_mm.slice().sort(function(a, b){ return b - a; }) : null;
     var have = ['top', 'side', 'end', 'cavity'].filter(function(r){ return p.views[r]; }).map(function(r){ return LABEL[r]; });
@@ -259,6 +275,7 @@
     // isCalibrated, as assign's check uses: a photo with no target still carries the server's
     // rough data.mm_per_px (0.16 on a plain test photo), which is not a scale anyone set.
     var noScale = !!(o.isCalibrated && !o.isCalibrated());
+    var dropped = [];
     ['top', 'side', 'end', 'cavity'].forEach(function(r){
       var v = p.views[r];
       if(!v || v.ann_id == null || v.source !== here || v.photo_removed) return;
@@ -270,15 +287,35 @@
         return;
       }
       if(JSON.stringify([prof.points, prof.mm_per_px, prof.image_height]) !== JSON.stringify([v.points, v.mm_per_px, v.image_height])){
+        // The photo's own scale moved under a Match factor (a raised-face offset, a new ruler
+        // line, Square up): both correct the same error, and kept together they compounded —
+        // Match ×1.106 then a −45 mm offset sent the Top out at 815 mm for a 700 mm part. Only
+        // the mm/px ratio counts, so Refine or a dragged dot leaves the factor alone.
+        var old = Number(v.mm_per_px), now = Number(prof.mm_per_px), k = Number(v.scale);
+        if(k > 0 && Math.abs(k - 1) > 1e-6 && old > 0 && now > 0 && Math.abs(now / old - 1) > 0.002){
+          dropped.push({ role: r, scale: k });
+          ['top', 'side', 'end', 'cavity'].forEach(function(q){
+            var w = p.views[q];
+            if(!w || (w !== v && !(v.source && w.source === v.source))) return;
+            delete w.scale; delete w.scale_undo; delete w.scale_note;
+          });
+        }
         v.points = prof.points; v.mm_per_px = prof.mm_per_px; v.image_height = prof.image_height;
         v.size_mm = prof.size_mm; v.updated = new Date().toISOString(); n++;
       }
+      var sf = scaleFacts(o);
+      if(sf.ruler !== v.ruler || sf.plane_mm !== v.plane_mm){ v.ruler = sf.ruler; v.plane_mm = sf.plane_mm; n++; }
       if(v.orphan){ delete v.orphan; n++; }
       if(v.unscaled){ delete v.unscaled; n++; }
     });
     if(n){
       job.savePart();
       if(document.getElementById('cal-part-panel')) render();
+    }
+    if(dropped.length){
+      toast(dropped.map(function(d){ return LABEL[d.role]; }).join(', ') + '’s photo scale changed (a raised-face offset, ' +
+            'a new ruler line or Square up), so its earlier Match ×' + dropped[0].scale.toFixed(3) + ' was removed — ' +
+            'both correct the same error and would count it twice. Check the fit again in 🧩 Build 3D part.', 9000);
     }
     return n;
   }
@@ -420,7 +457,12 @@
     // One view: straight to the size it is missing. Otherwise the card, so keys reach it.
     var need = document.getElementById('cal-part-onenote');
     var dep = need && document.getElementById('cal-part-depth');
-    try{ if(need) need.scrollIntoView({ block: 'nearest' }); (dep || card).focus({ preventScroll: true }); }catch(e){}
+    // Not on a touch screen: focusing the field opens the keyboard over a dialog whose sticky
+    // footer already takes a quarter of the phone; the note and the field are scrolled to.
+    try{
+      if(need) need.scrollIntoView({ block: 'nearest' });
+      (coarse() ? card : (dep || card)).focus({ preventScroll: true });
+    }catch(e){}
   }
   var onKey = null;
   function close(){
@@ -467,6 +509,14 @@
   var DEPTH_LABEL = { height: 'Height / thickness if no view shows it (mm)', width: 'Width if no view shows it (mm)',
                       length: 'Length if no view shows it (mm)' };
   var ASK_FOR = { height: 'Side/End', width: 'Top/End', length: 'Top/Side' };
+  // One view and nothing standing in for the size it cannot show: the axis it lacks, else
+  // null. The note above the field and the preview both ask this, so they cannot drift: the
+  // preview used to send the request anyway and show the server's 422 in red under the note.
+  function needsDepth(views, o){
+    var n = ['top', 'side', 'end'].filter(function(r){ return views[r]; }).length;
+    var lack = missingAxis(views);
+    return (n === 1 && lack && !(o && o.depth) && !(o && o.known && Number(o.known[lack]) > 0)) ? lack : null;
+  }
 
   function render(){
     var card = document.getElementById('cal-part-card'); if(!card) return;
@@ -590,7 +640,7 @@
     // and the only instruction used to be under it, below the fold. Say it here, on the field.
     var lack = missingAxis(p.views);
     var note = null;
-    if(nViews === 1 && lack && !o.depth && !(o.known && Number(o.known[lack]) > 0)){
+    if(needsDepth(p.views, o)){
       note = document.createElement('div'); note.id = 'cal-part-onenote';
       note.style.cssText = 'margin:10px 0 0;padding:8px 10px;border-radius:9px;background:#2a2416;border:1px solid #5d4a22;color:#e8cf9a;font-size:12.5px;line-height:1.45;';
       note.textContent = 'One view so far. Type the part’s ' + lack + ' to preview it, or add a ' + ASK_FOR[lack] + ' view.';
@@ -679,6 +729,15 @@
     var pv = document.createElement('div'); pv.id = 'cal-part-preview';
     pv.style.cssText = 'background:#0b1013;border:1px solid #22303a;border-radius:10px;min-height:120px;padding:6px;';
     card.appendChild(pv);
+    // On a phone the sticky footer holds only the one-line summary and the downloads: with the
+    // fit, bed and hollow notes in it too it was 259 px of an 844 px screen, scrolling inside
+    // itself, with the preview and the Known fields behind it. The notes scroll with the page.
+    split = touch || (window.innerWidth || 1000) < 700;
+    var notesBox = document.createElement('div'); notesBox.id = 'cal-part-notes';
+    notesBox.style.cssText = 'display:none;font-size:12.5px;line-height:1.45;color:#9fb2bb;margin:8px 0 0;padding:6px 9px;' +
+      'border:1px solid #22303a;border-radius:9px;';
+    notesBox.addEventListener('click', statusClick);
+    card.appendChild(notesBox);
 
     // Print bed: kept per viewer, not in the job — it is the printer's, not the part's.
     var bedRow = document.createElement('div'); bedRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 0;';
@@ -689,7 +748,7 @@
     [fBedX.el, fBedY.el].forEach(function(el){
       el.addEventListener('input', function(){
         var bx = num(fBedX.el), by = num(fBedY.el);
-        if(bx && by){ setBed([bx, by]); if(lastInfo) setStatus(describe(lastInfo), lastBad); }
+        if(bx && by){ setBed([bx, by]); if(lastInfo) showInfo(lastInfo, lastBad); }
       });
     });
 
@@ -701,16 +760,13 @@
       'padding:6px 16px 12px;border-top:1px solid #22303a;border-radius:0 0 14px 14px;';
     var st = document.createElement('div'); st.id = 'cal-part-status';
     st.style.cssText = 'font-size:12.5px;line-height:1.45;color:#9fb2bb;min-height:18px;overflow:auto;max-height:' + (touch ? '22vh' : '30vh') + ';';
-    st.addEventListener('click', function(e){
-      var b = e.target && e.target.closest ? e.target.closest('button') : null; if(!b) return;
-      if(b.hasAttribute('data-use-axis')) useView(b.getAttribute('data-use-axis'), b.getAttribute('data-role'));
-      else if(b.hasAttribute('data-match')) matchScale(b.getAttribute('data-match'), parseFloat(b.getAttribute('data-f')), b.getAttribute('data-note') || '');
-    });
+    st.addEventListener('click', statusClick);
     foot.appendChild(st);
     var acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:9px;margin-top:8px;flex-wrap:wrap;';
     var build = document.createElement('button'); build.type = 'button'; build.id = 'cal-part-build';
     build.textContent = '🧊 Download STL';
     build.style.cssText = 'min-height:46px;padding:10px 20px;border-radius:10px;background:#00d4ff;color:#000;border:none;font-weight:700;font-size:15px;cursor:pointer;';
+    build.title = 'An STL for the printer'; build.setAttribute('data-tip', build.title);
     build.onclick = function(){ download('stl'); };
     acts.appendChild(build);
     // For CAD: a real solid with one face per flat side, which Fusion can edit — an STL comes
@@ -718,7 +774,7 @@
     [['step', touch ? '📐 STEP' : '📐 STEP (edit in CAD)', 'A solid body for Fusion / CAD: one face per flat side, ready to edit'],
      ['obj', 'OBJ', 'A mesh with one polygon per flat side, for programs that take meshes']].forEach(function(f){
       var bb = document.createElement('button'); bb.type = 'button'; bb.id = 'cal-part-build-' + f[0];
-      bb.textContent = f[1]; bb.title = f[2];
+      bb.textContent = f[1]; bb.title = f[2]; bb.setAttribute('data-tip', f[2]);
       bb.style.cssText = 'min-height:46px;padding:10px ' + (touch ? '12px' : '16px') + ';border-radius:10px;background:#151a1f;color:#cfe6ee;border:1px solid #29414c;font-weight:600;font-size:14px;cursor:pointer;';
       bb.onclick = function(){ download(f[0]); };
       acts.appendChild(bb);
@@ -765,64 +821,145 @@
       cuts.join(' / ') + ' mm). Use your slicer’s Cut tool, or split the STEP in Fusion.';
   }
 
-  var lastInfo = null, lastBad = false;
-  function setStatus(html, bad){
+  var lastInfo = null, lastBad = false, split = false;
+  // `notes`: on a phone, everything but the summary line, shown in the scrolling body (see
+  // render). Anything else — a refusal and its buttons, "Building…" — clears them.
+  function setStatus(html, bad, notes){
     var st = document.getElementById('cal-part-status'); if(!st) return;
     st.innerHTML = html; st.style.color = bad ? '#f0b9a6' : '#9fb2bb';
+    var nb = document.getElementById('cal-part-notes');
+    if(nb){ nb.innerHTML = notes || ''; nb.style.display = notes ? '' : 'none'; nb.style.color = bad ? '#f0b9a6' : '#9fb2bb'; }
+  }
+  // A build's result: all in the footer on a desktop, or summary there and notes below on a
+  // phone, with a link to them.
+  function showInfo(info, bad, prefix){
+    var d = describeParts(info), pre = prefix || '';
+    if(!split || !d.notes.length){ setStatus(pre + d.summary.concat(d.notes).join('<br>'), bad); return; }
+    var n = d.notes.length;
+    setStatus(pre + d.summary.join('<br>') + ' · <button type="button" data-notes="1" style="background:none;border:none;padding:4px 2px;' +
+              'color:#9fd3ff;font:600 12.5px Segoe UI,system-ui,sans-serif;text-decoration:underline;cursor:pointer;">' +
+              (bad ? '⚠ ' : '') + n + ' note' + (n === 1 ? '' : 's') + ' ▾</button>', bad, d.notes.join('<br>'));
+  }
+  // The status, and the notes block below the preview, share one set of buttons.
+  function statusClick(e){
+    var b = e.target && e.target.closest ? e.target.closest('button') : null; if(!b) return;
+    if(b.hasAttribute('data-notes')){
+      var nb = document.getElementById('cal-part-notes');
+      try{ if(nb) nb.scrollIntoView({ block: 'start', behavior: 'smooth' }); }catch(err){}
+    }
+    else if(b.hasAttribute('data-use-axis')) useView(b.getAttribute('data-use-axis'), b.getAttribute('data-role'));
+    else if(b.hasAttribute('data-match')) matchScale(b.getAttribute('data-match'), parseFloat(b.getAttribute('data-f')), b.getAttribute('data-note') || '');
+  }
+  // While the part cannot be built every download is off, and looks it: STEP and OBJ stayed
+  // live on a refused build (a click flashed "Building…" and put the same text back), and the
+  // disabled STL kept opacity 1 and a pointer, so it looked as live as before.
+  function setDownloads(on){
+    ['cal-part-build', 'cal-part-build-step', 'cal-part-build-obj'].forEach(function(id){
+      var b = document.getElementById(id); if(!b) return;
+      b.disabled = !on;
+      b.style.opacity = on ? '' : '0.45';
+      b.style.cursor = on ? 'pointer' : 'not-allowed';
+      b.title = on ? (b.getAttribute('data-tip') || b.title) : 'Fix the problem above first — this part cannot be built yet';
+    });
   }
   var CAP = { length: 'Length', width: 'Width', height: 'Height' };
   var SBTN = 'min-height:40px;margin:4px 6px 2px 0;padding:6px 12px;border-radius:8px;background:#1b2229;color:#e8eef2;' +
              'border:1px solid #2f4a57;font:600 13px Segoe UI,system-ui,sans-serif;cursor:pointer;';
+  var NOTE = 'font-size:12px;color:#c9b98f;';
   // One fit, both readings and who won: "Width: Top 164.6 mm, End 175.7 mm (6.7% apart) —
-  // using Top · [Use End]". "The end view was stretched 6.7% in width" gave neither number and
-  // no way to say the other photo was the one to trust.
+  // using Top · [Use End's width]". "The end view was stretched 6.7% in width" gave neither
+  // number and no way to say the other photo was the one to trust.
   function fitLine(f){
     var views = (J() && J().part) ? J().part().views : {};
     var from = LABEL[f.setter] || (f.setter === 'known' ? 'typed' : f.setter === 'depth' ? 'depth' : String(f.setter));
     var line = esc(CAP[f.axis] || f.axis) + ': ' + esc(from) + ' ' + Number(f.want_mm).toFixed(1) + ' mm, ' +
       esc(LABEL[f.view] || f.view) + ' ' + Number(f.have_mm).toFixed(1) + ' mm (' + Math.abs(f.pct).toFixed(1) + '% apart) — using ' +
       (f.setter === 'known' ? 'your number' : esc(from)) +
+      // The views can still trim a typed size where they meet (30° ends: 698.7 for 700).
+      (f.setter === 'known' && f.final_mm != null ? '; the views trim it to ' + Number(f.final_mm).toFixed(1) + ' mm' : '') +
       (f.kind === 'rescale' ? ' (the ' + esc(LABEL[f.view] || f.view) + ' view was rescaled as a whole)' : '');
+    if(f.warning) line += ' ⚠️ Check that photo’s reference.';
     if(LABEL[f.setter] && views[f.view] && AXES[f.view] && AXES[f.view].indexOf(f.axis) >= 0){
-      line += ' · <button type="button" data-use-axis="' + esc(f.axis) + '" data-role="' + esc(f.view) + '" style="' + SBTN + '">Use ' +
-        esc(LABEL[f.view]) + '</button>';
+      // Say what the choice does: it moves only this size — the other view is stretched on
+      // it, its own other size stays where its ruler put it. The whole effect in the label
+      // wrapped the footer onto the 3D view, so the label names the size and the tip the rest.
+      var other = (AXES[f.setter] || []).filter(function(a){ return a !== f.axis; })[0];
+      var tip = 'Use ' + LABEL[f.view] + '’s ' + f.axis + ': ' + LABEL[f.setter] + ' is stretched to ' + Number(f.have_mm).toFixed(1) +
+        ' mm in ' + f.axis + (other ? ', its ' + other + ' stays as measured' : '');
+      line += ' · <button type="button" data-use-axis="' + esc(f.axis) + '" data-role="' + esc(f.view) + '" title="' + esc(tip) +
+        '" aria-label="' + esc(tip) + '" style="' + SBTN + '">Use ' + esc(LABEL[f.view]) + '’s ' + esc(f.axis) + '</button>';
     }
     return line;
   }
-  function describe(info){
-    var lines = [];
+  // The deck does not sit on the bed: never call the file ready to print. The server says so
+  // itself now; an older one wrote "ready to print" next to "Only 2% of the deck lies on the bed".
+  function bedBad(info){
+    if(info.bed_contact != null && Number(info.bed_contact) < 0.5) return true;
+    return (info.warnings || []).some(function(w){ return /of the deck lies on the bed/.test(w); });
+  }
+  // A hollow cover's Top from above is its LOWER outer edge; with the ruler on the deck it
+  // reads short (README: 45 mm below the ruler reads 7.4% small), and nothing in the flow said
+  // so — the app's own prompts say to lay the ruler on the part.
+  function raisedFaceNote(info){
+    var views = (J() && J().part) ? J().part().views : {}, t = views.top;
+    if(!t || !(info.kind === 'shell' || info.wall_mm) || t.ruler === false || Number(t.plane_mm)) return '';
+    var h = info.size_mm && info.size_mm[2] > 0 ? Number(info.size_mm[2]).toFixed(0) : null;
+    return '📐 Hollow cover: from above, the Top outline is its lower edge. If the ruler lay on the deck, the Top reads short — ' +
+      'open the Top photo, 📐 → Measuring a raised face → ' + (h ? '−' + h + ' mm' : 'minus the height') +
+      '; this view follows it.';
+  }
+  // The result in words, as {summary, notes}: the Part line, then everything else.
+  function describeParts(info){
+    var head = [], lines = [];
     if(info.size_mm){
-      lines.push('Part: <b>' + info.size_mm.map(function(v){ return v.toFixed(1); }).join(' × ') + ' mm</b>' +
+      head.push('Part: <b>' + info.size_mm.map(function(v){ return v.toFixed(1); }).join(' × ') + ' mm</b>' +
         (info.volume_mm3 ? ' · ' + (info.volume_mm3 / 1000).toFixed(1) + ' cm³' : ''));
       var bl = bedLine(info.size_mm);
       if(bl) lines.push('<span data-bed="1" style="color:#f3c969;">' + esc(bl) + '</span>');
     }
+    // A fit over 3% also comes back as a warning in prose; its line already says it once.
+    var fitWarn = {};
     (info.fits || []).forEach(function(f){
       if(Math.abs(f.pct) < 0.05) return;
+      if(f.warning) fitWarn[f.warning] = 1;
       if(f.have_mm != null && f.want_mm != null && f.setter) lines.push(fitLine(f));
       else lines.push('The ' + esc(f.view) + ' view was stretched ' + Math.abs(f.pct).toFixed(1) + '% in ' + esc(f.axis) + ' to match.');
     });
     (info.deskew || []).forEach(function(d){
       if(Math.abs(d.deg) >= 0.05) lines.push(esc(LABEL[d.view] || d.view) + ' view turned ' + Math.abs(d.deg).toFixed(1) + '° to square it.');
     });
-    if(info.ends && (info.ends.slope_deg > 0 || info.ends.radius_mm > 0)){
+    // The server's note names the typed ends itself; both printed it twice.
+    if(info.ends && (info.ends.slope_deg > 0 || info.ends.radius_mm > 0) && !(info.note && info.note.indexOf('Ends:') >= 0)){
       lines.push('Ends: ' + [info.ends.slope_deg > 0 ? Number(info.ends.slope_deg).toFixed(0) + '° slope' : '',
                               info.ends.radius_mm > 0 ? Number(info.ends.radius_mm).toFixed(0) + ' mm edge radius' : '']
         .filter(Boolean).join(', ') + ' (typed — no Side view).');
     }
-    (info.warnings || []).forEach(function(w){ lines.push('⚠️ ' + esc(w)); });
-    if(info.note) lines.push(esc(info.note));
+    (info.warnings || []).forEach(function(w){ if(!fitWarn[w]) lines.push('⚠️ ' + esc(w)); });
+    var flat = !bedBad(info);
+    if(info.note){
+      lines.push(esc(flat ? info.note : info.note.replace(/ — ready to print \(no supports\)/g, ' — not ready to print (the deck is not flat)')));
+    }
+    var rf = raisedFaceNote(info);
+    if(rf) lines.push('<span data-raised="1" style="' + NOTE + '">' + esc(rf) + '</span>');
     if(info.mirrored) lines.push('Downloads <b>mirrored</b> — the part for the other side. The preview shows it as traced.');
     // Which way up the file comes. The server says it in words where it can; an older one
     // reported a cover's automatic plate-down turn as "upside down", which with the box
     // unticked read as the opposite of the checkbox.
     if(info.orientation){
-      if(!(info.note && info.note.indexOf(info.orientation) >= 0)) lines.push('Downloads ' + esc(info.orientation) + '.');
+      var said = info.note && info.note.indexOf(info.orientation) >= 0;
+      if(!said && !(!flat && /ready to print/.test(info.orientation) && !/not ready/.test(info.orientation))){
+        lines.push('Downloads ' + esc(info.orientation) + '.');
+      }
     }else if(info.kind === 'shell' || info.wall_mm){
-      lines.push(info.upside_down ? 'Downloads plate-down, open side up — ready to print.'
+      lines.push(info.upside_down ? (flat ? 'Downloads plate-down, open side up — ready to print.'
+                                          : 'Downloads plate-down, open side up — but the deck is not flat on the bed, not ready to print.')
                                   : 'Downloads open side down — the deck needs supports.');
     }else if(info.upside_down) lines.push('Downloads upside down for printing.');
-    return lines.join('<br>');
+    return { summary: head, notes: lines };
+  }
+  function describe(info){
+    var d = describeParts(info);
+    return d.summary.concat(d.notes).join('<br>');
   }
   // A refused build that names two views that disagree: {view, axis, have_mm, want_mm, setter},
   // from the server's own `detail` or, from one that sends only the text, read out of it.
@@ -833,50 +970,91 @@
       .exec((j && j.error) || '');
     return m ? { view: m[1], axis: m[2], setter: m[3], have_mm: parseFloat(m[4]), want_mm: parseFloat(m[5]) } : null;
   }
+  // A view's other size once scaled by f: "its length too, 700 → 742 mm". `meas` is the
+  // server's measured_mm (after the deskew); without it, the row's own size.
+  function alsoMoves(role, axis, f, meas){
+    var ax = AXES[role]; if(!ax) return '';
+    var k = ax[0] === axis ? 1 : 0, cur = null;
+    if(meas && meas[role] && meas[role][k] > 0) cur = Number(meas[role][k]);
+    else{ var vs = viewSize((J().part().views || {})[role], role); if(vs) cur = vs[k]; }
+    return cur ? ' — its ' + ax[k] + ' too, ' + cur.toFixed(0) + ' → ' + (cur * f).toFixed(0) + ' mm' : '';
+  }
   // "Scale End to match Top ×0.893" and the other way round: which photo to trust is the
   // user's call (the one whose ruler lay on the face). Not past MATCH_LIMIT, where the
-  // likelier cause is the wrong photo, and the message says so.
-  function matchButtons(d){
+  // likelier cause is the wrong photo, and the message says so. Not the setter when a typed
+  // size pins its scale: that button stored ×0.888 on the Top, the typed number rescaled it
+  // straight back, and the same refusal came back with the same two buttons.
+  function matchButtons(d, meas){
     if(!d) return '';
     var views = J().part().views, off = Math.abs(d.have_mm / d.want_mm - 1);
     if(!views[d.view] || !(off > 0) || off >= MATCH_LIMIT) return '';
     var f = d.want_mm / d.have_mm, V = LABEL[d.view] || d.view, S = LABEL[d.setter];
     var out = '<br><button type="button" data-match="' + esc(d.view) + '" data-f="' + f.toFixed(5) + '" data-note="matched to ' +
       esc(S ? S + ' ' + d.axis : 'the typed ' + d.axis) + '" style="' + SBTN + '">Scale ' + esc(V) + ' to match ' +
-      esc(S || 'your ' + d.axis) + ' ×' + f.toFixed(3) + '</button>';
-    if(S && views[d.setter]){
+      esc(S || 'your ' + d.axis) + ' ×' + f.toFixed(3) + esc(alsoMoves(d.view, d.axis, f, meas)) + '</button>';
+    if(d.setter_pinned){
+      var pv = LABEL[d.setter_view] || d.setter_view;
+      if(pv) out += '<br><span data-pinned="1" style="' + NOTE + '">' + esc(pv) + ' is set by the size you typed — change that number, or scale ' + esc(V) + '.</span>';
+    }else if(S && views[d.setter]){
       out += '<button type="button" data-match="' + esc(d.setter) + '" data-f="' + (1 / f).toFixed(5) + '" data-note="matched to ' +
-        esc(V + ' ' + d.axis) + '" style="' + SBTN + '">Scale ' + esc(S) + ' to match ' + esc(V) + ' ×' + (1 / f).toFixed(3) + '</button>';
+        esc(V + ' ' + d.axis) + '" style="' + SBTN + '">Scale ' + esc(S) + ' to match ' + esc(V) + ' ×' + (1 / f).toFixed(3) +
+        esc(alsoMoves(d.setter, d.axis, 1 / f, meas)) + '</button>';
+    }
+    // A ruler on a different face from the traced outline is not a scale slip, and matching
+    // one whole photo to the other moves the size that ruler measured right.
+    if(off > 0.05){
+      out += '<br><span data-raised="1" style="' + NOTE + '">Ruler on a different face from the outline (on the deck of a cover traced at its ' +
+        'base)? Instead of matching, open that photo and use 📐 → Measuring a raised face.</span>';
     }
     return out;
+  }
+  // A refusal quotes the sizes as the builder measured them, after squaring each view; a view
+  // that was turned reads differently from its row (181.4 mm on the row, refused at 185.2).
+  function measuredLine(j){
+    var out = [];
+    (j && j.deskew || []).forEach(function(d){
+      var m = j.measured_mm && j.measured_mm[d.view];
+      if(m && Math.abs(d.deg) >= 0.05){
+        out.push(esc(LABEL[d.view] || d.view) + ' as measured: ' + Number(m[0]).toFixed(1) + ' × ' + Number(m[1]).toFixed(1) +
+                 ' mm, after turning it ' + Math.abs(d.deg).toFixed(1) + '° to square it (its row shows the photo before the turn).');
+      }
+    });
+    return out.length ? '<br><span style="' + NOTE + '">' + out.join('<br>') + '</span>' : '';
   }
 
   function runPreview(){
     var pv = document.getElementById('cal-part-preview'); if(!pv) return;
     var my = ++seq;
     var b = body(true);
-    if(!Object.keys(b.views).length){ pv.innerHTML = ''; lastInfo = null; setStatus('Assign at least one outline to a view first.'); return; }
+    if(!Object.keys(b.views).length){ pv.innerHTML = ''; lastInfo = null; setDownloads(false); setStatus('Assign at least one outline to a view first.'); return; }
+    // One view and no size for what it cannot show: the server can only refuse, so don't ask.
+    var p = J().part(), lack = needsDepth(p.views, p.opts);
+    if(lack){
+      pv.innerHTML = ''; lastInfo = null; mesh3d = null; draw3d(); setDownloads(false);
+      setStatus('Type the part’s ' + esc(lack) + ' (or add a ' + esc(ASK_FOR[lack]) + ' view) to see it.', false);
+      return;
+    }
     fetch(apiUrl('api/export/part'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b) })
       .then(function(r){ return r.json().catch(function(){ return { ok:false, error:'The server could not build a preview.' }; }); })
       .then(function(j){
         if(my !== seq) return;                      // a newer preview is on its way
-        var btn = document.getElementById('cal-part-build');
         if(!j || !j.ok){
           pv.innerHTML = ''; lastInfo = null;
           mesh3d = null; draw3d();                  // the last part is not what would download
-          setStatus(esc((j && j.error) || 'Could not build the part.') + matchButtons(mismatchOf(j)), true);
-          if(btn) btn.disabled = true;
+          setStatus(esc((j && j.error) || 'Could not build the part.') + measuredLine(j) +
+                    matchButtons(mismatchOf(j), j && j.measured_mm), true);
+          setDownloads(false);
           return;
         }
-        if(btn) btn.disabled = false;
+        setDownloads(true);
         drawPreview(pv, j.preview);
         mesh3d = (j.preview && j.preview.mesh) || null;
         view3d.fit = null;                          // a new part: fit the view to it again
         draw3d();
         lastInfo = j.info || {}; lastBad = !!(lastInfo.warnings && lastInfo.warnings.length);
-        setStatus(describe(lastInfo), lastBad);
+        showInfo(lastInfo, lastBad);
       })
-      .catch(function(e){ if(my === seq) setStatus('Preview needs the server (' + esc(e.message) + ').', true); });
+      .catch(function(e){ if(my === seq){ setDownloads(false); setStatus('Preview needs the server (' + esc(e.message) + ').', true); } });
   }
 
   // ---- the 3D view: a small canvas renderer, no library ------------------------------------
@@ -1058,13 +1236,20 @@
   }
 
   function download(fmt){
+    var btn = document.getElementById(fmt === 'stl' ? 'cal-part-build' : 'cal-part-build-' + fmt);
+    if(btn && btn.disabled) return;
     var b = body(false);
     if(fmt === 'step' || fmt === 'obj') b.format = fmt;
     if(!Object.keys(b.views).length){ setStatus('Assign at least one outline to a view first.', true); return; }
     setStatus('Building…');
     fetch(apiUrl('api/export/part'), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b) })
       .then(function(r){
-        if(!r.ok) return r.text().then(function(t){ throw new Error(t || ('HTTP ' + r.status)); });
+        if(!r.ok) return r.text().then(function(t){
+          var err = new Error(t || ('HTTP ' + r.status));
+          // The download's refusal carries the same data as the preview's, in a header.
+          try{ err.detail = JSON.parse(r.headers.get('X-CamScan-Detail') || 'null'); }catch(e){}
+          throw err;
+        });
         var info = {};
         try{ info = JSON.parse(r.headers.get('X-CamScan-Info') || '{}'); }catch(e){}
         info.volume_mm3 = Number(r.headers.get('X-CamScan-Volume-MM3')) || null;
@@ -1075,15 +1260,21 @@
           setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
           var tip = fmt === 'step' ? '<br>Open it in Fusion (or any CAD program) as a solid body — each flat side is one face you can press-pull or fillet.'
                   : fmt === 'obj' ? '<br>In Fusion: Insert Mesh, then Convert Mesh — each flat side comes in as one face. STEP needs no converting.' : '';
-          setStatus('✓ Saved ' + esc(name) + tip + '<br>' + describe(info));
+          showInfo(info, false, '✓ Saved ' + esc(name) + tip + '<br>');
         });
       })
-      .catch(function(e){ setStatus(esc(e.message) + matchButtons(mismatchOf({ error: e.message })), true); });
+      // Worded apart from the preview's status, so the click visibly got an answer.
+      .catch(function(e){
+        setStatus('<b>Download refused</b> — ' + esc(e.message) +
+                  matchButtons(mismatchOf({ error: e.message, detail: e.detail })), true);
+      });
   }
 
   window.CalibPart3D = { open: open, pick: pick, assign: assign, body: body, assigned: assigned, move: move,
                          sync: sync, syncSoon: syncSoon,
                          // The dialog's pure rules, for tests/unit_p2_build_dialog.py.
                          _rules: { bedLine: bedLine, fitsBed: fitsBed, assignWarning: assignWarning, mismatchOf: mismatchOf,
-                                   viewSize: viewSize, missingNote: missingNote, describe: describe } };
+                                   viewSize: viewSize, missingNote: missingNote, describe: describe,
+                                   describeParts: describeParts, matchButtons: matchButtons, needsDepth: needsDepth,
+                                   measuredLine: measuredLine } };
 })();
