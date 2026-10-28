@@ -193,6 +193,15 @@ def main():
             _open_view(pg, 0, first=True)
             assert not pg.is_visible("#cal-tb-part"), "Build 3D part shown before any view is assigned"
             _trace(pg, (400, 300))
+            # Submit to Datum sits in the photo's top bar, not floating over the selected
+            # outline's buttons in the bottom-left corner.
+            pg.wait_for_function("(()=>{const b=document.getElementById('cal-job-btn');"
+                                 "return b&&b.parentNode&&b.parentNode.classList.contains('cal-tb-right')"
+                                 "&&b.getClientRects().length>0;})()", timeout=5000)
+            hits = pg.evaluate("""(()=>{const r=document.getElementById('cal-job-btn').getBoundingClientRect();
+                return [...document.querySelectorAll('.cal-context button.show')].filter(n=>{const q=n.getBoundingClientRect();
+                  return q.left<r.right&&r.left<q.right&&q.top<r.bottom&&r.top<q.bottom;}).map(n=>n.textContent);})()""")
+            assert not hits, f"Submit to Datum covers {hits}"
             _assign(pg, "top")
             # The view follows its outline: widen the traced outline and, without assigning it
             # again, the stored Top view catches up (Refine, Square up and drags all count).

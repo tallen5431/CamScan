@@ -353,8 +353,7 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
         return None                                       # needs both sides to be worth running
 
     try:
-        bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
-        cv2.grabCut(img, gc, None, bgd, fgd, int(iters), cv2.GC_INIT_WITH_MASK)
+        gc = _grabcut_coarse_fine(img, gc, int(iters))
     except cv2.error:
         return None
     fg = np.where((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
@@ -368,6 +367,75 @@ def _grabcut_mask(small, seed, fg_pts, bg_pts, scale, sw, sh, iters=4, border_bg
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k)
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k)
     return fg
+
+
+_GC_COARSE_PX = 560      # long side of the first, whole-picture GrabCut pass
+_GC_FINE_ITERS = 3
+
+
+def _grabcut_coarse_fine(img, gc, iters):
+    """GrabCut, coarse to fine. Returns the labelled mask, same size as `gc`.
+
+    GrabCut's time grows with the pixel count: a whole 1300 px photo took 6-8 s. Most of
+    those pixels are nowhere near the part's edge. So: run it on a small copy to decide
+    roughly where the part is, then run it again at full size where only a thin band round
+    that rough edge is still open — inside the band is certainly the part, outside it is
+    certainly not — cropped to the part. Measured on the customer's step-pad photos: 3.5x
+    faster overall (a 21 s trace took 1 s), and the same overlap with the true outline to
+    within 0.01. The full-size pass still decides every pixel near the edge; only pixels
+    well inside or well outside are taken from the small copy.
+    """
+    h, w = gc.shape[:2]
+    # GrabCut starts its colour models from k-means, seeded from OpenCV's global random state,
+    # so the same tap could trace differently depending on what ran before it. Fix the seed:
+    # the same photo and taps always give the same outline.
+    cv2.setRNGSeed(0x5EED)
+    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+    if max(h, w) <= _GC_COARSE_PX * 1.5:
+        cv2.grabCut(img, gc, None, bgd, fgd, iters, cv2.GC_INIT_WITH_MASK)
+        return gc
+    f = float(_GC_COARSE_PX) / max(h, w)
+    small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    # Shrink the hints with a min filter on the label codes' certainty, so a thin certain
+    # stroke survives: certain labels (0 BGD, 1 FGD) are painted back on after resizing.
+    g2 = cv2.resize(gc, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_NEAREST)
+    for code in (cv2.GC_BGD, cv2.GC_FGD):
+        hit = cv2.resize((gc == code).astype(np.uint8), (small.shape[1], small.shape[0]),
+                         interpolation=cv2.INTER_AREA) > 0
+        g2[hit] = code
+    if not ((g2 == cv2.GC_FGD) | (g2 == cv2.GC_PR_FGD)).any() or not \
+            ((g2 == cv2.GC_BGD) | (g2 == cv2.GC_PR_BGD)).any():
+        cv2.grabCut(img, gc, None, bgd, fgd, iters, cv2.GC_INIT_WITH_MASK)
+        return gc
+    cv2.grabCut(small, g2, None, bgd, fgd, iters, cv2.GC_INIT_WITH_MASK)
+    rough = np.where((g2 == cv2.GC_FGD) | (g2 == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    rough = cv2.resize(rough, (w, h), interpolation=cv2.INTER_LINEAR)
+    rough = np.where(rough >= 128, 255, 0).astype(np.uint8)
+    if not rough.any():
+        return np.where(gc == cv2.GC_FGD, cv2.GC_FGD, cv2.GC_BGD).astype(np.uint8)
+    k = max(3, int(round(5.0 / f)))                       # 5 small-copy px either side
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))
+    inner, outer = cv2.erode(rough, ker), cv2.dilate(rough, ker)
+    fine = np.full((h, w), cv2.GC_BGD, np.uint8)
+    fine[outer > 0] = cv2.GC_PR_BGD
+    fine[rough > 0] = cv2.GC_PR_FGD
+    fine[inner > 0] = cv2.GC_FGD
+    # The user's own certain hints win over the rough pass.
+    fine[gc == cv2.GC_FGD] = cv2.GC_FGD
+    fine[gc == cv2.GC_BGD] = cv2.GC_BGD
+    ys, xs = np.nonzero(outer)
+    pad = 8
+    y0, y1 = max(0, ys.min() - pad), min(h, ys.max() + pad + 1)
+    x0, x1 = max(0, xs.min() - pad), min(w, xs.max() + pad + 1)
+    sub = np.ascontiguousarray(fine[y0:y1, x0:x1])
+    open_ = (sub == cv2.GC_PR_FGD) | (sub == cv2.GC_PR_BGD)
+    if open_.any() and ((sub == cv2.GC_FGD) | (sub == cv2.GC_PR_FGD)).any() and \
+            ((sub == cv2.GC_BGD) | (sub == cv2.GC_PR_BGD)).any():
+        bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+        cv2.grabCut(np.ascontiguousarray(img[y0:y1, x0:x1]), sub, None, bgd, fgd,
+                    _GC_FINE_ITERS, cv2.GC_INIT_WITH_MASK)
+        fine[y0:y1, x0:x1] = sub
+    return fine
 
 
 def _seed_in(fg, seed, scale, sw, sh) -> bool:
@@ -426,7 +494,7 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_poin
         # customer's top-down step-pad photo, the bottom third in the photographer's shadow:
         # the colour-distance trace in the same box missed the shadowed end and a strip down
         # one side (IoU 0.60); this kept the whole cover (IoU 0.91 with a loose box, 0.92 with
-        # a tight one), in 3-5 s.
+        # a tight one), in under a second (see _grabcut_coarse_fine).
         gc_fg = _grabcut_mask(small, seed, fg_points, bg_points, scale, sw, sh, iters=5, box=box)
         if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:
             fg = gc_fg
@@ -448,10 +516,10 @@ def _segment(img_bgr, seed, exclude_boxes, downscale_to, fg_points=None, bg_poin
         # squarely on the cover traced nothing at all.
         #
         # What IS known is enough for GrabCut: the tap is the part, and the photo's edge is
-        # not. Full resolution, five iterations: about 6-7 s on that photo, and it finds the
-        # cover's edges. Every faster setting tried lost a narrow dark lip along one side —
-        # 5 to 16 mm of the part — so this path, which only runs when the plain trace would
-        # otherwise return nothing, takes the time.
+        # not. Five iterations: it finds the cover's edges. Fewer iterations, or a single
+        # pass on a small copy, lost a narrow dark lip along one side — 5 to 16 mm of the
+        # part. The coarse-to-fine pass keeps it (decided at full size, near the edge) in
+        # about 1.3 s instead of 6-7 s.
         gc_fg = _grabcut_mask(small, seed, fg_points, None, scale, sw, sh, iters=5,
                               border_bg=True)
         if gc_fg is not None and _component(gc_fg, exclude_boxes, scale, sw, sh, seed) is not None:

@@ -566,6 +566,12 @@ def on_upload(contents, filename):
             "anything of known length (or tap the 4 corners of a known rectangle — that also "
             "corrects camera angle)."
         )
+        if not focal_px:
+            # Square up uses the lens's focal length. A photo passed through a chat app or
+            # a screenshot has lost it, and a typical phone lens is assumed instead — close
+            # enough for a photo taken nearly square-on, less so the steeper it was.
+            status += (" 📷 This file has no camera data (chat apps strip it), so Square up "
+                       "will assume a typical phone lens — the phone's original photo is better.")
         return _upload_notice(status, viewer)
 
     status = (
@@ -1263,14 +1269,24 @@ def api_symmetric():
 
 @server.route("/api/square_up", methods=["POST"])
 def api_square_up():
-    """Perspective from a part's two parallel sides plus the scale line — see square_up.py.
+    """Perspective from two edges that are parallel on the part — see square_up.py.
 
     Body: { outline: [[x, y], ...], ruler: [[x, y], [x, y]], ruler_mm, image_w, image_h,
-            focal_px | null }   (image pixel coords)
-    Returns { ok, H (image px -> plane mm, 3x3), sides, tilt_deg, width_change_pct,
-              focal_source } or a 200 { ok:false, error } with the reason in words.
+            focal_px | null,
+            ruler_image: dataURL | null, ruler_box: [x0, y0, k] | null,
+            reference: "auto" | "ruler" | "part" }   (image pixel coords)
+    `ruler_image` is the photo round the scale line, cropped at (x0, y0) and scaled by k. The
+    ruler's own edges are found in it (ruler_check.py); a ruler is a rectangle for certain,
+    which the part may not be, so "auto" squares up from the ruler when its edges are found
+    and from the part's long sides otherwise. Whichever is used, the other is measured through
+    the result, as a check.
+    Returns { ok, H (image px -> plane mm, 3x3), reference, sides, ruler_edges, tilt_deg,
+              width_change_pct, focal_source, part: {angle_deg, width_mm, width_change_pct},
+              ruler_check: {...} | null, other: "ruler" | "part" | null }
+    or a 200 { ok:false, error } with the reason in words.
     """
     from flask import jsonify
+    from ruler_check import find_ruler_edges, ruler_report
     from square_up import SquareUpError, long_sides, square_up
 
     data = _json_body()
@@ -1283,18 +1299,91 @@ def api_square_up():
         return jsonify(ok=False, error="The outline is not a list of points."), 400
     if not all(math.isfinite(v) for q in ring for v in q):
         return jsonify(ok=False, error="The outline has non-finite points."), 400
+    want = data.get("reference") if data.get("reference") in ("ruler", "part") else "auto"
+    ruler = data.get("ruler")
+    args = (ruler, data.get("ruler_mm"), data.get("image_w"), data.get("image_h"), data.get("focal_px"))
+
+    # The ruler's edges, if the crop round the scale line shows them.
+    edges, edge_sigma = None, None
+    durl, box = data.get("ruler_image"), data.get("ruler_box")
+    if isinstance(durl, str) and "," in durl and isinstance(box, list) and len(box) == 3:
+        try:
+            x0, y0, k = (float(v) for v in box)
+            ra, rb = ruler
+            ra, rb = (float(ra[0]), float(ra[1])), (float(rb[0]), float(rb[1]))
+            if not all(math.isfinite(v) for v in (x0, y0, k, *ra, *rb)) or not (0 < k <= 4):
+                raise ValueError("bad box")
+            _mime, raw = _decode_data_url(durl)
+            crop = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+            if crop is not None and crop.shape[0] * crop.shape[1] <= MAX_IMAGE_PIXELS:
+                e, edge_sigma = find_ruler_edges(crop, [(ra[0] - x0) * k, (ra[1] - y0) * k],
+                                                 [(rb[0] - x0) * k, (rb[1] - y0) * k], with_error=True)
+                if e:
+                    edges = [[[p[0] / k + x0, p[1] / k + y0] for p in ed] for ed in e]
+        except Exception as ex:
+            print(f"[square_up] ruler edges skipped: {ex}")
+            edges = None
+
     try:
-        sides = long_sides(ring)
-        res = square_up(sides[0], sides[1], data.get("ruler"), data.get("ruler_mm"),
-                        data.get("image_w"), data.get("image_h"), data.get("focal_px"))
+        sides = None
+        try:
+            sides = long_sides(ring)
+        except SquareUpError:
+            if edges is None:
+                raise
+        res_r = res_p = None
+        err_r = None
+        if edges is not None:
+            try:
+                res_r = square_up(edges[0], edges[1], *args, min_converge_deg=0.0)
+            except SquareUpError as ex:
+                err_r = ex
+        if sides is not None and (want == "part" or res_r is None):
+            res_p = square_up(sides[0], sides[1], *args)
+        if want == "ruler" and res_r is None:
+            raise err_r or SquareUpError("Could not find the ruler's edges along the scale line — "
+                                         "draw it along the middle of the ruler.")
+        if res_r is None and res_p is None:
+            raise err_r or SquareUpError("Could not square up this photo.")
     except SquareUpError as e:
         return jsonify(ok=False, error=str(e)), 200
     except Exception as e:
         print(f"[square_up] error: {e}")
         return jsonify(ok=False, error="Could not square up this photo."), 500
+    if want == "part" or res_r is None:
+        res, ref = res_p, "part"
+    else:
+        res, ref = res_r, "ruler"
     if not all(math.isfinite(v) for row in res["H"] for v in row):
         return jsonify(ok=False, error="Could not square up this photo."), 200
-    return jsonify(ok=True, sides=sides, **res)
+    H = res["H"]
+    other = None
+    if ref == "ruler" and sides is not None:
+        other = "part"
+    elif ref == "part" and edges is not None:
+        other = "ruler"
+    part = ruler_report(sides, H) if sides is not None else None
+    check = ruler_report(edges, H) if edges is not None else None
+    if part is not None and ref == "ruler" and edge_sigma:
+        # How sure the part's taper is: the ruler is short next to the part, so a small doubt
+        # in the angle between its edges grows along the part. Redo it with the edges turned
+        # apart and together by one standard error; half the spread is the taper's.
+        tapers = []
+        for sgn in (1.0, -1.0):
+            p0, p1 = np.array(edges[1][0]), np.array(edges[1][1])
+            m_ = (p0 + p1) / 2.0
+            c_, s_ = math.cos(sgn * edge_sigma), math.sin(sgn * edge_sigma)
+            Rm = np.array([[c_, -s_], [s_, c_]])
+            e2 = [(m_ + Rm @ (p0 - m_)).tolist(), (m_ + Rm @ (p1 - m_)).tolist()]
+            try:
+                w_ = ruler_report(sides, square_up(edges[0], e2, *args, min_converge_deg=0.0)["H"])["width_mm"]
+                tapers.append(w_[1] - w_[0])
+            except SquareUpError:
+                pass
+        if len(tapers) == 2:
+            part["taper_sigma_mm"] = round(abs(tapers[0] - tapers[1]) / 2.0, 2)
+    return jsonify(ok=True, reference=ref, other=other, sides=sides, ruler_edges=edges,
+                   part=part, ruler_check=check, **res)
 
 
 def _decode_data_url(durl):
