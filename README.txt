@@ -295,8 +295,14 @@ Tools (toolbar):
   Pan / Select / Set Scale / Measure (distance) / Path (perimeter) / ✨ Trace (closed part
   outline) / Area (rectangle) / Angle / Circle (2-point) / 3-Point circle / Note
   - Path: click points, then double-click or press Enter (or the ✓ button) to finish.
-  - ✨ Trace: tap the part and its outline is traced for you — a to-scale profile for the
-    3D part. While it waits for the tap it offers "▭ Draw a box" (drag round the whole part
+  - ✨ Trace: tap the part — or drag a box round it, the surest way (everything outside the
+    box counts as not the part) — and its outline is traced for you, a to-scale profile for
+    the 3D part. A ruler lying on the part (the one your scale line is on) counts as part of
+    it. The trace is tidied straight away — straight sides on the photo's edges, corners
+    fitted (Refine); one Undo gives the trace as found, and Settings → "Tidy a trace
+    straight away" turns that off. Stretches with no clear edge under them in the photo (a
+    shadowed end, a seam with a chrome bar) are drawn in amber: check those, with Tidy →
+    Fix one area. The box you draw there stays up for another go until ✓ Done. While it waits for the tap it offers "▭ Draw a box" (drag round the whole part
     and it traces inside the box: the fix for a shadowed end it stopped short of) and
     "✎ Draw by hand" (tap round the part, then tap the first point or double-tap to close).
   - Circle (centre + edge) and 3-Point circle (three taps on a round edge): drag the centre

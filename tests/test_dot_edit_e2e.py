@@ -187,10 +187,20 @@ def main():
                                  timeout=8000)
             bxs = sent[0].get("box") if sent else None
             assert bxs and abs(bxs[0] - 380) < 3 and abs(bxs[3] - 400) < 3, f"box sent: {bxs}"
+            # The box stays for another go — no redrawing — until ✓ Done.
+            assert pg.evaluate(f"!!{OV}._fixBox"), "the box went after one fix"
+            again = pg.locator(".cal-toast-action", has_text="Refine")
+            again.first.click()
+            pg.wait_for_function("(()=>{const t=window.__calLastToast;return t&&t.innerText.includes('only inside the box');})()",
+                                 timeout=8000)
+            assert len(sent) == 2 and sent[1].get("mode") == "refine" and sent[1].get("box") == bxs, \
+                f"second fix: {[(q.get('mode'), q.get('box')) for q in sent]}"
+            pg.locator(".cal-toast-action", has_text="Done").first.click()
+            assert pg.evaluate(f"!{OV}._fixBox"), "✓ Done left the box up"
             assert not errors, f"page errors: {errors}"
             browser.close()
         print("E2E_RESULT: PASS (+ adds a dot on the selected outline and drags it, one undo; a first press only "
-              "selects; double-click removes a dot, never below 3; Tidy → Snap to edge posts mode snap and applies it; Fix one area sends its box and leaves no Area)")
+              "selects; double-click removes a dot, never below 3; Tidy → Snap to edge posts mode snap and applies it; Fix one area sends its box, keeps it for another go until Done, and leaves no Area)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")

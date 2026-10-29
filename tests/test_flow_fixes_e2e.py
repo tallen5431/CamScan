@@ -98,6 +98,8 @@ def _toast(pg):
 def run(browser, errors, dialogs):
     ctx = browser.new_context(viewport={"width": 390, "height": 844})
     pg = ctx.new_page()
+    # These checks are of the trace as found: no automatic tidy.
+    pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
     pg.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
@@ -255,6 +257,8 @@ def phone_topbar(browser, errors, dialogs):
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3,
                               is_mobile=True, has_touch=True)
     pg = ctx.new_page()
+    # These checks are of the trace as found: no automatic tidy.
+    pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
     pg.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")

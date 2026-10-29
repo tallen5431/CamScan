@@ -143,6 +143,8 @@ def _area(pts):
 def _open(browser, bundle_path, errors, dialogs):
     ctx = browser.new_context(viewport={"width": 1280, "height": 900})
     pg = ctx.new_page()
+    # These checks are of the trace as found: no automatic tidy.
+    pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
     pg.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")

@@ -111,6 +111,8 @@ def main():
             except Exception as e:
                 _skip(f"cannot launch chromium: {e}")
             pg = browser.new_page()
+            # These checks are of the trace as found: no automatic tidy.
+            pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
             errors = []
             pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")

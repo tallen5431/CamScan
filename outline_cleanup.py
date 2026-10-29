@@ -1277,3 +1277,130 @@ def symmetrize_outline(points: Sequence[Sequence[float]], axis: str = "auto") ->
     out = (poly - pad) / k + lo
     return {"points": out.tolist(), "axis": axis, "mismatch_pct": round(100.0 * float(mm_), 2),
             "other": {"axis": other, "mismatch_pct": round(100.0 * float(best[other][0]), 2)}}
+
+
+# ---------------------------------------------------------------------------------------
+# Trace helpers: the ruler on the part is part of the part; where the outline has no edge
+# ---------------------------------------------------------------------------------------
+def include_ruler(img_bgr: np.ndarray, outer: Sequence[Sequence[float]], a: Sequence[float],
+                  b: Sequence[float]) -> Optional[List[List[float]]]:
+    """The traced outline with the ruler lying on the part added back in, or None.
+
+    A steel rule on a dark cover is bright where the cover is dark, so the trace went round
+    it: on a user's top photo the outline stepped in along the ruler for 30 cm. The ruler's
+    edges are found along the scale line drawn on it (ruler_check), and the strip between
+    them is added — only where it lies within the traced part's convex hull, so a ruler
+    hanging off the edge (or one lying beside the part, its line outside the hull) adds
+    nothing beyond the part."""
+    from ruler_check import find_ruler_edges
+    p = _ring(outer)
+    if p is None or img_bgr is None or not getattr(img_bgr, "size", 0):
+        return None
+    try:
+        a = np.array([float(a[0]), float(a[1])])
+        b = np.array([float(b[0]), float(b[1])])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not (np.all(np.isfinite(a)) and np.all(np.isfinite(b))) or float(np.hypot(*(b - a))) < 10:
+        return None
+    h, w = img_bgr.shape[:2]
+    hull = cv2.convexHull(p.astype(np.float32)).reshape(-1, 2)
+    t = np.linspace(0.0, 1.0, 21)
+    on = sum(cv2.pointPolygonTest(hull.reshape(-1, 1, 2), (float(x), float(y)), False) >= 0
+             for x, y in a + (b - a) * t[:, None])
+    if on < 0.6 * len(t):                       # the ruler is not lying on this part
+        return None
+    det = find_ruler_edges(img_bgr, a, b, detail=True)
+    edges = det.get("edges") if isinstance(det, dict) else None
+    if not edges:
+        return None
+    (p0, p1), (q0, q1) = [np.asarray(e, float) for e in edges]
+    if float(np.hypot(*(q0 - p0))) > float(np.hypot(*(q1 - p0))):
+        q0, q1 = q1, q0
+    # Out past the measured marks: the ruler runs on beyond them, and the hull clips it.
+    u = (p1 - p0) / max(float(np.hypot(*(p1 - p0))), 1e-9)
+    ext = 0.15 * float(np.hypot(*(p1 - p0)))
+    quad = np.array([p0 - u * ext, p1 + u * ext, q1 + u * ext, q0 - u * ext])
+    m_out = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(m_out, [np.round(p).astype(np.int32)], 1)
+    m_hull = np.zeros_like(m_out)
+    cv2.fillPoly(m_hull, [np.round(hull).astype(np.int32)], 1)
+    m_strip = np.zeros_like(m_out)
+    cv2.fillPoly(m_strip, [np.round(quad).astype(np.int32)], 1)
+    add = (m_strip & m_hull) & (1 - m_out)
+    if int(add.sum()) < max(30, 0.002 * int(m_out.sum())):
+        return None                              # the trace already holds the ruler
+    m = m_out | (m_strip & m_hull)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return None
+    c = max(cnts, key=cv2.contourArea)
+    c = cv2.approxPolyDP(c, 1.0, True).reshape(-1, 2)
+    return [[float(x), float(y)] for x, y in c] if len(c) >= 3 else None
+
+
+def weak_stretches(img_bgr: np.ndarray, points: Sequence[Sequence[float]],
+                   max_runs: int = 12) -> List[List[List[float]]]:
+    """Stretches of the outline with no clear edge under them in the photo — where it is
+    worth a look (a shadowed end, a seam with the chrome below): each as a list of points.
+
+    The edge strength across the outline (the photo's gradient along its normal, within a
+    few px) is compared with the outline's own typical strength, so a low-contrast part is
+    judged against itself; a stretch under 30 % of that, and long enough to matter, is weak."""
+    p = _ring(points)
+    if p is None or img_bgr is None or not getattr(img_bgr, "size", 0):
+        return []
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.GaussianBlur(gray, (0, 0), 1.2)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 8.0
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3) / 8.0
+    n = len(p)
+    P, Nrm = [], []
+    for i in range(n):
+        a, b = p[i], p[(i + 1) % n]
+        d = b - a
+        L = float(np.hypot(*d))
+        if L < 1e-6:
+            continue
+        u = d / L
+        m = max(1, int(math.ceil(L / 2.0)))
+        for j in range(m):
+            P.append(a + d * (j / m))
+            Nrm.append([-u[1], u[0]])
+    if len(P) < 20:
+        return []
+    P, Nrm = np.asarray(P), np.asarray(Nrm)
+    K = np.arange(-3.0, 3.01, 1.0)
+    S = P[:, None, :] + K[None, :, None] * Nrm[:, None, :]
+    E = np.abs(_bilinear(gx, S[..., 0], S[..., 1]) * Nrm[:, None, 0]
+               + _bilinear(gy, S[..., 0], S[..., 1]) * Nrm[:, None, 1]).max(axis=1)
+    k = 7
+    Es = np.convolve(np.concatenate([E[-k:], E, E[:k]]), np.ones(k) / k, mode="same")[k:-k]
+    ref = float(np.percentile(Es, 75))
+    if ref < 3.0:
+        return []
+    weak = Es < max(3.0, 0.3 * ref)
+    if weak.all() or not weak.any():
+        return []
+    perim = 2.0 * len(P)
+    min_len = max(20.0, 0.03 * perim)
+    # Runs of weak points, cyclic: start where a strong point ends.
+    s0 = int(np.argmin(weak))
+    order = np.roll(np.arange(len(P)), -s0)
+    runs, cur = [], []
+    for i in order:
+        if weak[i]:
+            cur.append(i)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    out = []
+    for r in sorted(runs, key=len, reverse=True)[:max_runs]:
+        if 2.0 * len(r) < min_len:
+            continue
+        idx = r[::3] + ([r[-1]] if (len(r) - 1) % 3 else [])
+        out.append([[round(float(P[i][0]), 2), round(float(P[i][1]), 2)] for i in idx])
+    return out

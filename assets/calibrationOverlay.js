@@ -195,7 +195,7 @@
       requestDraw(){ if(this._destroyed || this._rAF) return; this._rAF=requestAnimationFrame(()=>{ this._rAF=0; if(!this._destroyed) this.redraw(); }); }
       // A tool change disarms a pending auto-trace tap (a failed trace leaves it armed), so
       // a tap in another tool never traces.
-      setMode(m){ if(m!==this.opts.mode){ this._autoOutlineArm=false; this._traceAfterBox=false; this._fixAreaFor=null; } this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
+      setMode(m){ if(m!==this.opts.mode){ this._autoOutlineArm=false; this._traceAfterBox=false; this._fixAreaFor=null; if(m!=='select') this._fixBox=null; } this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       fitToContainer(){ this.vp.fit(this.canvas, this.img, this._fitInset()); this._fitK=this.vp.k; this.requestDraw(); }
@@ -297,8 +297,11 @@
             this.drag = hit ? this._makeDragHandle(hit, pt, wasSelected) : null;
             // Area mode on empty photo: a press may be the start of a drag-out box. Only the
             // first finger of a fresh box (a second finger turns the gesture into a pinch).
-            this._rectDrag = (!hit && this.opts.mode==='rectangle' && !this.selectedPoints.length && !this._bgTapArm)
-              ? { start:[pt[0],pt[1]], id:ev && ev.pointerId, live:false } : null;
+            // The armed Trace tool takes a drag too: a box round the part, traced inside it — the
+            // most reliable trace (everything outside the box is "not the part"), in one gesture.
+            const traceBox = !hit && this.opts.mode==='outline' && this._autoOutlineArm && !this.selectedPoints.length && !this._bgTapArm;
+            this._rectDrag = ((!hit && this.opts.mode==='rectangle' && !this.selectedPoints.length && !this._bgTapArm) || traceBox)
+              ? { start:[pt[0],pt[1]], id:ev && ev.pointerId, live:false, trace:traceBox } : null;
             // Remember the pre-drag state; it is committed to history only if the
             // drag actually moves the geometry (see _updateDrag), so a plain
             // select-click doesn't pollute the undo stack.
@@ -363,6 +366,7 @@
             const mm=this.getScale() || (this.data?.mm_per_px ?? 0);
             this._pushHistory(); Ann.addRectangle(this.ann, rd.start, b, mm, this.opts.units, this.opts.lockMarkerId);
             this.selectedPoints=[]; this.hover=null;
+            if(rd.trace){ this._autoOutlineArm=false; this._traceAfterBox=true; }
             // A short drag (5-9 css px) still ends in the gesture layer's click: not a new corner.
             this._suppressClick=true;
             if(this._traceInBox() || this._fixInBox()) return;
@@ -729,9 +733,10 @@
         if(Draw.resetLabels) Draw.resetLabels();   // start a fresh label-placement frame
         if(Draw.setReserved) Draw.setReserved(this._chipRectsImg());
         this._drawAnnotations();
+        if(this._fixBox && !this.ann.items.some(x=>x.id===this._fixBox.id)) this._fixBox=null;
         if(this._fixBox){
           // Tidy → Fix one area: the box the next Snap / Refine / Straighten is confined to.
-          const fb=this._fixBox; c.save(); c.setLineDash([this._lineW(4), this._lineW(3)]);
+          const fb=this._fixBox.box; c.save(); c.setLineDash([this._lineW(4), this._lineW(3)]);
           c.strokeStyle='#ffd166'; c.lineWidth=this._lineW(1.2);
           c.strokeRect(fb[0], fb[1], fb[2]-fb[0], fb[3]-fb[1]); c.restore();
         }
@@ -830,6 +835,13 @@
             // small dots easy to catch, so they can stay unobtrusive over a dense outline.
             const hR = sel ? this._handleR(1.5) : dotR, ringW = this._lineW(0.5);
             for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,hR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=ringW; c.stroke(); }
+            if(a.weak && closed && a.weakKey===this._ptsKey(pts)){
+              // No clear edge in the photo under these stretches: worth a look.
+              c.save(); c.strokeStyle='rgba(255,184,64,0.95)'; c.lineWidth=(sel?selW:linePx)*1.8;
+              c.setLineDash([this._lineW(5), this._lineW(3)]); c.lineCap='round';
+              for(const run of a.weak){ c.beginPath(); run.forEach((q,i)=>i?c.lineTo(q[0],q[1]):c.moveTo(q[0],q[1])); c.stroke(); }
+              c.restore();
+            }
             if(sel && this.opts.mode==='select' && !this.drag){
               // "+" between dots: press to add a dot there (and drag it); double-tap a dot to remove it.
               const mR=hR*0.85;
@@ -916,7 +928,7 @@
             Draw.boxLabel(c, this.canvas, mid[0], mid[1], `~${this._fmtLen(mm, Math.hypot(b[0]-a[0], b[1]-a[1]))}`, this._lblScale());
           }
         }
-        else if((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=1){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
+        else if((this.opts.mode==='polyline' || this.opts.mode==='outline') && this.selectedPoints.length>=1 && !(this._rectDrag && this._rectDrag.live)){ const pts=H?[...this.selectedPoints,H]:[...this.selectedPoints];
           c.save(); c.setLineDash([10,8]); c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for(let i=1;i<pts.length;i++) c.lineTo(pts[i][0], pts[i][1]);
           if(this.opts.mode==='outline' && this.selectedPoints.length>=3) c.closePath();   // preview the closing edge
           c.stroke(); c.restore();
@@ -930,7 +942,7 @@
           const mid=this.selectedPoints[0];
           Draw.boxLabel(c, this.canvas, mid[0], mid[1], need>0?`tap ${need} more corner${need===1?'':'s'}`:`pick paper size`, this._lblScale());
         }
-        else if(this.opts.mode==='rectangle' && this.selectedPoints.length===1 && H){
+        else if((this.opts.mode==='rectangle' || (this._rectDrag && this._rectDrag.live)) && this.selectedPoints.length===1 && H){
           const a=this.selectedPoints[0], b=H;
           const x1=Math.min(a[0],b[0]), y1=Math.min(a[1],b[1]); const x2=Math.max(a[0],b[0]), y2=Math.max(a[1],b[1]);
           c.save(); c.setLineDash([10,8]); c.strokeRect(x1,y1,x2-x1,y2-y1); c.restore();
@@ -1669,10 +1681,12 @@
       // Tidy → "▭ Fix one area": a box round the stretch of outline to fix; then Snap to edge,
       // Refine or Straighten change only what lies inside it (outline_cleanup.splice_in_box).
       // A user's outline was right along most of its length, and the tools redid all of it.
-      armFixArea(){
+      armFixArea(o){
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed){ this._toast('Select a closed outline first, then Fix one area.', {autoMs:2600}); return false; }
         if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        // The box from last time is still up: offer its tools again (and a new box).
+        if(this._fixBox && this._fixBox.id===a.id && !(o && o.fresh)){ this._fixChoices(true); return true; }
         this.setMode('rectangle');
         this.selectedPoints=[]; this.hover=null;
         this._fixAreaFor=a.id; this._fixBox=null;
@@ -1691,17 +1705,47 @@
         const box=[Math.min(r.rect[0], r.rect[2]), Math.min(r.rect[1], r.rect[3]), Math.max(r.rect[0], r.rect[2]), Math.max(r.rect[1], r.rect[3])];
         if(!this.ann.items.some(x=>x.id===id)) return true;
         this.ann.selectedId=id; this.setMode('select');
-        this._fixBox=box;
-        const self=this;
+        // The box stays up — through each fix and any dots dragged between them — until ✓ Done
+        // (or another tool): a stretch is often fixed in a few goes, and redrawing the box for
+        // each was a chore.
+        this._fixBox={ id:id, box:box };
         if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
-        const go=function(mode){ return function(){ const bx=self._fixBox||box; self.ann.selectedId=id; self.straightenSelected(mode, bx).then(function(){ self._fixBox=null; self.requestDraw(); }); }; };
-        this._toast('Fix inside the box with:', { autoMs:12000, actions:[
-          { label:'🧲 Snap to edge', fn:go('snap') }, { label:'✨ Refine', fn:go('refine') }, { label:'📏 Straighten', fn:go('straighten') }] });
-        // The dashed box stays while the choice is offered.
-        setTimeout(function(){ if(self._fixBox===box){ self._fixBox=null; self.requestDraw(); } }, 12000);
+        this._fixChoices(false);
         this.requestDraw();
         return true;
       }
+      // The tools for the kept box, as toast buttons: Snap / Refine / Straighten, ✓ Done.
+      _fixActions(withNew){
+        const self=this, fb=this._fixBox;
+        if(!fb) return null;
+        const go=function(mode){ return function(){
+          const k=self._fixBox; if(!k) return;
+          self.ann.selectedId=k.id;
+          self.straightenSelected(mode, k.box, { fixActs:self._fixActions(false) });
+        }; };
+        const acts=[{ label:'🧲 Snap to edge', fn:go('snap') }, { label:'✨ Refine', fn:go('refine') }, { label:'📏 Straighten', fn:go('straighten') }];
+        if(withNew) acts.push({ label:'▭ New box', fn:function(){ self._fixBox=null; self.armFixArea({ fresh:true }); } });
+        acts.push({ label:'✓ Done', fn:function(){ self._fixBox=null; self.requestDraw(); } });
+        return acts;
+      }
+      _fixChoices(withNew){
+        if(!this._fixBox) return;
+        this._toast('Fix inside the box with:', { autoMs:20000, actions:this._fixActions(withNew) });
+      }
+
+      _autoTidyOn(){ try{ return localStorage.getItem('camscan.autoTidy')!=='0'; }catch(e){ return true; } }
+      // A cheap fingerprint of an outline's dots: the weak stretches belong to the outline as
+      // it was checked, and are not drawn once a dot has moved.
+      _ptsKey(pts){ let s=0; for(const q of (pts||[])) s+=q[0]*1.37+q[1]; return (pts||[]).length+':'+s.toFixed(2); }
+      // Stretches of an outline with no clear edge under them in the photo (the server's
+      // weak_stretches), in the posted image's px / scale: drawn in amber, to check.
+      _setWeak(item, weak, scale){
+        if(!item) return;
+        const ok=Array.isArray(weak) ? weak.filter(r=>Array.isArray(r) && r.length>=2) : [];
+        item.weak = ok.length ? ok.map(r=>r.map(q=>[q[0]/scale, q[1]/scale])) : null;
+        item.weakKey = ok.length ? this._ptsKey(item.pts) : null;
+      }
+      _weakCount(item){ return (item && item.weak && item.weakKey===this._ptsKey(item.pts)) ? item.weak.length : 0; }
 
       armAutoOutline(){
         if(this.opts.mode!=='outline') this.setMode('outline');
@@ -1709,7 +1753,7 @@
         this._autoOutlineArm=true;
         this._dismissTraceDetail();          // a fresh trace starts — retire the old slider
         if(this._armToast) this._armToast.dismiss();
-        this._armToast=this._toast('Tap the part to trace it automatically.', {autoMs:5000});
+        this._armToast=this._toast('Tap the part — or drag a box round it — to trace it.', {autoMs:5000});
         this.requestDraw();
       }
       // "✎ Draw by hand": the Trace tool is armed to auto-trace, so this is the way to place
@@ -1836,8 +1880,12 @@
           const r=this._lastAutoRoi;
           roiSent=[r[0]*sentScale, r[1]*sentScale, r[2]*sentScale, r[3]*sentScale];
         }
+        // The scale line: when its ruler lies on the part, the server adds the ruler back into
+        // the outline (a bright steel rule on a dark cover was traced round).
+        const line=this._scaleLine;
+        const ruler=(line && Array.isArray(line.a) && Array.isArray(line.b)) ? [sent(line.a), sent(line.b)] : null;
         return { sentScale:sentScale, body:{ image:durl, seed:seedSent, exclude:exclude, simplify:simplify, roi:roiSent,
-                                             fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent) } };
+                                             fg:(this._fgTaps||[]).map(sent), bg:(this._bgTaps||[]).map(sent), ruler:ruler } };
       }
 
       // isRetrace: replace what the last auto-trace added (Detail slider, Not the part, or a
@@ -1890,6 +1938,7 @@
               const warns=(Array.isArray(j.warnings) ? j.warnings : []).filter(w=>typeof w==='string' && w.trim());
               const traceHint=(typeof j.hint==='string' && j.hint.trim()) ? j.hint.trim() : null;
               if(warns.length) self.ann.items[self.ann.items.length-1].traceWarnings=warns.slice();
+              self._setWeak(self.ann.items[self.ann.items.length-1], j.weak, sentScale);
               const outerId=self.ann.selectedId;
               self._autoAddedIds.push(outerId);
               self._tracedOuter={ id:outerId, json:JSON.stringify(self.ann.items[self.ann.items.length-1].pts) };
@@ -1921,6 +1970,7 @@
               // the user would not guess: an Area box round the part makes everything outside it
               // "not the part", and the shadowed end comes back (see auto_outline._segment).
               const boxed = !!self._lastAutoRoi;
+              const rulerNote = j.ruler_filled ? ' (the ruler lying on it counted as part of it)' : '';
               const boxIt={ label:'▭ Draw a box', fn:function(){ self.armBoxTrace(); } };
               const notPart={ label:'✖ Not the part', fn:function(){ self.armBackgroundTap(); } };
               if(traceHint){
@@ -1935,6 +1985,15 @@
                 toast.keepFor(9000);
                 return;
               }
+              // Trace, then Refine, was two steps every time (and the raw trace's wobbly sides
+              // were what users then fixed by hand). A fresh trace is tidied straight away —
+              // straight sides on the edge, corners fitted — and one Undo gives the trace as found.
+              if(fresh && self._autoTidyOn()){
+                toast.update('Outline'+tail+' traced'+rulerNote+' — tidying it…', 'ok');
+                self.ann.selectedId=outerId;
+                self.straightenSelected('refine', null, { auto:true, toast:toast, tail:tail+rulerNote, warns:warns });
+                return;
+              }
               if(warns.length){
                 // A shadow step on a side (auto_outline: a jog, or a stretch standing proud of
                 // the usual width) was measured but left in: the part would be built that much
@@ -1943,10 +2002,10 @@
                 // far end in the user's own shadow) comes back only with one.
                 const fixes=[{ label:'Straighten', fn:function(){ if(self.ann.items.some(a=>a.id===outerId)){ self.ann.selectedId=outerId; self.straightenSelected(); } } }, notPart];
                 if(fresh && !boxed) fixes.push(boxIt);
-                toast.update('Outline'+tail+' traced — check it: '+warns.join(' '), 'warn', fixes);
+                toast.update('Outline'+tail+' traced'+rulerNote+' — check it: '+warns.join(' '), 'warn', fixes);
                 toast.keepFor(9000);
               } else {
-                toast.update('Outline'+tail+' traced'+(boxed ? ' inside your Area box' : '')+' — drag any dot to fix it'+
+                toast.update('Outline'+tail+' traced'+(boxed ? ' inside your Area box' : '')+rulerNote+' — drag any dot to fix it'+
                   (boxed || !fresh ? ', or use the Detail slider.'
                                    : '. Missed a part in shadow? Draw a box round the part.'), 'ok',
                   (boxed || !fresh) ? null : [boxIt]);
@@ -2058,9 +2117,12 @@
       // mode 'snap' moves the outline onto the photo's edge within a few px of where it is, with
       // the dots that edge needs (outline_cleanup.snap_outline_to_edges) — for an edge Refine
       // cannot fit, after the dots have been dragged near it.
-      straightenSelected(mode, box){
+      straightenSelected(mode, box, opts){
         const refine = mode==='refine', snap = mode==='snap';
         const inBox = Array.isArray(box) && box.length===4;
+        // opts.auto: the tidy straight after a trace — its words are the trace's, and a part
+        // with nothing to fit is simply traced, not an error.
+        const auto = !!(opts && opts.auto), tail = (opts && opts.tail) || '';
         const what = snap ? 'Snap to edge' : (refine ? 'Refine' : 'Straighten');
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<3){
@@ -2086,7 +2148,9 @@
         let durl=null; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){}   // none: straighten by the dots alone
         const self=this, id=a.id;
         if((refine || snap) && !durl){ this._toast(what+' needs the photo, which could not be read here.', {autoMs:3000}); return Promise.resolve(false); }
-        const toast=this._toast(snap ? 'Snapping to the edge…' : (refine ? (fromTrace ? 'Refining — re-tracing at full detail (a few seconds)…' : 'Refining…') : 'Straightening…'));
+        const toast=(auto && opts.toast) ? opts.toast : this._toast(snap ? 'Snapping to the edge…' : (refine ? (fromTrace ? 'Refining — re-tracing at full detail (a few seconds)…' : 'Refining…') : 'Straightening…'));
+        const weakNote=function(item){ const n=self._weakCount(item); return n ? ' Amber: no clear edge in the photo there — check '+(n===1?'it':'them')+' (Tidy → Fix one area).' : ''; };
+        const weakActs=function(item){ return self._weakCount(item) ? [{ label:'▭ Fix one area', fn:function(){ self.ann.selectedId=item.id; self.armFixArea(); } }] : null; };
         const fine = fromTrace ? (function(){
           const req=self._traceRequest(self._lastAutoSeed, 0.0003);
           if(!req) return Promise.resolve(src);
@@ -2108,36 +2172,54 @@
               self._pushHistory();
               cur.pts=usedPts.map(p=>p.slice());
               self._dismissTraceDetail(); self.requestDraw();
-              toast.update('Refined: re-traced at full detail ('+cur.pts.length+' points) — no straight sides to fit. Undo to go back.', 'ok');
+              toast.update(auto ? ('Outline'+tail+' traced at full detail ('+cur.pts.length+' points) — drag any dot to fix it.')
+                                : ('Refined: re-traced at full detail ('+cur.pts.length+' points) — no straight sides to fit. Undo to go back.'), 'ok');
               setTimeout(toast.dismiss, 3200);
               return true;
             }
+            if(auto && (!j || !j.ok || !cur || !Array.isArray(j.points))){
+              // Nothing straight to fit (a round part): the trace as found is the answer.
+              const w=(opts.warns||[]).length ? ' Check it: '+opts.warns.join(' ') : '';
+              toast.update('Outline'+tail+' traced — drag any dot to fix it.'+w+weakNote(cur), w ? 'warn' : 'ok', weakActs(cur));
+              setTimeout(toast.dismiss, (w || self._weakCount(cur)) ? 9000 : 3500);
+              return false;
+            }
             if(!j || !j.ok || !cur || !Array.isArray(j.points)){
+              const fixActs=(opts && opts.fixActs) || null;
               toast.update(inBox && !(j && j.error==='tangled') ? (what+' found nothing to change inside the box — nothing outside it was touched.') : snap ? (j && j.error==='tangled'
                                      ? 'Snap to edge could not follow this outline cleanly, so nothing changed. Where the dots bunch up or zig-zag, drag them into a simple line along the edge (double-tap extras to remove them), then try again.'
                                      : 'No clear edge near this outline to snap to — drag its dots onto the part\'s edge first, then Snap to edge.')
-                                : 'Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err');
-              setTimeout(toast.dismiss, 3000);
+                                : 'Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err', fixActs);
+              setTimeout(toast.dismiss, fixActs ? 15000 : 3000);
               return false;
             }
             self._pushHistory();
             const before=cur.pts.map(p=>p.slice());
             cur.pts=j.points.map(p=>[p[0]/k, p[1]/k]);
+            self._setWeak(cur, j.weak, k);
             if(!refine && !snap && !inBox) self._straightened[id]={ from: before, to: JSON.stringify(cur.pts) };
             self._dismissTraceDetail();   // its slider re-traces, which would undo this
             self.requestDraw();
             const n=j.straight|0, sn=j.snapped|0, rd=j.rounded|0;
-            toast.update(inBox
-              ? (what+': changed only inside the box ('+cur.pts.length+' dots in all). Undo to go back.')
+            const nWeak=self._weakCount(cur);
+            toast.update(auto
+              ? ('Traced and tidied'+tail+': '+n+' straight side'+(n===1?'':'s')+(rd ? ', '+rd+' rounded corner'+(rd===1?'':'s') : '')+
+                 ' on the photo\'s edges. Undo for the trace as found.'+weakNote(cur))
+              : (inBox
+              ? (what+': changed only inside the box ('+cur.pts.length+' dots in all). The box stays — fix again, or ✓ Done. Undo to go back.')
               : snap
               ? ('Snapped to the photo\'s edge: '+cur.pts.length+' dots'+((j.found_pct|0)<100 ? ' (an edge found along '+(j.found_pct|0)+'% of it; the rest stays where you put it)' : '')+'. Undo to go back.')
               : refine
               ? ('Refined: '+n+' straight side'+(n===1?'':'s')+(rd ? ', '+rd+' rounded corner'+(rd===1?'':'s')+' fitted to the photo' : ', corners kept as they are')+'. Undo to go back.')
-              : ('Straightened '+n+' side'+(n===1?'':'s')+(sn ? ' — '+(sn===n?'all':sn)+' snapped to the edge in the photo' : '')+'. Undo to go back.'), 'ok');
-            setTimeout(toast.dismiss, 3200);
+              : ('Straightened '+n+' side'+(n===1?'':'s')+(sn ? ' — '+(sn===n?'all':sn)+' snapped to the edge in the photo' : '')+'. Undo to go back.'))+weakNote(cur), 'ok',
+              (inBox && opts && opts.fixActs) ? opts.fixActs : weakActs(cur));
+            setTimeout(toast.dismiss, (inBox && opts && opts.fixActs) ? 15000 : nWeak ? 9000 : (auto ? 4500 : 3200));
             return true;
           })
-          .catch(function(){ toast.update(what+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
+          .catch(function(){
+            if(auto){ toast.update('Outline'+tail+' traced — drag any dot to fix it.', 'ok'); setTimeout(toast.dismiss, 3000); return false; }
+            toast.update(what+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false;
+          });
       }
 
       // Square up (square_up.py): two edges that are parallel on the part converge in a photo

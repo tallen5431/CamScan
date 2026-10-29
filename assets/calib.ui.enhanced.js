@@ -737,6 +737,14 @@ window.CalibUI = (function(){
       snapLabel.appendChild(snapChk); snapLabel.appendChild(document.createTextNode(' Snap to marker corners'));
       dispBody.appendChild(snapLabel);
 
+      // A fresh trace is tidied straight away (Refine); off, it is left as traced.
+      const tidyLabel = document.createElement('label');
+      const tidyChk = document.createElement('input'); tidyChk.type = 'checkbox'; tidyChk.id = 'cal-set-autotidy';
+      try { tidyChk.checked = localStorage.getItem('camscan.autoTidy') !== '0'; } catch (e) { tidyChk.checked = true; }
+      tidyChk.onchange = () => { try { localStorage.setItem('camscan.autoTidy', tidyChk.checked ? '1' : '0'); } catch (e) {} };
+      tidyLabel.appendChild(tidyChk); tidyLabel.appendChild(document.createTextNode(' Tidy a trace straight away (straight sides, fitted corners)'));
+      dispBody.appendChild(tidyLabel);
+
       const noteLabel = document.createElement('label');
       noteLabel.innerHTML = '<strong>Default note text:</strong>';
       const noteInput = document.createElement('input'); noteInput.type = 'text';

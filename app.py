@@ -1261,9 +1261,31 @@ def api_trace():
                        "edge to find. Tap right on the part, draw an Area box around it "
                        "first, or tap ✖ Not the part on the background.",
                        **({"warnings": extra["warnings"]} if "warnings" in extra else {})), 200
+    outer = res["outer"]
+    # The scale line's ruler, when it lies on the part, is part of the part (a bright steel
+    # rule on a dark cover was traced round, the outline stepping in along it).
+    ruler = data.get("ruler")
+    if isinstance(ruler, (list, tuple)) and len(ruler) == 2:
+        try:
+            ra, rb = [[float(q[0]), float(q[1])] for q in ruler]
+            if all(math.isfinite(v) for v in ra + rb):
+                from outline_cleanup import include_ruler
+                filled = include_ruler(img, outer, ra, rb)
+                if filled:
+                    outer = filled
+                    extra["ruler_filled"] = True
+        except Exception as e:                 # never costs the trace
+            print(f"[trace] ruler fill skipped: {e}")
+    try:
+        from outline_cleanup import weak_stretches
+        weak = weak_stretches(img, outer)
+        if weak:
+            extra["weak"] = weak
+    except Exception as e:
+        print(f"[trace] weak-edge check skipped: {e}")
     # `points` is the outer boundary (unchanged shape for older clients); `holes` are interior
     # loops (a box-end ring, bolt holes) the client drops in as extra closed profiles.
-    return jsonify(ok=True, points=res["outer"], holes=res.get("holes") or [], **extra)
+    return jsonify(ok=True, points=outer, holes=res.get("holes") or [], **extra)
 
 
 @server.route("/api/outline/straighten", methods=["POST"])
@@ -1342,6 +1364,13 @@ def api_straighten():
         return jsonify(ok=False, error="no_change"), 200
     if res.get("error"):                      # snap: it would have crossed itself
         return jsonify(ok=False, error=res["error"]), 200
+    if img is not None:
+        # Where the result has no clear edge under it: the page marks those stretches.
+        try:
+            from outline_cleanup import weak_stretches
+            res["weak"] = weak_stretches(img, res["points"])
+        except Exception as e:
+            print(f"[straighten] weak-edge check skipped: {e}")
     return jsonify(ok=True, **res)
 
 

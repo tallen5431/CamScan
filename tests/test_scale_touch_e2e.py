@@ -139,6 +139,8 @@ def phone(browser, bundle_path):
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2,
                               has_touch=True, is_mobile=True)
     pg = ctx.new_page()
+    # These checks are of the trace as found: no automatic tidy.
+    pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
     _open(pg, bundle_path)
@@ -214,6 +216,8 @@ def phone(browser, bundle_path):
 def desktop(browser, bundle_path):
     ctx = browser.new_context(viewport={"width": 1280, "height": 900})
     pg = ctx.new_page()
+    # These checks are of the trace as found: no automatic tidy.
+    pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
     _open(pg, bundle_path)

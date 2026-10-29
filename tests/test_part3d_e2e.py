@@ -179,6 +179,8 @@ def main():
                 _skip(f"cannot launch chromium: {e}")
             ctx = browser.new_context(viewport={"width": 1280, "height": 900}, accept_downloads=True)
             pg = ctx.new_page()
+            # These checks are of the trace as found: no automatic tidy.
+            pg.add_init_script("try{localStorage.setItem('camscan.autoTidy','0')}catch(e){}")
             errors, dialogs = [], []
             pg.on("pageerror", lambda e: errors.append(str(e)))
             pg.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))

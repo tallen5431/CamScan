@@ -211,7 +211,7 @@
           (missing.length ? ' Next: 📷 Add another photo for the '+missing.join(' or ')+' view, or 🧩 Build 3D part.'
                           : ' Next: 🧩 Build 3D part.');
       } else if(!hasOutline(o)){
-        next='Next: ✨ Trace outline, then tap the part. If it misses a shadowed end, draw a box round the part (▭ Draw a box).';
+        next='Next: ✨ Trace outline, then tap the part — or drag a box round it, the surest way when an end is in shadow.';
       } else if(selectedOutline(o)){
         next='Next: say which view this outline is — Top, Side or End.';
       } else {
