@@ -553,6 +553,10 @@
         : v.orphan ? 'its outline was deleted — using the last copy'
         : v.unscaled ? (typeof v.unscaled === 'string' ? v.unscaled : UNSCALED) : null;
       var scaled = v && Number(v.scale) > 0 && Math.abs(Number(v.scale) - 1) > 1e-6;
+      // One flip of the Top is a reflection (two make a half turn): the part comes out the
+      // other hand from the photo. Right only for a photo of the underside — a user who
+      // flipped the Top to make a turned-over STL "look right" in CAD got a mirrored part.
+      var mirrorTop = v && r[0] === 'top' && (!!v.flip_h !== !!v.flip_v);
       meta.innerHTML = '<b>' + esc(r[1]) + '</b> <span style="font-size:12px;color:' + (v ? '#9fe6c2' : '#7f8f98') + ';">' +
         (v ? ((v.size_mm ? v.size_mm[0].toFixed(1) + ' × ' + v.size_mm[1].toFixed(1) + ' mm' : 'set') +
               ((v.rot || v.flip_h || v.flip_v) ? ' · turned' : '')) : 'not set — ' + esc(r[2])) + '</span>' +
@@ -560,7 +564,9 @@
                   (v.scale_note ? ' — ' + esc(v.scale_note) : '') + '</span>' : '') +
         (flag ? '<br><span data-flag="' + r[0] + '" style="font-size:12px;color:#f3c969;">⚠ ' + esc(flag) + '</span>'
          : (v && v.ann_id != null ? '<br><span style="font-size:11.5px;color:#7f9aa5;">follows its outline' +
-            (v.updated ? ' · updated ' + esc(new Date(v.updated).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})) : '') + '</span>' : ''));
+            (v.updated ? ' · updated ' + esc(new Date(v.updated).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})) : '') + '</span>' : '')) +
+        (mirrorTop ? '<br><span data-mirror-top="1" style="font-size:12px;color:#f3c969;">⚠ flipped: the part is now a mirror image of the photo — ' +
+                     'right only if the photo shows its underside. Use ⟲ to turn it instead.</span>' : '');
       row.appendChild(meta);
       if(v){
         var acts = [['rot', '⟲', 'Rotate a quarter turn'], ['fliph', '⇋', 'Flip end for end'], ['flipv', '⇵', 'Flip upside down'],
@@ -977,6 +983,13 @@
                                           : 'Downloads plate-down, open side up — but the deck is not flat on the bed, not ready to print.')
                                   : 'Downloads open side down — the deck needs supports.');
     }else if(info.upside_down) lines.push('Downloads upside down for printing.');
+    if(info.plate_down){
+      // Seen from above, a part turned deck-down shows its underside, which reads as a mirror
+      // image of the Top — and a user "fixed" that with the flip buttons, mirroring the part.
+      lines.push('<span data-stl-turned="1" style="' + NOTE + '">The STL is turned deck-down for the printer: looked at from above ' +
+                 'it shows its underside, so it reads as a mirror image — it is the same part. 📐 STEP and OBJ come ' +
+                 'the way the part sits (Z up), as the preview shows it; use STEP in Fusion.</span>');
+    }
     return { summary: head, notes: lines };
   }
   function describe(info){
@@ -1167,6 +1180,18 @@
       g.lineTo(W / 2 + t[3][0] * sc, H / 2 - t[3][1] * sc);
       g.closePath(); g.fillStyle = col; g.fill(); g.strokeStyle = col; g.lineWidth = 0.6; g.stroke();
     }
+    // Which way X / Y / Z point, as in CAD's view cube (the files use the same axes; X is
+    // the length, Z up): so a view in Fusion can be matched to this one.
+    var ox = 26, oy = H - 24, al = 16;
+    [['X', [cy, sy * sp], '#ff6b6b'], ['Y', [-sy, cy * sp], '#7ee081'], ['Z', [0, cp], '#6fb6ff']].forEach(function(ax){
+      var ex = ax[1][0] * al, ey = ax[1][1] * al;
+      g.beginPath(); g.moveTo(ox, oy); g.lineTo(ox + ex, oy - ey);
+      g.strokeStyle = ax[2]; g.lineWidth = 2; g.stroke();
+      if(Math.hypot(ex, ey) > 4){
+        g.fillStyle = ax[2]; g.font = '700 10px system-ui,sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(ax[0], ox + ex * 1.45, oy - ey * 1.45);
+      }
+    });
     cv.setAttribute('data-faces', String(list.length));       // for tests: how many faces were drawn
   }
   function hook3d(cv){

@@ -135,6 +135,12 @@ is built from several outlines instead of one, each traced on whichever photo sh
        OBJ                 a mesh with one polygon per flat side, for programs that only take
                            meshes (in Fusion: Insert Mesh, then Convert Mesh).
      STEP and OBJ come as traced (the way the part sits); STL comes plate-down for printing.
+     Turned plate-down, the STL seen from above shows its underside, so it reads as a mirror
+     image of the Top — it is the same part (a turn, never a flip). Don't "fix" that with ⇋ / ⇵:
+     one flip of the Top really does mirror the part (the dialog warns). In CAD use the STEP;
+     the preview's X / Y / Z marker matches its axes (X along the length, Z up). Fusion set to
+     Y up shows a Z-up file lying on its back: Preferences → General → Default modeling
+     orientation → Z up.
   HOLLOW: put a wall thickness in "Hollow — wall (mm)" and the part comes out as a cover of
   that wall, open underneath, turned plate-down for printing — with Top alone or with Side
   and End views too. Leave it empty for a solid part.

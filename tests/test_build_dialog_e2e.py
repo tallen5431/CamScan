@@ -238,6 +238,18 @@ def _real_server(pg, notes):
         f"section not applied: {str(sj)[:300]}"
     assert "ready to print" in (sj["info"].get("orientation") or ""), f"orientation: {sj['info'].get('orientation')}"
     notes.append("cross-section edge radius applied, ready to print")
+    # 1f. Which way the files come: a cover's STL is turned deck-down, and the dialog says
+    #     that seen from above it shows the underside (not a mirror), and to use STEP in CAD.
+    #     One flip of the Top makes the part a mirror image of the photo, and says so; two
+    #     flips are a half turn, and do not.
+    pg.wait_for_selector('#cal-part-status [data-stl-turned]', timeout=8000)
+    assert "STEP" in pg.inner_text('#cal-part-status [data-stl-turned]'), "STL note does not point to STEP"
+    assert not pg.query_selector('[data-mirror-top]'), "mirror warning on an unflipped Top"
+    pg.click('#cal-part-row-top button[data-act="fliph"]')
+    pg.wait_for_selector('[data-mirror-top]', timeout=5000)
+    pg.click('#cal-part-row-top button[data-act="flipv"]')
+    assert not pg.query_selector('[data-mirror-top]'), "a half turn (both flips) was called a mirror image"
+    notes.append("STL turn explained, single Top flip warned as a mirror image")
     pg.click("#cal-part-panel button[aria-label='Close']")
 
 
