@@ -65,6 +65,32 @@ def main():
           f"nearest dot to each corner {[round(o, 1) for o in off]}, top {q[:, 1].min():.1f}, right {q[:, 0].max():.1f}")
     sides = q[(q[:, 1] > 150) & (q[:, 1] < 650)]
     check("a straight side gets no extra dots", len(sides) == 0, f"{len(sides)} dots mid-side")
+    # A knot of dots round a corner (a trace's jog plus a few drags) tied the outline in
+    # knots on a user's photo: whatever comes back must never cross itself.
+    rng = np.random.default_rng(3)
+    crossed, kept = 0, 0
+    for _ in range(40):
+        cl = sorted(([500 + rng.normal(0, 6), 100 + rng.normal(0, 6)] for _ in range(10)), key=lambda q: q[0] - q[1])
+        messy = [[204, 104], [300, 101], [430, 99]] + cl + [[497, 300], [497, 705], [350, 735], [203, 705]]
+        rr = oc.snap_outline_to_edges(img, messy)
+        if rr and "points" in rr:
+            kept += 1
+            crossed += oc._crossings(np.asarray(rr["points"], float)) > 0
+    check("a knot of dots never comes back tangled (snapped clean, or refused and left as it was)",
+          crossed == 0 and kept >= 25, f"{kept}/40 snapped, {crossed} crossing themselves")
+    # Fix one area: only what is inside the box changes; every dot outside stays exactly.
+    wobbly = [[200, 100], [300, 103], [400, 97], [500, 100], [500, 705], [430, 727], [350, 735], [270, 727], [200, 705]]
+    bx = [190, 650, 510, 760]
+    rb = oc.snap_outline_to_edges(img, wobbly, box=bx)
+    qb = np.asarray(rb["points"]) if rb and "points" in rb else np.zeros((0, 2))
+    inside = (qb[:, 0] > bx[0]) & (qb[:, 0] < bx[2]) & (qb[:, 1] > bx[1]) & (qb[:, 1] < bx[3])
+    kept_out = all(any(np.allclose(q, w) for w in wobbly) for q in qb[~inside & (qb[:, 1] < bx[1] - 1)])
+    endb = qb[inside & (qb[:, 0] > 215) & (qb[:, 0] < 485)]
+    eb = float(np.abs(endb[:, 1] - _true_y(endb[:, 0])).max()) if len(endb) else 99.0
+    check("Fix one area: the end inside the box is snapped, the wobbly dots outside it are kept exactly",
+          kept_out and [300, 103] in qb.tolist() and [400, 97] in qb.tolist() and eb < 1.0,
+          f"outside kept={kept_out}, end worst {eb:.2f} px")
+    check("a box clear of the outline changes nothing", oc.splice_in_box(wobbly, user, [0, 0, 10, 10]) is None)
     check("no edges in the photo: nothing to snap to",
           oc.snap_outline_to_edges(np.full_like(img, 128), user) is None)
 
@@ -74,6 +100,12 @@ def main():
     ok = cli.post("/api/outline/straighten", json={"image": durl, "points": user, "mode": "snap"})
     noimg = cli.post("/api/outline/straighten", json={"image": None, "points": user, "mode": "snap"})
     j = ok.get_json() or {}
+    rbx = cli.post("/api/outline/straighten", json={"image": durl, "points": wobbly, "mode": "straighten", "box": bx})
+    jb = rbx.get_json() or {}
+    junk = cli.post("/api/outline/straighten", json={"image": durl, "points": wobbly, "mode": "snap", "box": [1, 2, "x"]})
+    check("Straighten with a box keeps the outside dots; a junk box is refused",
+          rbx.status_code == 200 and jb.get("ok") and [300, 103] in jb.get("points", []) and junk.status_code == 400,
+          f"{rbx.status_code} ok={jb.get('ok')}, junk {junk.status_code}")
     check("/api/outline/straighten mode snap answers with the snapped outline; refuses without the photo",
           ok.status_code == 200 and j.get("ok") and len(j.get("points", [])) >= 8 and "found_pct" in j
           and noimg.status_code == 400,

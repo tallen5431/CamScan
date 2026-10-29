@@ -1278,7 +1278,7 @@ def api_straighten():
     is always a fine answer.
     """
     from flask import jsonify
-    from outline_cleanup import refine_outline, snap_outline_to_edges, straighten_outline
+    from outline_cleanup import _crossings, refine_outline, snap_outline_to_edges, splice_in_box, straighten_outline
 
     data = _json_body()
     pts = data.get("points")
@@ -1309,20 +1309,39 @@ def api_straighten():
         if any(not (-w_ <= x <= 2 * w_ and -h_ <= y <= 2 * h_) for x, y in ring):
             return jsonify(ok=False, error="bad_points"), 400
     # "refine" also gives each corner the radius the photo shows (it needs the photo).
+    # "box": [x0, y0, x1, y1] — only the outline inside it changes (Tidy → Fix one area).
+    box = data.get("box")
+    if box is not None:
+        try:
+            box = [float(v) for v in box][:4]
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="bad_box"), 400
+        if len(box) != 4 or not all(math.isfinite(v) for v in box) or box[0] == box[2] or box[1] == box[3]:
+            return jsonify(ok=False, error="bad_box"), 400
     mode = data.get("mode")
     refine, snap = mode == "refine", mode == "snap"
     if (refine or snap) and img is None:
         return jsonify(ok=False, error="no_image"), 400
     try:
         if snap:
-            res = snap_outline_to_edges(img, ring)
+            res = snap_outline_to_edges(img, ring, box=box)
         else:
             res = refine_outline(img, ring) if refine else straighten_outline(img, ring)
+            if res and box is not None:
+                sp = splice_in_box(ring, res["points"], box)
+                if sp is None:
+                    res = None
+                elif _crossings(sp):
+                    res = {"error": "tangled"}
+                else:
+                    res["points"] = [[round(float(x), 2), round(float(y), 2)] for x, y in sp]
     except Exception as e:
         print(f"[straighten] error: {e}")
         return jsonify(ok=False, error="failed"), 500
     if not res:
         return jsonify(ok=False, error="no_change"), 200
+    if res.get("error"):                      # snap: it would have crossed itself
+        return jsonify(ok=False, error=res["error"]), 200
     return jsonify(ok=True, **res)
 
 

@@ -195,7 +195,7 @@
       requestDraw(){ if(this._destroyed || this._rAF) return; this._rAF=requestAnimationFrame(()=>{ this._rAF=0; if(!this._destroyed) this.redraw(); }); }
       // A tool change disarms a pending auto-trace tap (a failed trace leaves it armed), so
       // a tap in another tool never traces.
-      setMode(m){ if(m!==this.opts.mode){ this._autoOutlineArm=false; this._traceAfterBox=false; } this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
+      setMode(m){ if(m!==this.opts.mode){ this._autoOutlineArm=false; this._traceAfterBox=false; this._fixAreaFor=null; } this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       fitToContainer(){ this.vp.fit(this.canvas, this.img, this._fitInset()); this._fitK=this.vp.k; this.requestDraw(); }
@@ -290,7 +290,7 @@
               if(bi>=0){ this._selDrag=bi; this._suppressClick=true; this.drag=null; return this.requestDraw(); }
             }
             this.ann.hitTolPx = this.vp.pxToImg(18*this.vp.dpr);
-            const hit = Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
+            const hit = this._fixAreaFor!=null ? null : Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
             const wasSelected = !!hit && hit.id===this.ann.selectedId;
             const preHit = hit ? this._snapshot() : null;
             this.ann.selectedId = hit ? hit.id : this.ann.selectedId;
@@ -365,7 +365,7 @@
             this.selectedPoints=[]; this.hover=null;
             // A short drag (5-9 css px) still ends in the gesture layer's click: not a new corner.
             this._suppressClick=true;
-            if(this._traceInBox()) return;
+            if(this._traceInBox() || this._fixInBox()) return;
             this.requestDraw();
           },
           onClick: (pt)=>{
@@ -455,7 +455,7 @@
             if(this.opts.mode==='rectangle' && this.selectedPoints.length===2){
               const [a,b]=this.selectedPoints; this._pushHistory(); Ann.addRectangle(this.ann, a,b, mm, this.opts.units, this.opts.lockMarkerId);
               this.selectedPoints=[];
-              if(this._traceInBox()) return;
+              if(this._traceInBox() || this._fixInBox()) return;
               return this.requestDraw();
             }
             if(this.opts.mode==='angle' && this.selectedPoints.length===3){
@@ -729,6 +729,12 @@
         if(Draw.resetLabels) Draw.resetLabels();   // start a fresh label-placement frame
         if(Draw.setReserved) Draw.setReserved(this._chipRectsImg());
         this._drawAnnotations();
+        if(this._fixBox){
+          // Tidy → Fix one area: the box the next Snap / Refine / Straighten is confined to.
+          const fb=this._fixBox; c.save(); c.setLineDash([this._lineW(4), this._lineW(3)]);
+          c.strokeStyle='#ffd166'; c.lineWidth=this._lineW(1.2);
+          c.strokeRect(fb[0], fb[1], fb[2]-fb[0], fb[3]-fb[1]); c.restore();
+        }
         this._drawPreview();
         this._drawDetectedRect();
         this._drawLoupe();
@@ -1660,6 +1666,43 @@
         return true;
       }
 
+      // Tidy → "▭ Fix one area": a box round the stretch of outline to fix; then Snap to edge,
+      // Refine or Straighten change only what lies inside it (outline_cleanup.splice_in_box).
+      // A user's outline was right along most of its length, and the tools redid all of it.
+      armFixArea(){
+        const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
+        if(!a || a.type!=='polyline' || !a.closed){ this._toast('Select a closed outline first, then Fix one area.', {autoMs:2600}); return false; }
+        if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        this.setMode('rectangle');
+        this.selectedPoints=[]; this.hover=null;
+        this._fixAreaFor=a.id; this._fixBox=null;
+        this._armToast=this._toast('Drag a box round the part of the outline to fix — nothing outside the box will change.', {autoMs:6000, top:true});
+        this.requestDraw();
+        return true;
+      }
+      _fixInBox(){
+        const id=this._fixAreaFor;
+        if(id==null) return false;
+        this._fixAreaFor=null;
+        const r=this.ann.items[this.ann.items.length-1];
+        if(!r || r.type!=='rectangle' || !Array.isArray(r.rect) || r.rect.length!==4) return false;
+        // The box was only a pointer: take it back out, and its undo step with it.
+        this.ann.items.pop(); this._undoStack.pop();
+        const box=[Math.min(r.rect[0], r.rect[2]), Math.min(r.rect[1], r.rect[3]), Math.max(r.rect[0], r.rect[2]), Math.max(r.rect[1], r.rect[3])];
+        if(!this.ann.items.some(x=>x.id===id)) return true;
+        this.ann.selectedId=id; this.setMode('select');
+        this._fixBox=box;
+        const self=this;
+        if(this._armToast){ this._armToast.dismiss(); this._armToast=null; }
+        const go=function(mode){ return function(){ const bx=self._fixBox||box; self.ann.selectedId=id; self.straightenSelected(mode, bx).then(function(){ self._fixBox=null; self.requestDraw(); }); }; };
+        this._toast('Fix inside the box with:', { autoMs:12000, actions:[
+          { label:'🧲 Snap to edge', fn:go('snap') }, { label:'✨ Refine', fn:go('refine') }, { label:'📏 Straighten', fn:go('straighten') }] });
+        // The dashed box stays while the choice is offered.
+        setTimeout(function(){ if(self._fixBox===box){ self._fixBox=null; self.requestDraw(); } }, 12000);
+        this.requestDraw();
+        return true;
+      }
+
       armAutoOutline(){
         if(this.opts.mode!=='outline') this.setMode('outline');
         this.selectedPoints=[]; this.hover=null;
@@ -2015,8 +2058,9 @@
       // mode 'snap' moves the outline onto the photo's edge within a few px of where it is, with
       // the dots that edge needs (outline_cleanup.snap_outline_to_edges) — for an edge Refine
       // cannot fit, after the dots have been dragged near it.
-      straightenSelected(mode){
+      straightenSelected(mode, box){
         const refine = mode==='refine', snap = mode==='snap';
+        const inBox = Array.isArray(box) && box.length===4;
         const what = snap ? 'Snap to edge' : (refine ? 'Refine' : 'Straighten');
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<3){
@@ -2025,14 +2069,14 @@
         }
         this._straightened = this._straightened || {};
         const prior = this._straightened[a.id];
-        let src = (refine && prior && prior.to===JSON.stringify(a.pts)) ? prior.from : a.pts;
+        let src = (refine && !inBox && prior && prior.to===JSON.stringify(a.pts)) ? prior.from : a.pts;
         if(!this.img) return Promise.resolve(false);
         // Detail the first trace simplified away (a gentle rounded corner traced as one straight
         // piece) cannot be fitted afterwards. So if the outline is still exactly the trace's own —
         // or Straighten's version of it — Refine first re-traces the same spot at full detail,
         // with the same Area box and taps. Anything edited by hand is refined as it stands.
         const t=this._tracedOuter, curJ=JSON.stringify(a.pts);
-        const fromTrace = refine && t && t.id===a.id && Array.isArray(this._lastAutoSeed)
+        const fromTrace = refine && !inBox && t && t.id===a.id && Array.isArray(this._lastAutoSeed)
           && (curJ===t.json || (prior && prior.to===curJ && JSON.stringify(prior.from)===t.json));
         const natW=this.img.naturalWidth||this.img.width, natH=this.img.naturalHeight||this.img.height;
         const k=Math.min(1, 1600/Math.max(natW, natH));      // the same posted size the trace uses
@@ -2053,7 +2097,8 @@
         })() : Promise.resolve(src);
         let usedPts=src;
         return fine.then(srcPts => { usedPts=srcPts; return fetch(this._apiUrl('api/outline/straighten'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, mode:snap?'snap':(refine?'refine':'straighten'), points:srcPts.map(p=>[p[0]*k, p[1]*k]) }) }); })
+            body:JSON.stringify(Object.assign({ image:durl, mode:snap?'snap':(refine?'refine':'straighten'), points:srcPts.map(p=>[p[0]*k, p[1]*k]) },
+                                              inBox ? { box: box.map(v=>v*k) } : {})) }); })
           .then(r=>r.json())
           .then(function(j){
             const cur=self.ann.items.find(x=>x.id===id);
@@ -2068,7 +2113,9 @@
               return true;
             }
             if(!j || !j.ok || !cur || !Array.isArray(j.points)){
-              toast.update(snap ? 'No clear edge near this outline to snap to — drag its dots onto the part\'s edge first, then Snap to edge.'
+              toast.update(inBox && !(j && j.error==='tangled') ? (what+' found nothing to change inside the box — nothing outside it was touched.') : snap ? (j && j.error==='tangled'
+                                     ? 'Snap to edge could not follow this outline cleanly, so nothing changed. Where the dots bunch up or zig-zag, drag them into a simple line along the edge (double-tap extras to remove them), then try again.'
+                                     : 'No clear edge near this outline to snap to — drag its dots onto the part\'s edge first, then Snap to edge.')
                                 : 'Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err');
               setTimeout(toast.dismiss, 3000);
               return false;
@@ -2076,11 +2123,13 @@
             self._pushHistory();
             const before=cur.pts.map(p=>p.slice());
             cur.pts=j.points.map(p=>[p[0]/k, p[1]/k]);
-            if(!refine && !snap) self._straightened[id]={ from: before, to: JSON.stringify(cur.pts) };
+            if(!refine && !snap && !inBox) self._straightened[id]={ from: before, to: JSON.stringify(cur.pts) };
             self._dismissTraceDetail();   // its slider re-traces, which would undo this
             self.requestDraw();
             const n=j.straight|0, sn=j.snapped|0, rd=j.rounded|0;
-            toast.update(snap
+            toast.update(inBox
+              ? (what+': changed only inside the box ('+cur.pts.length+' dots in all). Undo to go back.')
+              : snap
               ? ('Snapped to the photo\'s edge: '+cur.pts.length+' dots'+((j.found_pct|0)<100 ? ' (an edge found along '+(j.found_pct|0)+'% of it; the rest stays where you put it)' : '')+'. Undo to go back.')
               : refine
               ? ('Refined: '+n+' straight side'+(n===1?'':'s')+(rd ? ', '+rd+' rounded corner'+(rd===1?'':'s')+' fitted to the photo' : ', corners kept as they are')+'. Undo to go back.')

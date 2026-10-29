@@ -862,8 +862,210 @@ _SNAP_STAY = 0.01           # per px: a faint pull back to where the user's line
 _SNAP_MAX_AREA_CHANGE = 0.2
 
 
+def _crossings(q: np.ndarray) -> int:
+    """How many pairs of non-neighbouring sides of the ring q cross."""
+    n = len(q)
+    a, b = q, np.roll(q, -1, axis=0)
+    lo, hi = np.minimum(a, b), np.maximum(a, b)
+    cnt = 0
+    for i in range(n):
+        j = np.arange(i + 2, n)
+        if i == 0:
+            j = j[j != n - 1]
+        if not len(j):
+            continue
+        box = ((lo[j, 0] <= hi[i, 0]) & (hi[j, 0] >= lo[i, 0]) & (lo[j, 1] <= hi[i, 1]) & (hi[j, 1] >= lo[i, 1]))
+        for k in j[box]:
+            p1, p2, p3, p4 = a[i], b[i], a[k], b[k]
+            d1 = (p2[0] - p1[0]) * (p3[1] - p1[1]) - (p2[1] - p1[1]) * (p3[0] - p1[0])
+            d2 = (p2[0] - p1[0]) * (p4[1] - p1[1]) - (p2[1] - p1[1]) * (p4[0] - p1[0])
+            d3 = (p4[0] - p3[0]) * (p1[1] - p3[1]) - (p4[1] - p3[1]) * (p1[0] - p3[0])
+            d4 = (p4[0] - p3[0]) * (p2[1] - p3[1]) - (p4[1] - p3[1]) * (p2[0] - p3[0])
+            if d1 * d2 < 0 and d3 * d4 < 0:
+                cnt += 1
+    return cnt
+
+
+def _declutter(p: np.ndarray, near: float, eps: float = 0.75) -> np.ndarray:
+    """Dots closer than `near` to the last one kept are merged into it (their mean), and
+    zig-zags under `eps` are smoothed out: a knot of dots left by a trace's jog and a few
+    drags has sides shorter than the search reaches across them, and each searched along its
+    own normal, crossing the next. The detail comes back from the photo, not the dots."""
+    groups = [[p[0]]]
+    for q in p[1:]:
+        if float(np.hypot(*(q - np.mean(groups[-1], axis=0)))) < near:
+            groups[-1].append(q)
+        else:
+            groups.append([q])
+    if len(groups) > 1 and float(np.hypot(*(np.mean(groups[0], axis=0) - np.mean(groups[-1], axis=0)))) < near:
+        groups[0] = groups[-1] + groups[0]
+        groups.pop()
+    out = np.array([np.mean(g, axis=0) for g in groups])
+    # A spur: the outline doubling back on itself over a short arm (a dot dragged across its
+    # neighbour, a jog's knot). No edge search makes sense of one; drop its tip, repeatedly.
+    reach_arm = 3.0 * near
+    changed = True
+    while changed and len(out) > 3:
+        changed = False
+        for i in range(len(out)):
+            a, b, c = out[i - 1], out[i], out[(i + 1) % len(out)]
+            u, v = b - a, c - b
+            lu, lv = float(np.hypot(*u)), float(np.hypot(*v))
+            if lu < 1e-9 or lv < 1e-9:
+                out = np.delete(out, i, axis=0)
+                changed = True
+                break
+            back = float(np.dot(u, v)) / (lu * lv) < math.cos(math.radians(140))
+            if back and min(lu, lv) < reach_arm:
+                out = np.delete(out, i, axis=0)
+                changed = True
+                break
+    if len(out) >= 3:
+        out = cv2.approxPolyDP(out.astype(np.float32).reshape(-1, 1, 2), eps, True).reshape(-1, 2).astype(float)
+    return out
+
+
+def _box_cuts(q: np.ndarray, box) -> tuple:
+    """The ring q with a point added wherever it crosses the box's border, and a flag per
+    point: 1 inside, 0 on the border (one of those added), -1 outside."""
+    x0, y0, x1, y1 = box
+    n = len(q)
+    out, flag = [], []
+
+    def where(pt):
+        x, y = pt
+        return 1 if (x0 < x < x1 and y0 < y < y1) else -1
+
+    for i in range(n):
+        a, b = q[i], q[(i + 1) % n]
+        out.append(a)
+        flag.append(where(a))
+        d = b - a
+        ts = []
+        for k, edge in ((0, x0), (0, x1), (1, y0), (1, y1)):
+            if abs(d[k]) > 1e-12:
+                t = (edge - a[k]) / d[k]
+                if 1e-9 < t < 1 - 1e-9:
+                    c = a + d * t
+                    o = 1 - k
+                    lo_, hi_ = (y0, y1) if o == 1 else (x0, x1)
+                    if lo_ - 1e-9 <= c[o] <= hi_ + 1e-9:
+                        ts.append(t)
+        for t in sorted(ts):
+            out.append(a + d * t)
+            flag.append(0)
+    return np.asarray(out), np.asarray(flag)
+
+
+def _box_runs(flag: np.ndarray, q: np.ndarray, box) -> List[tuple]:
+    """(start, end) border-point indices of each stretch of the ring that runs inside the
+    box, cyclic: q[start] and q[end] are on the border, everything between inside."""
+    n = len(q)
+    bi = list(np.flatnonzero(flag == 0))
+    runs = []
+    x0, y0, x1, y1 = box
+    for j, s in enumerate(bi):
+        e = bi[(j + 1) % len(bi)]
+        nxt = (s + 1) % n
+        mid = (q[s] + q[nxt]) / 2.0
+        if x0 < mid[0] < x1 and y0 < mid[1] < y1:
+            runs.append((s, e))
+    return runs
+
+
+def splice_in_box(orig: Sequence[Sequence[float]], new: Sequence[Sequence[float]], box) -> Optional[np.ndarray]:
+    """The outline `orig` with only its stretches inside `box` replaced by `new`'s.
+
+    A user whose outline was right along most of its length found Refine and Snap to edge
+    redoing the good edges too. Every tool still works on the whole outline (a side's fit
+    needs all of it), but only what lies inside the user's box is taken from the result;
+    outside it every dot stays exactly where it was. Each stretch of `orig` inside the box is
+    swapped for the stretch of `new` that enters and leaves the box nearest it. None if the
+    box changes nothing."""
+    O, Nw = _ring(orig), _ring(new)
+    if O is None or Nw is None:
+        return None
+    x0, x1 = sorted((float(box[0]), float(box[2])))
+    y0, y1 = sorted((float(box[1]), float(box[3])))
+    bx = (x0, y0, x1, y1)
+    if _area(O) * _area(Nw) < 0:
+        Nw = Nw[::-1]
+    Oc, fo = _box_cuts(O, bx)
+    if np.all(fo == 1):
+        return Nw                                     # the box holds the whole outline
+    Nc, fn = _box_cuts(Nw, bx)
+    ro, rn = _box_runs(fo, Oc, bx), _box_runs(fn, Nc, bx)
+    if not ro or not rn:
+        return None
+    tol = 0.25 * float(np.hypot(x1 - x0, y1 - y0)) + 10.0
+    repl = {}
+    for (s, e) in ro:
+        best = None
+        for (a, b) in rn:
+            d = float(np.hypot(*(Nc[a] - Oc[s])) + np.hypot(*(Nc[b] - Oc[e])))
+            if best is None or d < best[0]:
+                best = (d, a, b)
+        if best and best[0] <= tol:
+            a, b = best[1], best[2]
+            idx = [(a + k) % len(Nc) for k in range(((b - a) % len(Nc)) + 1)]
+            repl[s] = (e, [Nc[i] for i in idx])
+    if not repl:
+        return None
+    out, i, n, seen = [], 0, len(Oc), 0
+    # Walk from a point outside the box so no stretch is split by the start.
+    start = int(np.flatnonzero(fo == -1)[0]) if np.any(fo == -1) else 0
+    i = start
+    while seen < n:
+        if i in repl:
+            e, pts = repl[i]
+            out.extend(pts)
+            step = ((e - i) % n) or n
+            seen += step
+            i = (e + 1) % n
+            seen += 1
+            continue
+        if fo[i] != 0:
+            out.append(Oc[i])
+        i = (i + 1) % n
+        seen += 1
+    res = np.asarray(out, float)
+    keep = np.ones(len(res), bool)
+    keep[1:] = np.hypot(*(np.diff(res, axis=0)).T) > 1e-6
+    res = res[keep]
+    return res if len(res) >= 3 else None
+
+
 def snap_outline_to_edges(img_bgr: np.ndarray, points: Sequence[Sequence[float]],
-                          reach: Optional[float] = None) -> Optional[Dict[str, Any]]:
+                          reach: Optional[float] = None, box=None) -> Optional[Dict[str, Any]]:
+    """Snap to edge (see _snap_once), never handing back a tangle: the dots are decluttered
+    first, and a result whose sides cross is tried again with half the reach, then refused
+    ({"error": "tangled"}) — the outline as it was is always a fine answer. With `box`,
+    only the stretch inside it changes (splice_in_box)."""
+    p = _ring(points)
+    if p is None or img_bgr is None or not getattr(img_bgr, "size", 0):
+        return None
+    diag = float(np.hypot(*np.ptp(p, axis=0)))
+    R = float(reach) if reach else min(14.0, max(6.0, 0.012 * diag))
+    clean = _declutter(p, max(3.0, R), eps=max(0.75, 0.3 * R))
+    if len(clean) < 3:
+        return None
+    for r_try in (R, 0.5 * R):
+        res = _snap_once(img_bgr, clean, r_try)
+        if res is None:
+            return None
+        if box is not None:
+            sp = splice_in_box(p, res["points"], box)
+            if sp is None:
+                return None
+            res["points"] = [[round(float(x), 2), round(float(y), 2)] for x, y in sp]
+            res["dots"] = int(len(sp))
+        if not _crossings(np.asarray(res["points"], float)):
+            res["merged"] = int(len(p) - len(clean)) if box is None else 0
+            return res
+    return {"error": "tangled"}
+
+
+def _snap_once(img_bgr: np.ndarray, points, reach: float) -> Optional[Dict[str, Any]]:
     """Move the outline onto the photo's edge within a few pixels of it, with as many dots as
     the edge's shape needs.
 
@@ -885,8 +1087,7 @@ def snap_outline_to_edges(img_bgr: np.ndarray, points: Sequence[Sequence[float]]
     if abs(a0) < 1.0:
         return None
     h, w = img_bgr.shape[:2]
-    diag = float(np.hypot(*np.ptp(p, axis=0)))
-    R = float(reach) if reach else min(14.0, max(6.0, 0.012 * diag))
+    R = float(reach)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
     gray = cv2.GaussianBlur(gray, (0, 0), 1.2)
     gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 8.0
@@ -957,7 +1158,12 @@ def snap_outline_to_edges(img_bgr: np.ndarray, points: Sequence[Sequence[float]]
     Q = P + K[k][:, None] * Nrm
     # A sharp corner is where the edges either side of it meet: the one point searched along
     # the corner's bisector found the edge off the corner (a spike out of the outline).
-    for b in np.flatnonzero(brk):
+    bks = np.flatnonzero(brk)
+    for b in bks:
+        # Only between two straight runs at least 6 points long each way: fitted across
+        # another corner, the lines met anywhere (the knots of a cluster of short sides).
+        if any(0 < (c - b) % N <= 6 or 0 < (b - c) % N <= 6 for c in bks if c != b):
+            continue
         before = Q[(b - np.arange(1, 7)) % N]
         after = Q[(b + np.arange(1, 7)) % N]
         (c1, u1), (c2, u2) = _fit_line(before), _fit_line(after)

@@ -5,7 +5,9 @@ remove one, and no tool that follows an edge Refine cannot fit. Now:
   - the selected outline shows a "+" between its dots: a press adds a dot there and drags
     it, in one undo step; a press on an outline not yet selected only selects it;
   - a double-click (double-tap) on a dot removes it, one undo step; an outline keeps 3;
-  - Tidy ▾ has "🧲 Snap to edge": it posts mode "snap" and applies the outline it gets back.
+  - Tidy ▾ has "🧲 Snap to edge": it posts mode "snap" and applies the outline it gets back;
+  - Tidy ▾ → "▭ Fix one area": a box (which never drags the outline under it), then Snap /
+    Refine / Straighten sent with that box; the box leaves no Area annotation behind.
 
     .venv/bin/python tests/test_dot_edit_e2e.py
 
@@ -162,10 +164,33 @@ def main():
             shown = pg.evaluate("(()=>{const t=window.__calLastToast;return t?t.innerText:'';})()")
             assert "Snapped" in shown and "80%" in shown, f"snap message: {shown!r}"
 
+            # 5. Tidy → Fix one area: a box (even started on the outline, which it must not
+            #    drag), then a choice; the request carries the box; the box is not left behind.
+            sent.clear()
+            pg.evaluate(f"(()=>{{const o={OV};o.ann.selectedId=o.ann.items.find(a=>a.type==='polyline').id;}})()")
+            assert pg.evaluate("!!document.querySelector('#cal-tidy-menu #cal-ctx-fixarea')"), "no Fix one area in Tidy"
+            pg.evaluate("document.getElementById('cal-ctx-fixarea').click()")
+            assert pg.evaluate(f"{OV}.opts.mode") == "rectangle", "Fix one area did not arm a box"
+            before = _pts(pg)
+            (bx0, by0), (bx1, by1) = _scr(pg, 380, 200), _scr(pg, 600, 400)
+            pg.mouse.move(bx0, by0)
+            pg.mouse.down()
+            for k in range(1, 9):
+                pg.mouse.move(bx0 + (bx1 - bx0) * k / 8, by0 + (by1 - by0) * k / 8)
+            pg.mouse.up()
+            assert _pts(pg) == before, "drawing the box moved the outline"
+            act = pg.locator(".cal-toast-action", has_text="Snap to edge")
+            act.wait_for(state="visible", timeout=5000)
+            assert pg.evaluate(f"!{OV}.ann.items.some(a=>a.type==='rectangle')"), "the fix box was left as an Area"
+            act.click()
+            pg.wait_for_function("(()=>{const t=window.__calLastToast;return t&&t.innerText.includes('only inside the box');})()",
+                                 timeout=8000)
+            bxs = sent[0].get("box") if sent else None
+            assert bxs and abs(bxs[0] - 380) < 3 and abs(bxs[3] - 400) < 3, f"box sent: {bxs}"
             assert not errors, f"page errors: {errors}"
             browser.close()
         print("E2E_RESULT: PASS (+ adds a dot on the selected outline and drags it, one undo; a first press only "
-              "selects; double-click removes a dot, never below 3; Tidy → Snap to edge posts mode snap and applies it)")
+              "selects; double-click removes a dot, never below 3; Tidy → Snap to edge posts mode snap and applies it; Fix one area sends its box and leaves no Area)")
         return 0
     except AssertionError as e:
         print(f"E2E_RESULT: FAIL ({e})")

@@ -1251,6 +1251,14 @@ window.CalibUI = (function(){
     ctxSnap.setAttribute('aria-label', 'Snap this outline onto the photo\'s edge near it, adding dots where it curves');
     ctxSnap.title = 'Move the outline onto the edge in the photo within a few pixels of it, with the dots its curves need';
     ctxSnap.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected('snap'); };
+    // Most of an outline is often right: a box round the bad stretch, and the tools change
+    // only what lies inside it.
+    const ctxFix = document.createElement('button'); ctxFix.type = 'button'; ctxFix.className = 'cal-ctx-finish';
+    ctxFix.id = 'cal-ctx-fixarea';
+    ctxFix.innerHTML = '▭ Fix one area';
+    ctxFix.setAttribute('aria-label', 'Fix one area: box the stretch of outline to fix, then snap, refine or straighten only that');
+    ctxFix.title = 'Drag a box round the bad stretch; Snap / Refine / Straighten then change only what is inside it';
+    ctxFix.onclick = () => { if (overlay.armFixArea) overlay.armFixArea(); };
     // Corrects the photo's tilt from the ruler's edges under the scale line, or — when none
     // are found — the outline's two long sides, which are parallel on the part (square_up.py).
     const ctxSquare = document.createElement('button'); ctxSquare.type = 'button'; ctxSquare.className = 'cal-ctx-finish';
@@ -1281,6 +1289,7 @@ window.CalibUI = (function(){
     [[ctxStraight, 'Each long side one straight line on the part\'s edge'],
      [ctxRefine, 'Straight sides, and corners rounded as the photo shows'],
      [ctxSnap, 'Follow the photo\'s edge near the dots — drag them close first'],
+     [ctxFix, 'Box the bad stretch: the tools change only what is inside'],
      [ctxSym, 'Average with its mirror image, for a symmetric part'],
      [ctxSquare, 'Correct camera tilt using the ruler (or the part\'s sides)']].forEach(([b, sub]) => {
       b.classList.add('show'); b.setAttribute('role', 'menuitem');

@@ -50,7 +50,7 @@ re-draw in CAD.
      Trace also finds interior holes — a bolt pattern, a row of clip slots —
      and they become real through-holes in the solid.
      The clean-up tools are under "✨ Tidy" (with an outline selected): Straighten, Refine,
-     Snap to edge, Symmetric and Square up.
+     Snap to edge, Fix one area, Symmetric and Square up.
      Editing dots: the selected outline shows a "+" between its dots — press one to add a dot
      there (keep holding to drag it onto the edge). Double-click (double-tap) a dot to remove it.
      "⇋ Symmetric" averages the outline with its own mirror image — for a part that is
@@ -72,6 +72,11 @@ re-draw in CAD.
      photo's edge within a few pixels of where it is, with as many dots as the edge's curves
      need. It only looks a few pixels either side, so it will not jump to an edge beside the
      part; where the photo shows no edge the line stays where you put it. One undo step.
+     If its dots bunch up or zig-zag it tidies them first, and it never hands back an outline
+     that crosses itself: it says so and changes nothing.
+     Most of the outline already right? "▭ Fix one area" (in Tidy): drag a box round the bad
+     stretch, then pick Snap to edge, Refine or Straighten — only what lies inside the box
+     changes; every dot outside it stays exactly where it was.
      Photo taken at an angle? With the scale set from a line along your ruler, select the
      outline and press "⊞ Square up". It corrects every measurement and export for the
      camera's tilt, from how the ruler's two edges narrow in the photo. When it cannot find
