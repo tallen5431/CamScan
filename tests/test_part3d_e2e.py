@@ -333,6 +333,10 @@ def main():
             # An outline deleted after it was assigned: the view keeps its last copy and says so.
             pg.click("#cal-part-panel button[aria-label='Close']")
             _open_view(pg, 0)
+            # The reopened photo's outlines are restored just after its image loads: deleting
+            # before that let the restore put the outline back (a flaky failure on a slow CI
+            # runner), so wait for it first.
+            pg.wait_for_function(f"{OV}.ann.items.some(a=>a.type==='polyline'&&a.closed)", timeout=15000)
             pg.evaluate(f"(()=>{{const o={OV};o.ann.items=o.ann.items.filter(a=>!(a.type==='polyline'&&a.closed));o.requestDraw();}})()")
             pg.click("#cal-tb-part")
             pg.wait_for_function("document.getElementById('cal-part-row-top').innerText.includes('outline was deleted')",
