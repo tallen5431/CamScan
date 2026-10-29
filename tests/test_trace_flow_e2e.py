@@ -82,12 +82,15 @@ def _scr(pg, x, y):
 
 
 def _drag_box(pg, a, b):
+    """Drag from photo point a to b; returns both ends as the page's own gestures map them."""
     (x0, y0), (x1, y1) = _scr(pg, *a), _scr(pg, *b)
+    ends = pg.evaluate(f"""(p)=>p.map(([x,y])=>{OV}.vp.screenToImage({{clientX:x, clientY:y}}))""", [[x0, y0], [x1, y1]])
     pg.mouse.move(x0, y0)
     pg.mouse.down()
     for k in range(1, 9):
         pg.mouse.move(x0 + (x1 - x0) * k / 8, y0 + (y1 - y0) * k / 8)
     pg.mouse.up()
+    return ends
 
 
 def _toast(pg):
@@ -144,11 +147,12 @@ def main():
 
             # 1. Trace: one drag round the part traces inside it, with the scale line sent.
             pg.locator(".cal-rail .cal-tool", has_text="Trace").click()
-            _drag_box(pg, (200, 210), (600, 390))
+            (ax, ay), (bx, by) = _drag_box(pg, (200, 210), (600, 390))
             pg.wait_for_function("(()=>{const t=window.__calLastToast;return t&&t.innerText.includes('Traced and tidied');})()",
                                  timeout=10000)
             roi = traces[0].get("roi")
-            assert roi and abs(roi[0] - 200) < 3 and abs(roi[2] - 400) < 4, f"box not sent as the roi: {roi}"
+            want = [min(ax, bx), min(ay, by), abs(bx - ax), abs(by - ay)]
+            assert roi and all(abs(r - w) < 3 for r, w in zip(roi, want)), f"box not sent as the roi: {roi} (drawn {want})"
             assert traces[0].get("ruler") == [[230, 300], [510, 300]], f"scale line not sent: {traces[0].get('ruler')}"
             assert not pg.evaluate(f"{OV}.ann.items.some(a=>a.type==='rectangle')"), "the box was left as an Area"
 
