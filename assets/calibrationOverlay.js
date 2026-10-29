@@ -291,8 +291,10 @@
             }
             this.ann.hitTolPx = this.vp.pxToImg(18*this.vp.dpr);
             const hit = Ann.hitTest(this.ann, pt[0], pt[1], hitVisible);
+            const wasSelected = !!hit && hit.id===this.ann.selectedId;
+            const preHit = hit ? this._snapshot() : null;
             this.ann.selectedId = hit ? hit.id : this.ann.selectedId;
-            this.drag = hit ? this._makeDragHandle(hit, pt) : null;
+            this.drag = hit ? this._makeDragHandle(hit, pt, wasSelected) : null;
             // Area mode on empty photo: a press may be the start of a drag-out box. Only the
             // first finger of a fresh box (a second finger turns the gesture into a pinch).
             this._rectDrag = (!hit && this.opts.mode==='rectangle' && !this.selectedPoints.length && !this._bgTapArm)
@@ -300,7 +302,28 @@
             // Remember the pre-drag state; it is committed to history only if the
             // drag actually moves the geometry (see _updateDrag), so a plain
             // select-click doesn't pollute the undo stack.
-            if(this.drag){ this._preDragSnapshot=this._snapshot(); this._dragPushed=false; }
+            // A second tap on the same dot within 400 ms removes it (touch: a phone may send no
+            // dblclick for a double-tap; a mouse's is handled in _onDblClick).
+            const d0=this.drag;
+            if(d0 && d0.kind==='poly-vertex' && !d0.inserted && ev && ev.pointerType==='touch'){
+              const now=Date.now(), lt=this._lastDotTap;
+              this._lastDotTap={ id:d0.item.id, idx:d0.idx, t:now };
+              if(lt && lt.id===d0.item.id && lt.idx===d0.idx && now-lt.t<400){
+                this._lastDotTap=null; this._dotRemovedAt=now; this.drag=null;
+                this.removeVertexAt(d0.item.pts[d0.idx]);
+                return;
+              }
+            }
+            if(this.drag){
+              this._preDragSnapshot=preHit; this._dragPushed=false;
+              // A press on a "+" added a dot already: one undo step, moved or not.
+              if(this.drag.inserted){
+                this._undoStack.push(preHit);
+                if(this._undoStack.length>100) this._undoStack.shift();
+                this._redoStack.length=0;
+                this._dragPushed=true;
+              }
+            }
             this.requestDraw();
           },
           onDrag: (pt)=>{
@@ -454,7 +477,9 @@
         // Double-click / double-tap finishes an in-progress polyline.
         this._onDblClick = (e)=>{
           e.preventDefault();
-          if(this.opts.mode==='polyline' || this.opts.mode==='outline') this.finishPolyline();
+          if(this.opts.mode==='polyline' || this.opts.mode==='outline') return this.finishPolyline();
+          if(this.opts.mode==='select' && this.vp.screenToImage && !(this._dotRemovedAt && Date.now()-this._dotRemovedAt<600))
+            this.removeVertexAt(this.vp.screenToImage(e));
         };
         this.canvas.addEventListener('dblclick', this._onDblClick);
 
@@ -588,7 +613,33 @@
         return best || pt;
       }
 
-      _makeDragHandle(item, p){
+      // The "+" handles between the dots of a selected outline: one per side long enough that
+      // a dot in its middle can be grabbed apart from the dots at its ends.
+      _midHandles(item){
+        const pts=item.pts||[], out=[], n=pts.length;
+        const minLen=3*(this.ann.hitTolPx||10);
+        const segs=item.closed ? n : n-1;
+        for(let i=0;i<segs;i++){
+          const a=pts[i], b=pts[(i+1)%n];
+          if(Math.hypot(b[0]-a[0], b[1]-a[1])>=minLen) out.push({i, mid:[(a[0]+b[0])/2, (a[1]+b[1])/2]});
+        }
+        return out;
+      }
+      // Remove one dot of an outline (a double-tap on it); an outline keeps at least 3.
+      removeVertexAt(pt){
+        const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
+        if(!a || a.type!=='polyline' || !Array.isArray(a.pts)) return false;
+        if(a.pts.length <= (a.closed ? 3 : 2)) return false;
+        const tol=this.ann.hitTolPx||10;
+        let bi=-1, bd=tol;
+        a.pts.forEach((q, i)=>{ const d=Math.hypot(q[0]-pt[0], q[1]-pt[1]); if(d<bd){ bd=d; bi=i; } });
+        if(bi<0) return false;
+        this._pushHistory();
+        a.pts.splice(bi, 1);
+        this.requestDraw();
+        return true;
+      }
+      _makeDragHandle(item, p, wasSelected){
         const tol = this.ann.hitTolPx || 10;
         const near = (q)=>Math.hypot(q[0]-p[0], q[1]-p[1])<tol;
         if(item.type==='segment'){
@@ -608,6 +659,13 @@
         if(item.type==='polyline'){
           const pts=item.pts||[];
           for(let i=0;i<pts.length;i++) if(near(pts[i])) return {item, kind:'poly-vertex', idx:i};
+          // A "+" (only on an outline already selected, so selecting one never adds a dot):
+          // a new dot there, held by the finger, so the press can drag it straight onto the edge.
+          if(wasSelected && this.opts.mode==='select'){
+            for(const h of this._midHandles(item)){
+              if(near(h.mid)){ pts.splice(h.i+1, 0, [h.mid[0], h.mid[1]]); return {item, kind:'poly-vertex', idx:h.i+1, inserted:true}; }
+            }
+          }
           return {item, kind:'move-poly', start:p};
         }
         if(item.type==='angle'){
@@ -766,6 +824,18 @@
             // small dots easy to catch, so they can stay unobtrusive over a dense outline.
             const hR = sel ? this._handleR(1.5) : dotR, ringW = this._lineW(0.5);
             for(const [x,y] of pts){ c.beginPath(); c.arc(x,y,hR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=ringW; c.stroke(); }
+            if(sel && this.opts.mode==='select' && !this.drag){
+              // "+" between dots: press to add a dot there (and drag it); double-tap a dot to remove it.
+              const mR=hR*0.85;
+              c.save(); c.globalAlpha=0.8;
+              for(const h of this._midHandles(a)){
+                const [x,y]=h.mid;
+                c.beginPath(); c.arc(x,y,mR,0,Math.PI*2); c.fillStyle='rgba(0,0,0,0.55)'; c.fill();
+                c.strokeStyle=C.selected; c.lineWidth=ringW; c.stroke();
+                c.beginPath(); c.moveTo(x-mR*0.55,y); c.lineTo(x+mR*0.55,y); c.moveTo(x,y-mR*0.55); c.lineTo(x,y+mR*0.55); c.stroke();
+              }
+              c.restore();
+            }
             if(showLabels){
               let label=this._fmtLen(mm, pxLen);
               if(closed){
@@ -1942,11 +2012,15 @@
       // mode 'refine' also gives each corner the radius the photo shows. It works best from
       // the dots as traced, so if the outline is exactly what Straighten made of them, those
       // dots go instead (re-fitting already straight sides from two dots each nudged them off).
+      // mode 'snap' moves the outline onto the photo's edge within a few px of where it is, with
+      // the dots that edge needs (outline_cleanup.snap_outline_to_edges) — for an edge Refine
+      // cannot fit, after the dots have been dragged near it.
       straightenSelected(mode){
-        const refine = mode==='refine';
+        const refine = mode==='refine', snap = mode==='snap';
+        const what = snap ? 'Snap to edge' : (refine ? 'Refine' : 'Straighten');
         const a=this.ann && this.ann.items.find(x=>x.id===this.ann.selectedId);
         if(!a || a.type!=='polyline' || !a.closed || !Array.isArray(a.pts) || a.pts.length<3){
-          this._toast('Select a closed outline first, then '+(refine?'Refine':'Straighten')+'.', {autoMs:2600});
+          this._toast('Select a closed outline first, then '+what+'.', {autoMs:2600});
           return Promise.resolve(false);
         }
         this._straightened = this._straightened || {};
@@ -1967,8 +2041,8 @@
         cnv.getContext('2d').drawImage(this.img, 0, 0, cnv.width, cnv.height);
         let durl=null; try{ durl=cnv.toDataURL('image/jpeg', 0.85); }catch(e){}   // none: straighten by the dots alone
         const self=this, id=a.id;
-        if(refine && !durl){ this._toast('Refine needs the photo, which could not be read here.', {autoMs:3000}); return Promise.resolve(false); }
-        const toast=this._toast(refine ? (fromTrace ? 'Refining — re-tracing at full detail (a few seconds)…' : 'Refining…') : 'Straightening…');
+        if((refine || snap) && !durl){ this._toast(what+' needs the photo, which could not be read here.', {autoMs:3000}); return Promise.resolve(false); }
+        const toast=this._toast(snap ? 'Snapping to the edge…' : (refine ? (fromTrace ? 'Refining — re-tracing at full detail (a few seconds)…' : 'Refining…') : 'Straightening…'));
         const fine = fromTrace ? (function(){
           const req=self._traceRequest(self._lastAutoSeed, 0.0003);
           if(!req) return Promise.resolve(src);
@@ -1979,7 +2053,7 @@
         })() : Promise.resolve(src);
         let usedPts=src;
         return fine.then(srcPts => { usedPts=srcPts; return fetch(this._apiUrl('api/outline/straighten'), { method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ image:durl, mode:refine?'refine':'straighten', points:srcPts.map(p=>[p[0]*k, p[1]*k]) }) }); })
+            body:JSON.stringify({ image:durl, mode:snap?'snap':(refine?'refine':'straighten'), points:srcPts.map(p=>[p[0]*k, p[1]*k]) }) }); })
           .then(r=>r.json())
           .then(function(j){
             const cur=self.ann.items.find(x=>x.id===id);
@@ -1994,24 +2068,27 @@
               return true;
             }
             if(!j || !j.ok || !cur || !Array.isArray(j.points)){
-              toast.update('Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err');
+              toast.update(snap ? 'No clear edge near this outline to snap to — drag its dots onto the part\'s edge first, then Snap to edge.'
+                                : 'Nothing to '+(refine?'refine':'straighten')+' — this outline has no long straight sides.', 'err');
               setTimeout(toast.dismiss, 3000);
               return false;
             }
             self._pushHistory();
             const before=cur.pts.map(p=>p.slice());
             cur.pts=j.points.map(p=>[p[0]/k, p[1]/k]);
-            if(!refine) self._straightened[id]={ from: before, to: JSON.stringify(cur.pts) };
+            if(!refine && !snap) self._straightened[id]={ from: before, to: JSON.stringify(cur.pts) };
             self._dismissTraceDetail();   // its slider re-traces, which would undo this
             self.requestDraw();
             const n=j.straight|0, sn=j.snapped|0, rd=j.rounded|0;
-            toast.update(refine
+            toast.update(snap
+              ? ('Snapped to the photo\'s edge: '+cur.pts.length+' dots'+((j.found_pct|0)<100 ? ' (an edge found along '+(j.found_pct|0)+'% of it; the rest stays where you put it)' : '')+'. Undo to go back.')
+              : refine
               ? ('Refined: '+n+' straight side'+(n===1?'':'s')+(rd ? ', '+rd+' rounded corner'+(rd===1?'':'s')+' fitted to the photo' : ', corners kept as they are')+'. Undo to go back.')
               : ('Straightened '+n+' side'+(n===1?'':'s')+(sn ? ' — '+(sn===n?'all':sn)+' snapped to the edge in the photo' : '')+'. Undo to go back.'), 'ok');
             setTimeout(toast.dismiss, 3200);
             return true;
           })
-          .catch(function(){ toast.update((refine?'Refine':'Straighten')+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
+          .catch(function(){ toast.update(what+' needs the server — try again.', 'err'); setTimeout(toast.dismiss, 3000); return false; });
       }
 
       // Square up (square_up.py): two edges that are parallel on the part converge in a photo

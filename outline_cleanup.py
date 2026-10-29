@@ -854,6 +854,136 @@ def refine_outline(img_bgr: np.ndarray, points: Sequence[Sequence[float]],
 
 
 # ---------------------------------------------------------------------------------------
+# Snap to edge: follow the photo's edge near where the user put the dots
+# ---------------------------------------------------------------------------------------
+_SNAP_STEP = 2.0            # px between the points tried along the outline
+_SNAP_SMOOTH = 0.08         # cost of a 1 px step sideways between neighbouring points
+_SNAP_STAY = 0.01           # per px: a faint pull back to where the user's line was
+_SNAP_MAX_AREA_CHANGE = 0.2
+
+
+def snap_outline_to_edges(img_bgr: np.ndarray, points: Sequence[Sequence[float]],
+                          reach: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Move the outline onto the photo's edge within a few pixels of it, with as many dots as
+    the edge's shape needs.
+
+    Refine fits straight sides and one radius per corner, so an edge that is neither — or a
+    side the trace put on the wrong line (a cover's shadowed end traced along the chrome bar
+    under it) — it leaves alone. Following the edge point by point from the trace alone was
+    rejected (see refine_outline): the strongest edge near the cover's was as often a ridge,
+    a gap or the chrome. Here the user has put the dots near the right edge first, so the
+    search is only `reach` px either side of their line, and the path must run on smoothly
+    from point to point (a dynamic-programming fit), so it cannot hop to an edge beside it.
+    Where the photo shows no edge the line stays where the user put it.
+
+    Returns {"points", "dots", "found_pct", "moved_px"} in image pixel coords, or None.
+    """
+    p = _ring(points)
+    if p is None or img_bgr is None or not getattr(img_bgr, "size", 0):
+        return None
+    a0 = _area(p)
+    if abs(a0) < 1.0:
+        return None
+    h, w = img_bgr.shape[:2]
+    diag = float(np.hypot(*np.ptp(p, axis=0)))
+    R = float(reach) if reach else min(14.0, max(6.0, 0.012 * diag))
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.GaussianBlur(gray, (0, 0), 1.2)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 8.0
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3) / 8.0
+
+    # Points every _SNAP_STEP px along each side, each with the side's normal; a dot where the
+    # outline turns sharply searches along the bisector and starts a fresh run (offsets on
+    # either side of a corner are measured along different normals, so are not compared).
+    n = len(p)
+    P, Nrm, brk = [], [], []
+    for i in range(n):
+        a, b = p[i], p[(i + 1) % n]
+        d = b - a
+        L = float(np.hypot(*d))
+        if L < 1e-6:
+            continue
+        u = d / L
+        prev = p[i] - p[(i - 1) % n]
+        lp = float(np.hypot(*prev))
+        up = prev / lp if lp > 1e-6 else u
+        turn = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(up, u))))))
+        bis = up + u
+        bl = float(np.hypot(*bis))
+        bis = bis / bl if bl > 1e-6 else u
+        m = max(1, int(math.ceil(L / _SNAP_STEP)))
+        for j in range(m):
+            t = j / m
+            P.append(a + d * t)
+            uu = bis if j == 0 else u
+            Nrm.append(np.array([-uu[1], uu[0]]))
+            brk.append(j == 0 and turn > 25.0)
+    if len(P) < 6:
+        return None
+    P, Nrm, brk = np.asarray(P), np.asarray(Nrm), np.asarray(brk, bool)
+    if brk.any():                                     # start at a corner: the loop then closes there
+        s0 = int(np.argmax(brk))
+        P, Nrm, brk = np.roll(P, -s0, 0), np.roll(Nrm, -s0, 0), np.roll(brk, -s0)
+    K = np.arange(-R, R + 1e-6, 0.5)
+    S = P[:, None, :] + K[None, :, None] * Nrm[:, None, :]                  # (N, M, 2)
+    E = np.abs(_bilinear(gx, S[..., 0], S[..., 1]) * Nrm[:, None, 0]
+               + _bilinear(gy, S[..., 0], S[..., 1]) * Nrm[:, None, 1])
+    peak = E.max(axis=1)
+    scale = float(np.percentile(peak, 75))
+    if scale < 3.0:                                   # a photo with no edges near the outline
+        return None
+    En = np.minimum(E / scale, 1.5)
+    strong = peak >= 0.35 * scale
+    unary = -En + _SNAP_STAY * np.abs(K)[None, :]
+    unary[~strong] = 0.1 * np.abs(K)[None, :]         # no edge here: stay on the user's line
+    pair = _SNAP_SMOOTH * (K[:, None] - K[None, :]) ** 2
+
+    N, M = unary.shape
+    cost = unary[0].copy()
+    back = np.zeros((N, M), np.int32)
+    for i in range(1, N):
+        if brk[i]:
+            j = int(np.argmin(cost))
+            back[i] = j
+            cost = cost[j] + unary[i]
+        else:
+            tot = cost[:, None] + pair                 # from state j (rows) to k (cols)
+            back[i] = np.argmin(tot, axis=0)
+            cost = tot[back[i], np.arange(M)] + unary[i]
+    k = np.zeros(N, np.int32)
+    k[-1] = int(np.argmin(cost))
+    for i in range(N - 1, 0, -1):
+        k[i - 1] = back[i, k[i]]
+    Q = P + K[k][:, None] * Nrm
+    # A sharp corner is where the edges either side of it meet: the one point searched along
+    # the corner's bisector found the edge off the corner (a spike out of the outline).
+    for b in np.flatnonzero(brk):
+        before = Q[(b - np.arange(1, 7)) % N]
+        after = Q[(b + np.arange(1, 7)) % N]
+        (c1, u1), (c2, u2) = _fit_line(before), _fit_line(after)
+        den = u1[0] * u2[1] - u1[1] * u2[0]
+        if abs(den) < math.sin(math.radians(10)):
+            continue
+        wv = c2 - c1
+        x = c1 + u1 * ((wv[0] * u2[1] - wv[1] * u2[0]) / den)
+        if float(np.hypot(*(x - P[b]))) <= 2.0 * R:
+            Q[b] = x
+
+    simp = cv2.approxPolyDP(Q.astype(np.float32).reshape(-1, 1, 2), 1.0, True).reshape(-1, 2).astype(float)
+    if len(simp) < 3:
+        return None
+    a1 = _area(simp)
+    if a1 * a0 <= 0 or abs(a1 - a0) / abs(a0) > _SNAP_MAX_AREA_CHANGE:
+        return None
+    simp[:, 0] = np.clip(simp[:, 0], 0, w - 1)
+    simp[:, 1] = np.clip(simp[:, 1], 0, h - 1)
+    return {"points": [[round(float(x), 2), round(float(y), 2)] for x, y in simp],
+            "dots": int(len(simp)),
+            "found_pct": int(round(100.0 * float(strong.mean()))),
+            "moved_px": round(float(np.median(np.abs(K[k]))), 2)}
+
+
+# ---------------------------------------------------------------------------------------
 # Symmetric: average an outline with its own mirror image
 # ---------------------------------------------------------------------------------------
 _SYM_MAX_MISMATCH = 0.25      # halves this different are a different shape, not a sloppy trace

@@ -1243,6 +1243,14 @@ window.CalibUI = (function(){
     ctxRefine.setAttribute('aria-label', 'Refine this outline: straight sides and rounded corners from the photo');
     ctxRefine.title = 'Straight sides on the part\'s edge, and each corner given the radius the photo shows';
     ctxRefine.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected('refine'); };
+    // An edge that is neither straight nor one radius — or a side the trace put on the wrong
+    // line, dragged back near the right one — follows the photo's edge, dot by dot.
+    const ctxSnap = document.createElement('button'); ctxSnap.type = 'button'; ctxSnap.className = 'cal-ctx-finish';
+    ctxSnap.id = 'cal-ctx-snap';
+    ctxSnap.innerHTML = '🧲 Snap to edge';
+    ctxSnap.setAttribute('aria-label', 'Snap this outline onto the photo\'s edge near it, adding dots where it curves');
+    ctxSnap.title = 'Move the outline onto the edge in the photo within a few pixels of it, with the dots its curves need';
+    ctxSnap.onclick = () => { if (overlay.straightenSelected) overlay.straightenSelected('snap'); };
     // Corrects the photo's tilt from the ruler's edges under the scale line, or — when none
     // are found — the outline's two long sides, which are parallel on the part (square_up.py).
     const ctxSquare = document.createElement('button'); ctxSquare.type = 'button'; ctxSquare.className = 'cal-ctx-finish';
@@ -1272,6 +1280,7 @@ window.CalibUI = (function(){
       + 'max-width:min(330px,calc(100vw - 16px));';
     [[ctxStraight, 'Each long side one straight line on the part\'s edge'],
      [ctxRefine, 'Straight sides, and corners rounded as the photo shows'],
+     [ctxSnap, 'Follow the photo\'s edge near the dots — drag them close first'],
      [ctxSym, 'Average with its mirror image, for a symmetric part'],
      [ctxSquare, 'Correct camera tilt using the ruler (or the part\'s sides)']].forEach(([b, sub]) => {
       b.classList.add('show'); b.setAttribute('role', 'menuitem');

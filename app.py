@@ -1270,13 +1270,15 @@ def api_trace():
 def api_straighten():
     """Straighten a traced outline onto the part's edges (see outline_cleanup.py).
 
-    Body: { image: dataURL | null, points: [[x, y], ...], mode: "straighten" | "refine" } —
-    points in the POSTed image's pixel coords. Returns { ok, points, straight, snapped[, rounded] }. Without an image the sides are still
+    Body: { image: dataURL | null, points: [[x, y], ...], mode: "straighten" | "refine" | "snap" } —
+    points in the POSTed image's pixel coords. Returns { ok, points, straight, snapped[, rounded] }
+    ("snap": { ok, points, dots, found_pct, moved_px } — the outline moved onto the photo's edge
+    within a few px of where it is, with the dots that edge needs). Without an image the sides are still
     straightened, through their own dots. A failure is a 200 {ok:false}: the outline as it was
     is always a fine answer.
     """
     from flask import jsonify
-    from outline_cleanup import refine_outline, straighten_outline
+    from outline_cleanup import refine_outline, snap_outline_to_edges, straighten_outline
 
     data = _json_body()
     pts = data.get("points")
@@ -1307,11 +1309,15 @@ def api_straighten():
         if any(not (-w_ <= x <= 2 * w_ and -h_ <= y <= 2 * h_) for x, y in ring):
             return jsonify(ok=False, error="bad_points"), 400
     # "refine" also gives each corner the radius the photo shows (it needs the photo).
-    refine = data.get("mode") == "refine"
-    if refine and img is None:
+    mode = data.get("mode")
+    refine, snap = mode == "refine", mode == "snap"
+    if (refine or snap) and img is None:
         return jsonify(ok=False, error="no_image"), 400
     try:
-        res = refine_outline(img, ring) if refine else straighten_outline(img, ring)
+        if snap:
+            res = snap_outline_to_edges(img, ring)
+        else:
+            res = refine_outline(img, ring) if refine else straighten_outline(img, ring)
     except Exception as e:
         print(f"[straighten] error: {e}")
         return jsonify(ok=False, error="failed"), 500
