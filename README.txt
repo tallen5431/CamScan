@@ -306,10 +306,11 @@ Download menu:
         opens the multi-view dialog, which downloads STL / STEP / OBJ.
 
 SAVING THE WHOLE PART (job panel, 📋 Submit to Datum in the top bar)
-  💾 Save job writes every photo — image, scale and outlines — to a .camscan.json that
-  ⤓ Load job opens again later, each side editable. The 3D part's view assignments and
-  Build settings are NOT in that file (nor in a submission): they stay in this browser.
-  After loading a job on another device, assign the views again with 🧩 Use in 3D part.
+  💾 Save job writes every photo — image, scale and outlines — and the 3D part (which
+  outline is the Top / Side / End / Cavity, its alignment, and the Build settings: wall,
+  sizes, ends) to a .camscan.json. ⤓ Load job opens it again later, on any device: each side
+  editable, and 🧩 Build 3D part ready with the same views. A submission carries the part
+  too. (A job file saved before this carries only the photos: assign the views again.)
 
 --------------------------------------------------------------------------------
 TESTING

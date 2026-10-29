@@ -664,8 +664,34 @@
               // the receiver can re-open this side in CamScan and model it, not just re-measure.
               restore:(v.restore||null) };
       if(withCapturedAt) o.capturedAt=v.capturedAt;
+      // The keys the 3D part's views name their photo by (see photoId): without them a
+      // loaded job's Top/Side/End could not find the photo they were traced on.
+      if(v.photoKey) o.photoKey=v.photoKey;
+      if(v.sourceId && String(v.sourceId).indexOf('data:')!==0) o.sourceId=v.sourceId;
       return o;
     });
+  }
+  // The 3D part as assembled in the Build dialog — which outline is the Top / Side / End /
+  // Cavity, its alignment and Match factor, and the Build settings (wall, sizes, ends) — for a
+  // job file or a submission. It used to stay in this browser only: a job opened on another
+  // device, or by Datum from a submission, had every photo but no part.
+  function exportPart(){
+    var p=job.part3d;
+    if(!p || typeof p!=='object') return null;
+    var has=(p.views && Object.keys(p.views).length) || (p.opts && Object.keys(p.opts).length);
+    return has ? JSON.parse(JSON.stringify({ views:p.views||{}, opts:p.opts||{} })) : null;
+  }
+  // A part read back from a file: only plain objects, and only the four roles.
+  function importPart(raw){
+    var out={ views:{}, opts:{} };
+    if(!raw || typeof raw!=='object' || Array.isArray(raw)) return out;
+    var vs=(raw.views && typeof raw.views==='object' && !Array.isArray(raw.views)) ? raw.views : {};
+    ['top', 'side', 'end', 'cavity'].forEach(function(r){
+      var v=vs[r];
+      if(v && typeof v==='object' && !Array.isArray(v) && Array.isArray(v.points) && v.points.length>=3) out.views[r]=v;
+    });
+    if(raw.opts && typeof raw.opts==='object' && !Array.isArray(raw.opts)) out.opts=raw.opts;
+    return out;
   }
 
   // ---- Save / Load a whole job as a portable .camscan.json bundle -------------------
@@ -676,7 +702,8 @@
     syncOpenView();   // fold in any edits to the side currently open before writing the file
     if(!job.views.length){ setStatus('Add at least one view before saving.', true); return; }
     var bundle={ kind:'camscan.job', version:1, id:job.id, createdAt:job.createdAt,
-                 savedAt:new Date().toISOString(), brief:job.brief, views:exportViews(true) };
+                 savedAt:new Date().toISOString(), brief:job.brief, views:exportViews(true),
+                 part3d:exportPart() };
     var blob=new Blob([JSON.stringify(bundle)], {type:'application/json'});
     var name='camscan-job-'+((job.brief.part||job.id||'part').replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'')||'part')+'.camscan.json';
     var a=document.createElement('a'); a.download=name; a.href=URL.createObjectURL(blob); a.click();
@@ -696,7 +723,8 @@
       job={ id:bundle.id||('job-'+Date.now().toString(36)),
             createdAt:bundle.createdAt||new Date().toISOString(),
             brief:Object.assign({ part:'', material:'', quantity:'', whatBroke:'', contact:'', notes:'' }, bundle.brief||{}),
-            views:bundle.views.slice() };
+            views:bundle.views.slice(),
+            part3d:importPart(bundle.part3d) };
       // The on-screen overlay belongs to the JUST-DISCARDED job; its positional data-view-index
       // now indexes into the NEW job's views. Clear it so a later Open/save/pagehide sync can't
       // write the old overlay's image+marks over a freshly-loaded view (silent corruption).
@@ -705,7 +733,9 @@
       changed();
       openPanel();
       var reloadable=job.views.filter(function(v){ return v.restore&&v.restore.raw; }).length;
-      setStatus('Loaded '+job.views.length+' view'+(job.views.length===1?'':'s')+'. '+
+      var roles=['top', 'side', 'end', 'cavity'].filter(function(r){ return job.part3d.views[r]; });
+      setStatus('Loaded '+job.views.length+' view'+(job.views.length===1?'':'s')+
+        (roles.length ? ' and the 3D part ('+roles.map(function(r){ return ROLE_LABEL[r]; }).join(', ')+')' : '')+'. '+
         (reloadable?('Tap “Open” on a view to edit it.'):'These views have no reloadable image data.'), !reloadable);
     };
     reader.readAsText(file);
@@ -885,7 +915,7 @@
   // doesn't acknowledge within a short window, fall back to our own /api/submit pipeline.
   function handoff(){
     setStatus('Adding to your quote…');
-    var msg={ type:'camscan:submit', version:1, brief:job.brief, views:exportViews(false) };
+    var msg={ type:'camscan:submit', version:1, brief:job.brief, views:exportViews(false), part3d:exportPart() };
     var win = hostWin || window.parent || window;
     // The message carries the customer's brief (name, contact e-mail, notes) AND every view's
     // raw photo, so it is only ever posted to a NAMED origin — never targetOrigin '*'. A '*'
@@ -909,7 +939,7 @@
     _sending = true;   // also covers the hand-off fallback path, which calls us directly
     setStatus('Sending…');
     var payload={ id:job.id, createdAt:job.createdAt, submittedAt:new Date().toISOString(),
-      brief:job.brief, views:exportViews(true), userAgent:navigator.userAgent };
+      brief:job.brief, views:exportViews(true), part3d:exportPart(), userAgent:navigator.userAgent };
     fetch(apiUrl('api/submit'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
       // Not every failure answers with JSON — Flask's 413 handler for an oversized body
       // replies in plain text, and r.json() rejecting there surfaced a real "too large" as a

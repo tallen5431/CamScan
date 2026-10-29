@@ -69,10 +69,10 @@ the browser POSTs the job (annotated view images + measurements + a short part b
 `POST /api/submit`. The server saves it and, if SMTP is configured, emails it to you.
 
 What a submission carries per photo: the annotated image, the measurements, a DXF, a CSV, the
-structured geometry and (for re-opening, §3) the reloadable snapshot. What it does **not**
-carry is the 3D part assembled in the Build dialog — which outline is the Top/Side/End view,
-the wall, typed sizes. That lives in the customer's browser only; to model the part, load the
-job (§3) and assign the views again with 🧩 Use in 3D part.
+structured geometry and (for re-opening, §3) the reloadable snapshot. It also carries the
+**3D part** assembled in the Build dialog (`part3d`: which outline is the Top / Side / End /
+Cavity view, its alignment, and the wall, typed sizes and ends), and `summary.txt` names it
+("3D part: Top, End — wall 3 mm"). Loading the job (§3) opens the part ready to build.
 
 **CAD-ready data travels with every view.** Each submitted view carries, besides the annotated
 image, the data that makes it fast to model: a **DXF** (mm, tilt-corrected, layered — generated
@@ -142,8 +142,10 @@ just refine + export a DXF per side, instead of re-measuring from a photo.
 photo is taken) reads one back and restores every view. Each view's snapshot carries the **raw
 image + calibration + the editable annotation layer**, downscaled with the calibration and
 annotations scaled by the *same* factor so a reloaded side measures **identically** — real
-millimetres are preserved, not just pixel positions. Tap **Open** on a collected view to reopen
-it in the full markup tools (it drops out of the stripped intake flow, since this is modelling).
+millimetres are preserved, not just pixel positions. The file also carries the **3D part**
+(`part3d`) and each photo's key (`photoKey` / `sourceId`) that its views name, so 🧩 Build 3D
+part opens with the same views and settings. Tap **Open** on a collected view to reopen it in
+the full markup tools (it drops out of the stripped intake flow, since this is modelling).
 
 **Automatic with each submission.** When a submission reaches CamScan's own server
 (`/api/submit` — the standalone / fallback path), the server also writes
@@ -158,8 +160,9 @@ assemble and store a bundle in your existing CamScan message handler (the origin
 already reads `d.brief` / `d.views`):
 
 ```js
-// d = the { type:'camscan:submit', version:1, brief, views } message from CamScan
-const jobBundle = JSON.stringify({ kind: 'camscan.job', version: 1, brief: d.brief, views: d.views });
+// d = the { type:'camscan:submit', version:1, brief, views, part3d } message from CamScan
+const jobBundle = JSON.stringify({ kind: 'camscan.job', version: 1, brief: d.brief, views: d.views,
+                                   part3d: d.part3d });
 // Save jobBundle as job.camscan.json next to the photos (R2) and/or attach it to the quote
 // email — it already contains views[].restore (raw image + calibration + annotations).
 ```
