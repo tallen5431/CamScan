@@ -77,10 +77,10 @@ Cavity view, its alignment, and the wall, typed sizes and ends), and `summary.tx
 **CAD-ready data travels with every view.** Each submitted view carries, besides the annotated
 image, the data that makes it fast to model: a **DXF** (mm, tilt-corrected, layered — generated
 client-side so no backend is needed), a **dimension CSV**, and the structured **geometry** (mm,
-CAD Y-up — the same input a solid generator needs). The **Outline** tool (trace around a flat
-part and close the loop) adds a **closed, extrudable profile** to that DXF — for a flat part
+CAD Y-up — the same input a solid generator needs). The **✨ Trace** tool (tap a flat part, or
+draw round it by hand) adds a **closed, extrudable profile** to that DXF — for a flat part
 that profile plus a thickness is the whole model, no CAD tracing on your end. **Auto-trace**
-(the ✨ button / simple-mode "Trace outline") takes it further: tap once on the part and the
+(✨ Trace / simple-mode "Trace outline") takes it further: tap once on the part and the
 server segments it (`/api/trace` → `auto_outline.py`) into an editable outline you nudge if
 needed — a near-one-tap trace instead of clicking every vertex. The trace preserves sharp
 corners, samples curves finely enough to read smooth, and **also captures interior holes**

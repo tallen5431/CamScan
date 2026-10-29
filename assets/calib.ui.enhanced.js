@@ -1063,7 +1063,9 @@ window.CalibUI = (function(){
       ['pan',       '🖐',  'Pan',      'Pan the image'],
       ['segment',   '📏',  'Measure',  'Measure a distance'],
       ['polyline',  '〰',  'Path',     'Measure a path / perimeter (double-tap or Enter to finish)'],
-      ['outline',   '⬡',  'Outline',  'Trace a closed part outline → a to-scale, extrudable profile (tap the first point or double-tap to close)'],
+      // One tap here and a tap on the part traces it: the tool used to drop into placing dots
+      // by hand, with auto-trace a second button that only then appeared.
+      ['outline',   '✨',  'Trace',    'Trace the part: tap it and its outline is found — a to-scale, extrudable profile (✎ Draw by hand to place the dots yourself)'],
       ['rectangle', '▭',  'Area',     'Measure a rectangular area'],
       ['angle',     '∠',  'Angle',    'Measure an angle'],
       ['circle',    '⭕',  'Circle',   'Measure a circle (2 points)'],
@@ -1084,7 +1086,11 @@ window.CalibUI = (function(){
       b.setAttribute('aria-label', tip); b.title = tip;
       b.innerHTML = `<span class="cal-tool-emoji">${icon}</span><span class="cal-tool-label">${label}</span>`;
       if (overlay.opts && overlay.opts.mode === m) b.setAttribute('aria-pressed', 'true');
-      b.onclick = () => { if (overlay.setMode) overlay.setMode(m); details.open = false; dismissCoach(); reflect(); };
+      b.onclick = () => {
+        if (m === 'outline' && overlay.armAutoOutline) overlay.armAutoOutline();
+        else if (overlay.setMode) overlay.setMode(m);
+        details.open = false; dismissCoach(); reflect();
+      };
       return b;
     });
     modeBtns.forEach(b => rail.appendChild(b));
@@ -1126,6 +1132,15 @@ window.CalibUI = (function(){
     const ctxAuto = document.createElement('button'); ctxAuto.type = 'button'; ctxAuto.className = 'cal-ctx-finish';
     ctxAuto.innerHTML = '✨ Auto-trace'; ctxAuto.setAttribute('aria-label', 'Auto-detect the part outline — then tap the part');
     ctxAuto.onclick = () => { if (overlay.armAutoOutline) overlay.armAutoOutline(); reflect(); };
+    // While Trace is armed: the other two ways round a part the tap cannot separate.
+    const ctxHand = document.createElement('button'); ctxHand.type = 'button'; ctxHand.className = 'cal-ctx-finish';
+    ctxHand.id = 'cal-ctx-hand';
+    ctxHand.innerHTML = '✎ Draw by hand'; ctxHand.setAttribute('aria-label', 'Place the outline\'s dots yourself instead of auto-tracing');
+    ctxHand.onclick = () => { if (overlay.drawByHand) overlay.drawByHand(); reflect(); };
+    const ctxBox = document.createElement('button'); ctxBox.type = 'button'; ctxBox.className = 'cal-ctx-finish';
+    ctxBox.id = 'cal-ctx-box';
+    ctxBox.innerHTML = '▭ Draw a box'; ctxBox.setAttribute('aria-label', 'Drag a box round the whole part — it traces inside the box');
+    ctxBox.onclick = () => { if (overlay.armBoxTrace) overlay.armBoxTrace(); reflect(); };
     // A closed outline is a PROFILE. Push it straight through by a thickness and it becomes
     // the solid — for extruded trim, or a cover's top outline pushed to its height, that is
     // the whole part. "Depth" read as "length of a running board" to someone who had traced
@@ -1321,7 +1336,7 @@ window.CalibUI = (function(){
     document.addEventListener('click', onDocClickCloseMore);   // removed in _uiCleanup
     moreMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeMore(); ctxMore.focus(); } });
     const narrowMq = window.matchMedia ? window.matchMedia('(max-width: 600px)') : null;
-    ctx.append(ctxDelete, ctxAuto, ctxNotPart, ctxTidy, ctxDepth, ctx3d, ctxMore, ctxFinish);
+    ctx.append(ctxDelete, ctxAuto, ctxBox, ctxHand, ctxNotPart, ctxTidy, ctxDepth, ctx3d, ctxMore, ctxFinish);
     rootEl.appendChild(ctx);
 
     // ---- Focus-mode "Show tools" FAB ----
@@ -1402,8 +1417,11 @@ window.CalibUI = (function(){
       const pathN = overlay.selectedPoints ? overlay.selectedPoints.length : 0;
       ctxFinish.classList.toggle('show', (mode === 'polyline' && pathN >= 2) || (mode === 'outline' && pathN >= 3));
       ctxFinish.innerHTML = mode === 'outline' ? '✓ Close outline' : '✓ Finish path';
-      // Offer auto-trace whenever the Outline tool is active and no trace is in progress.
-      ctxAuto.classList.toggle('show', mode === 'outline' && pathN === 0);
+      // Trace armed: offer the box and drawing by hand. Drawing by hand: offer auto-trace back.
+      const armed = mode === 'outline' && pathN === 0 && !!overlay._autoOutlineArm;
+      ctxAuto.classList.toggle('show', mode === 'outline' && pathN === 0 && !armed);
+      ctxBox.classList.toggle('show', armed);
+      ctxHand.classList.toggle('show', armed);
       const traced = !!(overlay.backgroundTapCount && overlay._lastAutoSeed);
       ctxNotPart.classList.toggle('show', traced);
       if (traced) {

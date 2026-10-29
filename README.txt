@@ -46,8 +46,8 @@ bracket, a gasket, a spacer. For those, one traced cross-section plus one depth 
 the whole part, so CamScan can finish the job rather than hand you a drawing to
 re-draw in CAD.
 
-  1) Trace a CLOSED outline around the part (the Path/Outline tool, or ✨ Auto-trace).
-     Auto-trace also finds interior holes — a bolt pattern, a row of clip slots —
+  1) Trace a CLOSED outline around the part (✨ Trace, then tap the part).
+     Trace also finds interior holes — a bolt pattern, a row of clip slots —
      and they become real through-holes in the solid.
      The clean-up tools are under "✨ Tidy" (with an outline selected): Straighten, Refine,
      Symmetric and Square up.
@@ -273,16 +273,18 @@ Worth sending to whoever is holding the camera. The same list is in the app, und
 MEASURING
 --------------------------------------------------------------------------------
 Tools (toolbar):
-  Pan / Select / Set Scale / Measure (distance) / Path (perimeter) / Outline (closed part
+  Pan / Select / Set Scale / Measure (distance) / Path (perimeter) / ✨ Trace (closed part
   outline) / Area (rectangle) / Angle / Circle (2-point) / 3-Point circle / Note
   - Path: click points, then double-click or press Enter (or the ✓ button) to finish.
-  - Outline: tap round the part, then tap the first point (or double-tap) to close it — a
-    to-scale profile for the 3D part. "✨ Auto-trace" traces it from one tap on the part.
+  - ✨ Trace: tap the part and its outline is traced for you — a to-scale profile for the
+    3D part. While it waits for the tap it offers "▭ Draw a box" (drag round the whole part
+    and it traces inside the box: the fix for a shadowed end it stopped short of) and
+    "✎ Draw by hand" (tap round the part, then tap the first point or double-tap to close).
   - Circle (centre + edge) and 3-Point circle (three taps on a round edge): drag the centre
     to move, the ring to resize; the label gives the diameter. Auto-trace also snaps a round
     hole it finds to a true circle. Circles go to the DXF on their own CIRCLES layer.
 Keyboard: 0 Pan · 1 Select · 2 Measure · 3 Path · 4 Area · 5 Angle · 6 Circle ·
-  7 3-Point · 8 Note · 9 Outline · Enter finish path · Esc cancel · +/- zoom · Space to pan ·
+  7 3-Point · 8 Note · 9 Trace · Enter finish path · Esc cancel · +/- zoom · Space to pan ·
   Ctrl+Z undo · Ctrl+Shift+Z redo · Delete remove selected · C copy selected value.
 ⚙️ Settings (top bar): calibration square size, units, snap to marker corners, default
   note text, show markers / grid / measurement labels (turn labels off to edit a dense

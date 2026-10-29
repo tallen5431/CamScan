@@ -194,7 +194,7 @@
       // --- wiring --------------------------------------------------------------
       requestDraw(){ if(this._destroyed || this._rAF) return; this._rAF=requestAnimationFrame(()=>{ this._rAF=0; if(!this._destroyed) this.redraw(); }); }
       // A tool change disarms a pending auto-trace tap (a failed trace leaves it armed), so
-      // choosing the Outline tool by hand later places dots, as it says.
+      // a tap in another tool never traces.
       setMode(m){ if(m!==this.opts.mode){ this._autoOutlineArm=false; this._traceAfterBox=false; } this.opts.mode=m; this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
       zoomStep(f){ this.vp.setZoomAround(this.vp.k*f, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
       setZoom(k){ this.vp.setZoomAround(k, this.vp.centerAnchor(this.canvas)); this.requestDraw(); }
@@ -480,7 +480,7 @@
           if(k==='6') this.setMode('circle');
           if(k==='7') this.setMode('circle3pt');
           if(k==='8') this.setMode('note');
-          if(k==='9') this.setMode('outline');
+          if(k==='9') this.armAutoOutline();
           if(k==='enter') this.finishPolyline();
           if(k==='escape'){ this.selectedPoints=[]; this.hover=null; this.requestDraw(); }
           if(k==='delete' || k==='backspace'){ e.preventDefault(); this.deleteSelected(); }
@@ -1599,6 +1599,16 @@
         this._armToast=this._toast('Tap the part to trace it automatically.', {autoMs:5000});
         this.requestDraw();
       }
+      // "✎ Draw by hand": the Trace tool is armed to auto-trace, so this is the way to place
+      // the outline's dots one by one instead (a part the tracer cannot separate at all).
+      drawByHand(){
+        if(this.opts.mode!=='outline') this.setMode('outline');
+        this._autoOutlineArm=false;
+        this.selectedPoints=[]; this.hover=null;
+        if(this._armToast) this._armToast.dismiss();
+        this._armToast=this._toast('Tap round the part\'s edge, dot by dot — tap the first dot to close it.', {autoMs:5000});
+        this.requestDraw();
+      }
 
       // Auto-trace the part under `seed` (image coords): POST the photo to the server, which
       // segments the tapped object and returns its outer boundary + interior holes; we drop
@@ -1816,8 +1826,11 @@
                 // A shadow step on a side (auto_outline: a jog, or a stretch standing proud of
                 // the usual width) was measured but left in: the part would be built that much
                 // too wide with nothing said — 175 mm for a ~157 mm cover on a real photo.
-                toast.update('Outline'+tail+' traced — check it: '+warns.join(' '), 'warn',
-                  [{ label:'Straighten', fn:function(){ if(self.ann.items.some(a=>a.id===outerId)){ self.ann.selectedId=outerId; self.straightenSelected(); } } }, notPart]);
+                // The box is offered too: a shadowed end the trace stopped short of (a cover's
+                // far end in the user's own shadow) comes back only with one.
+                const fixes=[{ label:'Straighten', fn:function(){ if(self.ann.items.some(a=>a.id===outerId)){ self.ann.selectedId=outerId; self.straightenSelected(); } } }, notPart];
+                if(fresh && !boxed) fixes.push(boxIt);
+                toast.update('Outline'+tail+' traced — check it: '+warns.join(' '), 'warn', fixes);
                 toast.keepFor(9000);
               } else {
                 toast.update('Outline'+tail+' traced'+(boxed ? ' inside your Area box' : '')+' — drag any dot to fix it'+
