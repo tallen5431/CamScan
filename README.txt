@@ -69,14 +69,15 @@ re-draw in CAD.
      camera's tilt, from how the ruler's two edges narrow in the photo. When it cannot find
      them it says why, uses the part's sides instead, and offers "Redraw scale line". How it
      works and what the message tells you: SQUARE UP under REFERENCE.
-  2) Select the outline and press "⇥ Depth". Enter how far the shape runs: for a top
-     outline that is the part's HEIGHT; for a cross-section (an end or side outline), the
-     part's length. For a COVER, also fill in the wall thickness (see below).
+  2) Select the outline and press "⇥ Extrude" (on a phone it is under "⋯"). Enter how far
+     the shape runs: for a top outline that is the part's HEIGHT; for a cross-section (an end
+     or side outline), the part's length. For a COVER, also fill in the wall thickness (see
+     below).
   3) 💾 menu → "Save STL (3D print)".
 
 COVERS (hollow parts). Most replacement covers — a running-board step pad, a trim cap,
 an end cover — are a thin plate with a wall round its edge, open underneath. Enter a wall
-thickness in the ⇥ Depth box and the STL comes out that way instead of as a solid block:
+thickness in the ⇥ Extrude box and the STL comes out that way instead of as a solid block:
 
     900 x 180 mm step pad, 25 mm deep    solid: 4.05 L (~5.0 kg PLA)
                                          3 mm wall: 0.63 L (~0.78 kg PLA)
@@ -147,15 +148,26 @@ is built from several outlines instead of one, each traced on whichever photo sh
 How it works: each outline is pushed straight through the part and only what every view
 agrees is material is kept, then the cavity — grown by the clearance — is cut out. Things to
 know:
-  * The Top view sets length and width; the Side (else End) view sets height. If another view
-    disagrees by up to 8% it is stretched to fit, and the dialog says by how much. More than
-    that is refused, naming both views — that size of disagreement is a wrong scale.
+  * A view photographed a degree or two off square is turned square first (up to 15°); the
+    dialog says by how much.
+  * The Top view sets length and width; the Side (else End) view sets height. Each size line
+    in the dialog says which view set it. Another view that disagrees by up to 8% is fitted
+    to it — rescaled as a whole where it can be, else stretched on that one size — and past
+    3% the line warns and offers "Use <view>'s width" or "Match" buttons that say what else
+    they move. More than 8% is refused, naming both views: that is a wrong scale, or a photo
+    taken at an angle.
+  * Measured the real part with a tape? Type it under "Known overall length / width /
+    height": the views are scaled to it, and each view's error against it is shown.
   * A cavity traced on the SAME photo as its view keeps exactly where it was drawn. One from
     another photo (say, the bare board end) is centred and sat at the bottom, centre or top.
   * Walls under 0.8 mm are flagged as too thin to print reliably.
   * MIRROR makes the opposite-hand part: measure the intact cover from one side of the
     vehicle and download the missing one from the other. Mirroring is the only thing that
-    changes a part's hand — "Upside down for printing" is a rotation.
+    changes a part's hand — "Upside down for printing" is a rotation. (For a hollow cover,
+    which already downloads plate-down, that box reads "Turn over: open side down".)
+  * The status says "ready to print" only when the cover's deck really sits flat on the bed,
+    and flags a part larger than your print bed (set its size in the dialog) with where to
+    cut it.
   * Needs the manifold3d package (in requirements.txt).
 
 What this does NOT do: lettering, textures and raised ribs are left to CAD, and a part whose
@@ -266,10 +278,15 @@ Tools (toolbar):
   - Path: click points, then double-click or press Enter (or the ✓ button) to finish.
   - Outline: tap round the part, then tap the first point (or double-tap) to close it — a
     to-scale profile for the 3D part. "✨ Auto-trace" traces it from one tap on the part.
-  - Circle: drag the centre to move, drag the ring to resize.
+  - Circle (centre + edge) and 3-Point circle (three taps on a round edge): drag the centre
+    to move, the ring to resize; the label gives the diameter. Auto-trace also snaps a round
+    hole it finds to a true circle. Circles go to the DXF on their own CIRCLES layer.
 Keyboard: 0 Pan · 1 Select · 2 Measure · 3 Path · 4 Area · 5 Angle · 6 Circle ·
   7 3-Point · 8 Note · 9 Outline · Enter finish path · Esc cancel · +/- zoom · Space to pan ·
   Ctrl+Z undo · Ctrl+Shift+Z redo · Delete remove selected · C copy selected value.
+⚙️ Settings (top bar): calibration square size, units, snap to marker corners, default
+  note text, show markers / grid / measurement labels (turn labels off to edit a dense
+  outline), annotation text size, line thickness, point size, and Clear all annotations.
 
 --------------------------------------------------------------------------------
 EXPORT (for models)
@@ -285,6 +302,14 @@ Download menu:
         layers (CIRCLES / LINES / RECTANGLES / POLYLINES / ANGLES / NOTES / DIMTEXT).
   SVG   vector geometry in real millimetres — imports into Illustrator / Inkscape /
         Fusion and most laser cutters. Generated in-browser (no ezdxf needed).
+  STL   the selected outline extruded (see 3D MODEL above); "Build 3D part from views…"
+        opens the multi-view dialog, which downloads STL / STEP / OBJ.
+
+SAVING THE WHOLE PART (job panel, 📋 Submit to Datum in the top bar)
+  💾 Save job writes every photo — image, scale and outlines — to a .camscan.json that
+  ⤓ Load job opens again later, each side editable. The 3D part's view assignments and
+  Build settings are NOT in that file (nor in a submission): they stay in this browser.
+  After loading a job on another device, assign the views again with 🧩 Use in 3D part.
 
 --------------------------------------------------------------------------------
 TESTING
@@ -293,14 +318,17 @@ TESTING
   python -m playwright install chromium        # once; skip if a Chromium is provisioned
 
   python tests/smoke_test.py                   # fast: geometry, endpoints, exports, rules
+  python tests/unit_p1_part_builder.py         # focused checks: one per tests/unit_*.py
   python tests/test_newtools_e2e.py            # real browser: one per tests/test_*_e2e.py
+                                               # (CAMSCAN_E2E_PORT picks the port)
 
 The browser suites report SKIP (and exit 0) where no browser is available, so they never
 break a machine that cannot run one. Set CAMSCAN_E2E_REQUIRE=1 to make a skip a failure —
 CI does, so the browser layer can never pass by not running.
 
 CI (.github/workflows/ci.yml) runs on every push and pull request: lint (flake8 --select=F),
-JavaScript syntax, the smoke suite, every browser suite, and tests/check_line_endings.py.
+JavaScript syntax, tests/check_line_endings.py, the smoke suite, every tests/unit_*.py and
+every browser suite. Code map, conventions and the internal APIs: docs/DEVELOPER.md.
 That last one exists because this repository mixes CRLF and LF files with no .gitattributes:
 a text-mode edit silently converts a CRLF file, and the real change disappears under
 thousands of lines of line-ending churn. It fails a change that flips a file's endings.
@@ -343,7 +371,7 @@ pads for easier detection). CamScan detects the black square's outer edge and
 uses its known real edge length to convert pixels to millimetres.
 
 IMPORTANT — set your real square size:
-  Open "More Settings & Options" → Calibration → "Calibration square size (mm)"
+  Open ⚙️ Settings → 📐 Calibration → "Calibration square size (mm)"
   and enter the printed edge length of YOUR square. Every measurement rescales
   instantly (no re-processing). The default assumes a 40 mm square (the recommended marker).
 
@@ -380,7 +408,14 @@ ARTIFACTS in /uploads
 --------------------------------------------------------------------------------
 WEBSITE INTEGRATION, SUBMISSIONS & MAILED MARKER
 --------------------------------------------------------------------------------
-See INTEGRATION.md for deploying CamScan into a website, configuring the
-"Send to Datum" email submission (SUBMIT_TO / SMTP_* env vars), and the
-ready-to-print calibration marker in markers/ (auto-detected by CamScan).
+See INTEGRATION.md for deploying CamScan into a website (and running it as a public
+service), configuring the "Submit to Datum" email submission (SUBMIT_TO / SMTP_* env
+vars), and the ready-to-print calibration marker in markers/ (auto-detected by CamScan).
 Generate a marker at any size with:  python tools/make_marker.py <edge_mm>
+
+--------------------------------------------------------------------------------
+DOCUMENTS
+--------------------------------------------------------------------------------
+  README.txt          this file: using CamScan, accuracy, exports, settings, testing
+  INTEGRATION.md      hosting, embedding on the Datum Labs site, submissions, the marker
+  docs/DEVELOPER.md   code map, endpoints, tests and CI, conventions, debugging, APIs
