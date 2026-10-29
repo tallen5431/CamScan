@@ -220,6 +220,24 @@ def _real_server(pg, notes):
         notes.append("end slope applied")
     else:
         notes.append("end slope sent (this server does not apply it)")
+    # 1e. Top only (the End photo was oblique, so its view was removed): the cross-section's
+    #     long-edge radius is typed instead, with a height and a 3 mm wall.
+    pg.click("#cal-part-panel button[aria-label='Close']")
+    pg.evaluate(SET_VIEWS, {"top": _rect_view(700, 175, "photo-top")})
+    pg.evaluate("window.CalibPart3D.open()")
+    pg.wait_for_selector("#cal-part-section", state="visible", timeout=8000)
+    pg.fill("#cal-part-depth", "50")
+    pg.fill("#cal-part-wall", "3")
+    with pg.expect_request(lambda q: "/api/export/part" in q.url and q.post_data
+                           and '"section"' in q.post_data, timeout=20000) as sq:
+        pg.fill("#cal-part-sec-radius", "12")
+    body = json.loads(sq.value.post_data)
+    assert body["section"] == {"radius_mm": 12, "draft_deg": 0}, f"section: {body.get('section')}"
+    sj = sq.value.response().json()
+    assert sj.get("ok") and (sj.get("info") or {}).get("section", {}).get("radius_mm") == 12, \
+        f"section not applied: {str(sj)[:300]}"
+    assert "ready to print" in (sj["info"].get("orientation") or ""), f"orientation: {sj['info'].get('orientation')}"
+    notes.append("cross-section edge radius applied, ready to print")
     pg.click("#cal-part-panel button[aria-label='Close']")
 
 

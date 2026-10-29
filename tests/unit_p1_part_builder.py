@@ -506,6 +506,42 @@ def main():
           np.allclose(i["size_mm"], [700, 175, 50], atol=0.01) and tf and tf[0]["kind"] == "stretch",
           f"{i['size_mm']} {i['fits']}")
 
+    #     A typed cross-section stands in for an End view (an oblique End photo is the usual
+    #     reason): the long top edges are rounded, the deck still lies flat on the bed, and the
+    #     cover is called ready to print. With an End view the typed values are not used.
+    r = build_part({"top": {"points": rect(700, 175).tolist()}}, depth_mm=50, wall_mm=3,
+                   ends={"slope_deg": 30, "radius_mm": 10}, section={"radius_mm": 12, "draft_deg": 5})
+    v = r["tris"].reshape(-1, 3)
+    zmin, zmax = v[:, 2].min(), v[:, 2].max()
+    w_deck = float(np.ptp(v[v[:, 2] < zmin + 0.3][:, 1]))
+    w_rim = float(np.ptp(v[v[:, 2] > zmax - 0.3][:, 1]))
+    rep = mesh_report(r["tris"])
+    i = r["info"]
+    check("a typed cross-section rounds the long edges; the deck is on the bed and ready to print",
+          rep["watertight"] and np.allclose(i["size_mm"], [700, 175, 50], atol=0.01)
+          and 140 < w_deck < 160 and abs(w_rim - 175) < 0.5 and "ready to print" in i["orientation"]
+          and i.get("section") == {"draft_deg": 5.0, "radius_mm": 12.0} and not i["warnings"],
+          f"deck {w_deck:.1f} rim {w_rim:.1f} {i['size_mm']} {i.get('orientation')} {i['warnings']}")
+    i = build_part({"top": {"points": rect(700, 175).tolist()}, "end": {"points": rect(175, 50).tolist()}},
+                   wall_mm=3, section={"radius_mm": 12}, preview=True)["info"]
+    check("with an End view the typed cross-section is not used, and says so",
+          "section" not in i and "not used" in (i.get("note") or ""), i.get("note"))
+    refused = []
+    for sec in ({"draft_deg": 60}, {"radius_mm": -1}, {"draft_deg": "x"}):
+        try:
+            build_part({"top": {"points": rect(700, 175).tolist()}}, depth_mm=50, wall_mm=3, section=sec)
+            refused.append(False)
+        except PartError:
+            refused.append(True)
+    from app import server as _srv
+    c = _srv.test_client().post("/api/export/part", json={
+        "views": {"top": {"points": rect(700, 175).tolist(), "mm_per_px": 1, "image_height": 0}},
+        "depth_mm": 50, "wall_mm": 3, "section": {"radius_mm": 12}, "preview": True})
+    j = c.get_json() or {}
+    check("bad cross-sections are refused; the endpoint passes a good one through",
+          all(refused) and c.status_code == 200 and (j.get("info") or {}).get("section", {}).get("radius_mm") == 12.0,
+          f"refused={refused} endpoint={c.status_code} {str(j.get('info', {}).get('section'))}")
+
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory():
