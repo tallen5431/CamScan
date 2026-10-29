@@ -129,6 +129,11 @@ is built from several outlines instead of one, each traced on whichever photo sh
   HOLLOW: put a wall thickness in "Hollow — wall (mm)" and the part comes out as a cover of
   that wall, open underneath, turned plate-down for printing — with Top alone or with Side
   and End views too. Leave it empty for a solid part.
+  NO GOOD SIDE OR END PHOTO? A photo of the end taken at an angle traces as a skewed, wavy
+  profile, and the cover built from it barely touches the print bed (the status says so).
+  Remove that view (✕ on its row) and type the shape instead: the height, "End slope" and
+  "End edge radius" for the ends (no Side view), and "Long edge radius" and "Side draft" for
+  the cross-section (no End view). The Top photo alone then gives a clean, printable cover.
   Each view follows the outline it was assigned from: Refine, Square up, a dragged dot or a
   new scale on that photo carries through to the part without assigning it again (the row
   says "follows its outline"). If the outline is deleted, the view keeps its last copy and

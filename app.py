@@ -954,6 +954,9 @@ def export_part():
         ends_in = _obj(data.get("ends"), "ends")
         ends = ({"slope_deg": _num(ends_in.get("slope_deg"), 0.0),
                  "radius_mm": _num(ends_in.get("radius_mm"), 0.0)} if ends_in else None)
+        sec_in = _obj(data.get("section"), "section")
+        section = ({"draft_deg": _num(sec_in.get("draft_deg"), 0.0),
+                    "radius_mm": _num(sec_in.get("radius_mm"), 0.0)} if sec_in else None)
     except (TypeError, ValueError, OverflowError) as e:
         return f"Invalid input: {e}", 400
 
@@ -970,7 +973,7 @@ def export_part():
                          wall_mm=wall_mm, mirror=bool(data.get("mirror")),
                          upside_down=bool(data.get("upside_down")), preview=preview,
                          known_mm=known_mm, axis_source=axis_source, ends=ends,
-                         for_print=preview or fmt == "stl")
+                         for_print=preview or fmt == "stl", section=section)
     except PartError as e:
         detail = getattr(e, "detail", None)
         if preview:

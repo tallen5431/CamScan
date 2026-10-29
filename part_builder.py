@@ -768,7 +768,8 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
                upside_down: bool = False, preview: bool = False,
                known_mm: Optional[Dict[str, Any]] = None,
                axis_source: Optional[Dict[str, str]] = None,
-               ends: Optional[Dict[str, Any]] = None, for_print: bool = True) -> Dict[str, Any]:
+               ends: Optional[Dict[str, Any]] = None, for_print: bool = True,
+               section: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Build the part. Raises PartError with a user-facing reason when it cannot.
 
     views   : {"top"|"side"|"end": {"points": [[u, v], ...] in mm, "rot": quarter turns,
@@ -784,6 +785,8 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
               size is scaled to it, and every view's error against it is reported.
     axis_source: {length|width|height: view} — trust this view for that size.
     ends    : {slope_deg, radius_mm} for both ends when there is no Side view.
+    section : {radius_mm, draft_deg} for the cross-section when there is no End view: the long
+              top edges rounded, the long sides leaning in by the draft.
     for_print: a cover is turned plate-down, ready to print (STL). False delivers it as
               traced, Z up, for CAD; upside_down then turns it literally.
     Returns {"tris" (absent in preview), "info", "preview"}.
@@ -793,7 +796,7 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
     info: Dict[str, Any] = {"fits": [], "warnings": [], "kind": None, "deskew": []}
     try:
         return _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror,
-                           upside_down, preview, known_mm, axis_source, ends, for_print)
+                           upside_down, preview, known_mm, axis_source, ends, for_print, section)
     except PartError as e:
         # What was measured goes back with a refusal too, so the dialog can show it.
         if e.info is None:
@@ -802,7 +805,7 @@ def build_part(views: Dict[str, Dict[str, Any]], depth_mm: Optional[float] = Non
 
 
 def _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror, upside_down,
-                preview, known_mm, axis_source, ends, for_print) -> Dict[str, Any]:
+                preview, known_mm, axis_source, ends, for_print, section=None) -> Dict[str, Any]:
     notes: List[str] = []
 
     vs: Dict[str, View] = {}
@@ -1072,7 +1075,27 @@ def _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror, up
                 notes.append("The Side view shapes the ends, so the typed end slope is not used.")
             else:
                 end_shape = (slope, radius)
-    shaped = set(vs) != {"top"} or end_shape is not None
+    # Typed cross-section, standing in for the End view. An End photo taken at an angle is the
+    # usual reason to want it: on a customer's step-pad photo the oblique end traced as a
+    # skewed, wavy profile, and the cover built from it had 2% of its deck on the bed. The top
+    # photo plus a typed height, end slope and edge radius gives the clean cover instead.
+    section_shape = None
+    if section:
+        if not isinstance(section, dict):
+            raise PartError("The cross-section must be given as a radius and a draft.")
+        s_rad = _view_number(section.get("radius_mm"), 0.0, "edge radius")
+        s_draft = _view_number(section.get("draft_deg"), 0.0, "side draft")
+        if not (0.0 <= s_draft <= 45.0):
+            raise PartError("The side draft must be between 0 and 45 degrees from upright.")
+        if s_rad < 0:
+            raise PartError("The edge radius cannot be negative.")
+        if s_draft > 0 or s_rad > 0:
+            if "end" in vs:
+                notes.append("The End view shapes the cross-section, so the typed edge radius "
+                             "and draft are not used.")
+            else:
+                section_shape = (s_draft, s_rad)
+    shaped = set(vs) != {"top"} or end_shape is not None or section_shape is not None
 
     # A cover prints deck-down, so the top edges of its side and end traces are what sits on
     # the bed: level them before anything is built from them.
@@ -1100,6 +1123,18 @@ def _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror, up
         notes.append("Ends: {} (typed — there is no Side view).".format(", ".join(
             t for t in ("{:.0f}° slope".format(end_shape[0]) if end_shape[0] > 0 else "",
                         "{:.0f} mm edge radius".format(end_shape[1]) if end_shape[1] > 0 else "") if t)))
+
+    if section_shape is not None:
+        try:
+            prof = _ends_profile(size[1], size[2], *section_shape)
+        except PartError:
+            raise PartError("That side draft leaves no top face on a part this wide and tall — "
+                            "use a smaller draft.")
+        vs["end"] = View("end", prof, auto=False)
+        info["section"] = {"draft_deg": section_shape[0], "radius_mm": section_shape[1]}
+        notes.append("Cross-section: {} (typed — there is no End view).".format(", ".join(
+            t for t in ("{:.0f}° side draft".format(section_shape[0]) if section_shape[0] > 0 else "",
+                        "{:.0f} mm edge radius".format(section_shape[1]) if section_shape[1] > 0 else "") if t)))
 
     X, Y, Z = size
     info["size_mm"] = [round(X, 3), round(Y, 3), round(Z, 3)]
@@ -1302,7 +1337,8 @@ def _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror, up
         if deck > 0 and on_bed < BED_CONTACT_MIN * deck:
             flat_ok = False
             # The traced profile views, not a typed end shape (that one is flat by construction).
-            prof = [r for r in ("side", "end") if r in vs and not (r == "side" and end_shape is not None)]
+            prof = [r for r in ("side", "end") if r in vs and not (r == "side" and end_shape is not None)
+                    and not (r == "end" and section_shape is not None)]
             nm = " / ".join(r.capitalize() for r in prof) or "Side/End"
             # Straighten did not help the case that found this: an End photo taken at an angle
             # has the far side of the deck as its top edge — a crown, not a noisy straight line.
@@ -1310,7 +1346,8 @@ def _build_part(info, views, depth_mm, cavity, clearance_mm, wall_mm, mirror, up
                 "Only {:.0f}% of the deck lies on the bed — the top edge of the {} trace is curved "
                 "or sloped, so the print may come loose. That usually means the {} photo was taken "
                 "at an angle (its top edge is then the far side of the deck). Retake it square-on, "
-                "or remove that view and type the height instead.".format(100.0 * on_bed / deck, nm, nm))
+                "or remove that view (✕) and type the height instead — with the long edge radius "
+                "and end slope for the rounded edges.".format(100.0 * on_bed / deck, nm, nm))
     info["orientation"] = _orientation(is_shell, turned, for_print, flat_ok)
     if is_shell:
         notes.insert(0, "{}; downloads {}.".format(_shell_note(shell_wall), info["orientation"]))

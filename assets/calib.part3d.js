@@ -375,6 +375,10 @@
     if(!p.views.side && o.ends && (o.ends.slope_deg > 0 || o.ends.radius_mm > 0)){
       out.ends = { slope_deg: o.ends.slope_deg || 0, radius_mm: o.ends.radius_mm || 0 };
     }
+    // Likewise the cross-section's edge radius and side draft stand in for an End view.
+    if(!p.views.end && o.section && (o.section.radius_mm > 0 || o.section.draft_deg > 0)){
+      out.section = { radius_mm: o.section.radius_mm || 0, draft_deg: o.section.draft_deg || 0 };
+    }
     return out;
   }
 
@@ -687,6 +691,19 @@
       ends.append(fSlope.wrap, fRad.wrap);
       card.appendChild(ends);
     }
+    // With no End view the long edges come out square. An End photo taken at an angle traces
+    // as a skewed, wavy profile (on a customer's step pad, 2% of the deck reached the bed);
+    // removing that view (✕) and typing the cross-section gives the clean cover instead.
+    var fSecRad = null, fDraft = null;
+    if(!p.views.end){
+      var sc = o.section || {};
+      var sec = document.createElement('div'); sec.id = 'cal-part-section';
+      sec.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 4px;';
+      fSecRad = field('Long edge radius (mm) — no End view', 'cal-part-sec-radius', sc.radius_mm, { placeholder: 'sharp' });
+      fDraft = field('Side draft (°)', 'cal-part-sec-draft', sc.draft_deg, { placeholder: 'upright' });
+      sec.append(fSecRad.wrap, fDraft.wrap);
+      card.appendChild(sec);
+    }
 
     var flags = document.createElement('div'); flags.style.cssText = 'display:flex;flex-wrap:wrap;gap:0 16px;margin:4px 0 8px;';
     var cMirror = check('Mirror — the matching part for the other side', 'cal-part-mirror', o.mirror);
@@ -713,6 +730,10 @@
         var sd = num(fSlope.el), rd = num(fRad.el);
         if(sd || rd) o.ends = { slope_deg: sd || 0, radius_mm: rd || 0 }; else delete o.ends;
       }
+      if(fSecRad){
+        var sr = num(fSecRad.el), dr = num(fDraft.el);
+        if(sr || dr) o.section = { radius_mm: sr || 0, draft_deg: dr || 0 }; else delete o.section;
+      }
       if(cav){
         o.cavity_view = cav.view.el.value; o.cavity_open = cav.open.el.value; o.cavity_align = cav.align.el.value;
         var c = parseFloat(cav.clr.el.value); o.clearance = (isFinite(c) && c >= 0) ? c : 0.4;
@@ -723,6 +744,7 @@
     }
     [fDepth.el, fWall.el, cMirror.el, cUpside.el].concat(fKnown.map(function(f){ return f.el; }))
       .concat(fSlope ? [fSlope.el, fRad.el] : [])
+      .concat(fSecRad ? [fSecRad.el, fDraft.el] : [])
       .concat(cav ? [cav.view.el, cav.clr.el, cav.open.el, cav.dep.el, cav.align.el] : [])
       .forEach(function(el){ el.addEventListener('change', sync); el.addEventListener('input', sync); });
 
@@ -1116,8 +1138,26 @@
       n = [n[0] / nl, n[1] / nl, n[2] / nl];
       if(n[2] > 0) continue;                                   // facing away
       var lit = 0.12 + 0.88 * Math.pow(Math.max(0, n[0] * L[0] + n[1] * L[1] + n[2] * L[2]), 1.4);
+      push(a, b, d, lit, 0);
+    }
+    // Faces are drawn far to near by their centres. A flat deck is two or four huge triangles
+    // whose centre sits mid-part, so the cavity's inner walls nearer the eye were drawn over
+    // it and showed through as a dark groove that is not in the part (measured on the
+    // customer's 692 mm cover: a 4-triangle deck). Drawing big faces as smaller pieces of the
+    // same plane keeps the order right; the downloads are untouched.
+    function push(a, b, d, lit, depth){
+      var big = Math.max(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]),
+                         Math.hypot(d[0] - b[0], d[1] - b[1], d[2] - b[2]),
+                         Math.hypot(a[0] - d[0], a[1] - d[1], a[2] - d[2]));
+      if(depth < 4 && big > 0.2 * R){
+        var ab = mid(a, b), bd = mid(b, d), da = mid(d, a);
+        push(a, ab, da, lit, depth + 1); push(ab, b, bd, lit, depth + 1);
+        push(da, bd, d, lit, depth + 1); push(ab, bd, da, lit, depth + 1);
+        return;
+      }
       list.push([(a[2] + b[2] + d[2]) / 3, a, b, d, lit]);
     }
+    function mid(p, q){ return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2]; }
     list.sort(function(p, q){ return q[0] - p[0]; });
     for(i = 0; i < list.length; i++){
       var t = list[i], col = 'rgb(' + Math.round(25 + 110 * t[4]) + ',' + Math.round(55 + 170 * t[4]) + ',' + Math.round(70 + 175 * t[4]) + ')';
