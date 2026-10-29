@@ -1,4 +1,4 @@
-# CamScan — Calibration Exporter (single-page viewer)
+# CamScan — photos to a measured 3D part (single-page app; see README.txt, docs/DEVELOPER.md)
 import os, base64, uuid, time, tempfile, math
 
 # Cap the pixels OpenCV will decode BEFORE importing cv2 (the env var is read at import

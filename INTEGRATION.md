@@ -1,9 +1,9 @@
 # CamScan — website integration & intake flow
 
-This branch turns CamScan into a customer-facing **intake tool**: a customer photographs a
-broken part (with a reference for scale), measures it, and submits several views to Datum
-Laboratories in one go. This doc covers how to deploy it into your website and configure
-the pieces.
+CamScan is a customer-facing **intake tool** as well as a modelling one: a customer
+photographs a broken part (with a ruler or the printed marker for scale), traces it, and
+submits several views to Datum Laboratories in one go — or builds the 3D part themselves
+(README.txt). This doc covers how to deploy it into your website and configure the pieces.
 
 ## 1. Hosting it on your site
 
@@ -16,7 +16,23 @@ prefix (`ProxyFix` in `app.py`). The simplest integration:
   camera access over a secure context. Over plain HTTP the capture button gets no camera.
 - Brand it by editing the landing card and accent colour in `app.py` (`--cal-accent`).
 
-Run: `python app.py` (default `PORT=8059`). Put it behind Caddy/nginx with TLS.
+Run: `python app.py` (default `PORT=8059`, `HOST` to bind). Put it behind Caddy/nginx with TLS.
+
+### Running it as a public service
+
+- `python app.py` uses Flask's built-in server, which is meant for development. For an
+  internet-facing deployment run the same app under a production WSGI server, e.g.
+  `pip install waitress` then `waitress-serve --host=127.0.0.1 --port=8059 app:server`,
+  with Caddy/nginx in front for TLS.
+- There is no login and no rate limiting in CamScan itself. If the tool is public, add
+  rate limits at the proxy (especially on `POST /api/submit` and the upload).
+- **Uploaded photos are served back by name** from `/uploads/<name>` (the viewer loads
+  them from there). A name is the photo's own filename plus a random 8-character tag, so
+  it is hard to guess but not secret: anyone holding a link can open the photo.
+  Old uploads are removed automatically (`MAX_UPLOAD_AGE_HOURS`, default 72;
+  `MAX_UPLOAD_FILES`, default 400) — keep those, and say so in your privacy note.
+- The other limits (request size, decoded image size, submissions volume) are environment
+  variables listed in README.txt under REFERENCE.
 
 ### Embedding it on the replacement-parts page
 
@@ -46,11 +62,17 @@ Labs site (and blocks clickjacking from anywhere else):
   SAMEORIGIN`/`DENY`, the embed will be blocked regardless of this header — strip that at the
   proxy so only CamScan's `frame-ancestors` policy applies.
 
-## 2. Submissions ("Send to Datum")
+## 2. Submissions ("Submit to Datum")
 
-When a customer taps **Submit to Datum**, the browser POSTs the job (annotated view images
-+ measurements + a short part brief) to `POST /api/submit`. The server saves it and, if SMTP
-is configured, emails it to you.
+When a customer taps **📋 Submit to Datum** (top bar) and then **Send to Datum** in the panel,
+the browser POSTs the job (annotated view images + measurements + a short part brief) to
+`POST /api/submit`. The server saves it and, if SMTP is configured, emails it to you.
+
+What a submission carries per photo: the annotated image, the measurements, a DXF, a CSV, the
+structured geometry and (for re-opening, §3) the reloadable snapshot. What it does **not**
+carry is the 3D part assembled in the Build dialog — which outline is the Top/Side/End view,
+the wall, typed sizes. That lives in the customer's browser only; to model the part, load the
+job (§3) and assign the views again with 🧩 Use in 3D part.
 
 **CAD-ready data travels with every view.** Each submitted view carries, besides the annotated
 image, the data that makes it fast to model: a **DXF** (mm, tilt-corrected, layered — generated
@@ -165,7 +187,7 @@ scale is correct out of the box: `CALIB_EDGE_MM=40` (or change `EDGE_MM_DEFAULT`
   to a large one (≈550 mm) in testing — more pixel headroom than 30 mm for tilted/dim/glary
   phone photos, the case that actually matters.
 - Small enough to lay flat beside small parts and to reposition on each face for the
-  multi-view (top/front/side) shots.
+  multi-view (top/side/end) shots.
 - Its card (~103 × 64 mm) fits a standard letter envelope with room for the verification bar.
 
 Go **~60 mm** (card ~143 × 84 mm, still envelope-friendly) if your parts routinely exceed
@@ -192,7 +214,8 @@ tools, but it isn't auto-detected.)
 
 A single photo + a flat reference measures accurately only **in the plane of the reference**.
 A feature standing above it (the top face of a thick part) reads a few percent large
-(parallax). That's why the intake flow collects **multiple orthographic views** (Top / Front
-/ Side) — each scaled in its own plane — which is what a modeller needs to CAD a replacement
-without a full 3D scan. For genuinely freeform parts, collect the raw multi-view photos for
+(parallax). That's why the intake flow collects **multiple orthographic views** (Top / Side
+/ End) — each scaled in its own plane — which is what CamScan's 3D builder (and a modeller)
+needs to make a replacement without a full 3D scan. README.txt, ACCURACY and SHOOTING A
+PART, has the numbers and the capture checklist to send to customers. For genuinely freeform parts, collect the raw multi-view photos for
 your-side photogrammetry (turntable + fixed camera + the scale marker).
