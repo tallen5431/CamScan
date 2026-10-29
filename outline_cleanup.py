@@ -413,6 +413,12 @@ def _straighten(img_bgr, points, min_run_frac, fillets, snap, exact, jogs):
             d = [dd * (1.0 if float(np.dot(dd, oo)) > 0 else -1.0) for dd, oo in zip(d, o)]
             t1 = d[0][0] * d[1][1] - d[0][1] * d[1][0]
             t2 = d[1][0] * d[2][1] - d[1][1] * d[2][0]
+            # Not when its neighbours run (near) opposite ways: then the short side is the
+            # part's END, not a corner — the 226 px end of a 1100 px step pad on the customer's
+            # top photo was folded away here, leaving two parallel sides with no corner between
+            # them to round, and both of the end's own corners kept sharp.
+            if float(np.dot(d[0], d[2])) < -math.cos(math.radians(30)):
+                continue
             if t1 * t2 > 0:
                 drop.add(j)
         if drop:
