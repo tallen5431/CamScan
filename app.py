@@ -1542,6 +1542,23 @@ def _submission_lines(data):
                 lines.append(f"    {text(m.get('label'))}: {text(m.get('text'))}")
             else:
                 lines.append(f"    {text(m)}")
+    part = obj(data.get("part3d"))
+    pviews = obj(part.get("views"))
+    roles = [r for r in ("top", "side", "end", "cavity") if isinstance(pviews.get(r), dict)]
+    if roles:
+        opts = obj(part.get("opts"))
+        extra = []
+        for key, label in (("wall", "wall"), ("depth", "height")):
+            try:
+                val = float(opts.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(val) and val > 0:
+                extra.append(f"{label} {val:g} mm")
+        lines.append("")
+        lines.append("3D part: " + ", ".join(r.capitalize() for r in roles)
+                     + (" — " + ", ".join(extra) if extra else "")
+                     + " (open job.camscan.json with Load job to build it)")
     return lines
 
 
@@ -1597,6 +1614,10 @@ def _save_submission(data):
                       "id": data.get("id"), "createdAt": data.get("createdAt"),
                       "submittedAt": data.get("submittedAt"), "brief": data.get("brief") or {},
                       "views": data.get("views") or []}
+            # The 3D part as the customer assembled it (views, wall, sizes): Load job then
+            # opens the part, not just its photos.
+            if isinstance(data.get("part3d"), dict):
+                bundle["part3d"] = data["part3d"]
             bundle_path = os.path.join(out_dir, "job.camscan.json")
             with open(bundle_path, "w") as f:
                 json.dump(bundle, f)
