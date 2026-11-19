@@ -595,6 +595,19 @@ def downloads(fname):
     return send_from_directory(UPLOAD_DIR, fname, as_attachment=False)
 
 
+MARKERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markers")
+
+
+@server.route("/markers/<name>")
+def marker_file(name):
+    """The printable markers in markers/ (the wallet card, the plain marker cards), linked
+    from the landing card. Only those files: camscan-<name>.svg / .png."""
+    import re
+    if not re.fullmatch(r"camscan-[a-z0-9-]+\.(svg|png)", name or ""):
+        return "Not found", 404
+    return send_from_directory(MARKERS_DIR, name, as_attachment=False)
+
+
 @server.route("/api/export/dxf", methods=["POST"])
 def export_dxf():
     """DXF export endpoint for CAD software integration.

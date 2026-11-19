@@ -114,6 +114,35 @@ window.CalibGeom = (function(){
     return { level: ratio >= REF_SPAN_RATIO_BAD ? 'bad' : 'warn', ratio };
   }
 
+  // --- How sure is a length? -------------------------------------------------------------
+  // A rough ± (about 95 %, two sigma) for a length measured on a photo, so on a job you know
+  // when a number is good enough and when to reach for calipers. Two sources of error:
+  //   * placing the two ends: each tap or traced edge is good to about `pickPx` pixels;
+  //   * the scale itself: the reference's own ends (or corners) are good to `refPickPx`, so
+  //     the scale is off by about sqrt(2)*refPickPx/refPx. A uniform line scale carries that
+  //     straight through. A homography (marker card, paper sheet, Square up) is pinned only
+  //     near its reference: in a simulation (tilts 0-35 deg, 1 px corner noise, references of
+  //     270-750 px) the RMS error grew about linearly with how far past the reference the
+  //     length reached — 1.5-1.6x the scale term at 1x the reference, 15x at 10x.
+  // A line scale corrects nothing for tilt, so its ± holds only for a square-on photo
+  // (`squareOn` says so). Pure, so it can be unit-tested without a DOM.
+  function lengthUncertainty(o){
+    o = o || {};
+    const L = Number(o.lengthMM), Lpx = Number(o.lengthPx);
+    if(!(L > 0) || !(Lpx > 0) || !isFinite(L) || !isFinite(Lpx)) return null;
+    const pick = Number(o.pickPx) > 0 ? Number(o.pickPx) : 1.0;
+    const ends = Math.SQRT2 * pick * (L / Lpx);                      // mm
+    let rel = 0;
+    const refPx = Number(o.refPx);
+    if(refPx > 0 && isFinite(refPx)){
+      const rs = Math.SQRT2 * (Number(o.refPickPx) > 0 ? Number(o.refPickPx) : 1.0) / refPx;
+      rel = o.perspective ? 1.6 * rs * Math.max(1, Lpx / refPx) : rs;
+    }
+    if(Number(o.extraRel) > 0) rel = Math.hypot(rel, Number(o.extraRel));
+    const sigma = Math.hypot(ends, L * rel);
+    return { pm: 2 * sigma, relPct: 200 * sigma / L, squareOn: !o.perspective };
+  }
+
   // --- Cross-view scale agreement -------------------------------------------------------
   // Each view carries its own scale, so comparing mm-per-pixel across views says nothing — a
   // close-up legitimately has a different one from a wide shot. What IS comparable is the
@@ -176,7 +205,7 @@ window.CalibGeom = (function(){
   }
 
   return { distPtLine, solveHomography, orderQuad, quadAreaPx,
-           measuredExtentPx, referenceSpanVerdict,
+           measuredExtentPx, referenceSpanVerdict, lengthUncertainty,
            crossViewDisagreements,
            REF_SPAN_RATIO_WARN, REF_SPAN_RATIO_BAD,
            CROSS_VIEW_WARN, CROSS_VIEW_BAD };

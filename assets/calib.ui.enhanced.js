@@ -737,6 +737,14 @@ window.CalibUI = (function(){
       snapLabel.appendChild(snapChk); snapLabel.appendChild(document.createTextNode(' Snap to marker corners'));
       dispBody.appendChild(snapLabel);
 
+      // "52.3 ± 0.4 mm": how sure each length is (CalibGeom.lengthUncertainty).
+      const pmLabel = document.createElement('label');
+      const pmChk = document.createElement('input'); pmChk.type = 'checkbox'; pmChk.id = 'cal-set-showpm';
+      try { pmChk.checked = localStorage.getItem('camscan.showPm') !== '0'; } catch (e) { pmChk.checked = true; }
+      pmChk.onchange = () => { try { localStorage.setItem('camscan.showPm', pmChk.checked ? '1' : '0'); } catch (e) {} if (overlay.requestDraw) overlay.requestDraw(); };
+      pmLabel.appendChild(pmChk); pmLabel.appendChild(document.createTextNode(' Show ± (how sure) on lengths and diameters'));
+      dispBody.appendChild(pmLabel);
+
       // A fresh trace is tidied straight away (Refine); off, it is left as traced.
       const tidyLabel = document.createElement('label');
       const tidyChk = document.createElement('input'); tidyChk.type = 'checkbox'; tidyChk.id = 'cal-set-autotidy';

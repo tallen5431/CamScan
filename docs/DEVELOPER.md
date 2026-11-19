@@ -38,6 +38,7 @@ photo ─► upload (Dash callback) ─► calibration_core.calibrate_image ─�
 | `cad_export.py` | STEP (AP214 B-rep, one face per flat face) and OBJ writers. |
 | `circle_detection.py` | `detect_circles_hough`, `detect_circles_contour` (circularity metrics) and `export_to_dxf(geometry, filename, mm_per_px, image_height_px)` used by `/api/export/dxf`. Circle auto-detection is not wired into the page; the page's circles are drawn by the user. |
 | `tools/make_marker.py` | Generates the printable marker (`markers/`). |
+| `tools/make_wallet_card.py` | Generates the fold-over wallet marker card (`markers/camscan-wallet-card.svg`, served at `/markers/`). |
 
 ## Endpoints
 
@@ -55,6 +56,7 @@ All take and return JSON unless noted; bad input is a 4xx with a reason, never a
 | `POST /api/export/dxf` | DXF of the measurements (needs ezdxf). |
 | `POST /api/submit` | Save (and e-mail) a multi-view submission. |
 | `GET /uploads/<name>` | The uploaded photos and their `.calibration.json`. |
+| `GET /markers/<name>` | The printable markers (`camscan-*.svg` / `.png` only). |
 
 ## JavaScript modules (`assets/`)
 
@@ -65,6 +67,7 @@ All take and return JSON unless noted; bad input is a 4xx with a reason, never a
 | `calib.part3d.js` | 🧩 view assignment, the Build 3D part dialog, its 3D canvas and the request it sends. |
 | `calib.job.js` | The job: photos + 3D views in IndexedDB (localStorage fallback), autosave, side switcher, Save/Load job, submission. |
 | `calib.simple.js` | Simple mode's guided card. |
+| `calib.quick.js` | Quick measure: one screen of lengths and hole diameters with their ± (`window.CalibQuick`). |
 | `calib.export.js` | PNG, JSON, CSV, DXF request, SVG. |
 | `calib.viewport.js`, `calib.gestures.js` | Image↔canvas mapping and zoom; pointer/pinch gestures. |
 | `calib.annotations.js`, `calib.measure.js`, `calib.geometry.js`, `calib.units.js` | Annotation store and hit tests; perspective-aware lengths/areas; geometry helpers (homographies); units. |

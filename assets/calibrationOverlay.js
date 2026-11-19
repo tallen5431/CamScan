@@ -806,7 +806,8 @@
             c.fillStyle=sel?C.selected:C.segment;
             for(const [x,y] of [a.a,a.b]){ c.beginPath(); c.arc(x,y,dotR,0,Math.PI*2); c.fill(); c.strokeStyle="#000"; c.lineWidth=this._lineW(0.6); c.stroke(); }
             const mid=[(a.a[0]+a.b[0])/2,(a.a[1]+a.b[1])/2];
-            if(showLabels) Draw.boxLabel(c, this.canvas, mid[0], mid[1], this._fmtLen(mm, pxLen), this._lblScale(), C.segment);
+            // qtag: Quick measure's letter (A, B, …), so the label matches its list.
+            if(showLabels) Draw.boxLabel(c, this.canvas, mid[0], mid[1], (a.qtag ? a.qtag+'  ' : '')+this._fmtLenPm(mm, pxLen), this._lblScale(), C.segment);
           } else if(a.type==='note'){
             const [tx,ty]=a.p; c.fillStyle=sel?C.selected:C.note;
             c.beginPath(); c.arc(tx,ty,this._handleR(1.6),0,Math.PI*2); c.fill();
@@ -896,7 +897,7 @@
               window.CalibCircles.drawCircle(c, this.canvas, a, this._dataForMeasure(), this.opts.units,
                 { selected: sel, labelScale: this._lblScale(), linePx: this.opts.linePx, lineW: this._lineW(),
                   fallbackScale: this.getScale(), allowHomography: this._allowHomography(),
-                  showLabel: showLabels, handleR: this._handleR(1.2) });
+                  showLabel: showLabels, handleR: this._handleR(1.2), pm: this._circlePmText(a), tag: a.qtag || '' });
             }
           }
         }
@@ -1051,10 +1052,11 @@
         const cal=this.isCalibrated();
         if(a.type==='segment'){ const px=Math.hypot(a.b[0]-a.a[0],a.b[1]-a.a[1]);
           const lmm=Measure.length(ctx,a.a[0],a.a[1],a.b[0],a.b[1]);
-          const t=this._fmtLen(lmm,px);
+          const pmU=cal ? this.lengthPm(px, lmm) : null;
+          const t=this._fmtLenPm(lmm,px);
           // `mm` is the raw millimetre value, kept separate from the formatted text so
           // another VIEW of the same part can reuse this dimension as its scale reference.
-          return {label:'Length', text:t, mm:(cal?lmm:null),
+          return {label:'Length', text:t, mm:(cal?lmm:null), pm:(pmU ? pmU.pm : null),
                   copy:cal?unit.fromMM(lmm).toFixed(3):String(Math.round(px))}; }
         if(a.type==='polyline'){ const pts=a.pts||[]; const closed=!!a.closed && pts.length>=3;
           let px=0; for(let i=1;i<pts.length;i++) px+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
@@ -1080,7 +1082,7 @@
           if(cal){ const w=unit.fromMM(rm.w),h=unit.fromMM(rm.h),ar=unit.areaFromMM2(rm.area); const dp=this._lenDp(unit); return {label:'Rect', text:`${w.toFixed(dp)}×${h.toFixed(dp)} ${unit.label} · A ${ar.toFixed(this._areaDp(unit))} ${unit.areaLabel}`, copy:`${w.toFixed(3)}x${h.toFixed(3)}`}; }
           const pw=Math.abs(x2-x1),ph=Math.abs(y2-y1); return {label:'Rect', text:`${Math.round(pw)}×${Math.round(ph)} px · A ${Math.round(pw*ph)} px²`, copy:`${Math.round(pw)}x${Math.round(ph)}`}; }
         if(a.type==='angle'){ const ang=Measure.angle(ctx,a.a,a.v,a.b); return {label:'Angle', text:`${ang.toFixed(2)}°`, copy:ang.toFixed(2)}; }
-        if(a.type==='circle'){ const cm=Measure.circle(ctx, a); let t=this._fmtLen(cm.diameterMM, 2*a.radius);
+        if(a.type==='circle'){ const cm=Measure.circle(ctx, a); let t=this._fmtLenPm(cm.diameterMM, 2*a.radius);
           // A 3-point circle is tilt-corrected (rim points refit on the plane); a 2-point
           // circle can't be, so flag it as approximate on a tilted shot and point at 3-pt.
           if(cal && cm.corrected) t += ' • ⟂ tilt-corrected';
@@ -1098,7 +1100,7 @@
       // ---- Submission (multi-view job) capture -------------------------------------
       // Every measurement on this view, as [{label,text}], for the review + email packet.
       getMeasurements(){ return this.ann.items.map(a=>this._readoutFor(a)).filter(Boolean)
-        .map(r=>{ const o={label:r.label, text:r.text}; if(r.mm>0) o.mm=r.mm; return o; }); }
+        .map(r=>{ const o={label:r.label, text:r.text}; if(r.mm>0) o.mm=r.mm; if(r.pm>0) o.pm=r.pm; return o; }); }
       // --- Is the scale reference big enough for what is being measured? ----------------
       // A homography is only trustworthy near the points that fixed it. Extrapolate far
       // outside the reference and the error explodes: measured on synthetic renders at 30 deg
@@ -1118,6 +1120,57 @@
           if(px > 0) return px;
         }
         return 0;
+      }
+
+      // --- How sure is a length? (CalibGeom.lengthUncertainty) --------------------------
+      // What the current scale rests on, for the ± on each length: the source, the size of
+      // the reference in pixels, how well its ends were placed, and whether it corrects for
+      // tilt. null without a scale.
+      scaleBasis(){
+        if(!this.isCalibrated()) return null;
+        const refPx=this._referenceExtentPx();
+        if(this.opts.manualMmPerPx>0){
+          if(this.opts.manualHomography){
+            const sq=!!(this._manualRef && this._manualRef.kind==='squared');
+            return { source: sq ? 'squared' : 'rect', refPx, refPickPx:1.0, perspective:true,
+                     text: sq ? 'ruler line, squared up — tilt corrected' : 'measured rectangle — tilt corrected' };
+          }
+          return { source:'line', refPx, refPickPx:1.0, perspective:false,
+                   text:'ruler line — the ± assumes the photo was taken square-on (the marker card or Square up corrects tilt)' };
+        }
+        const persp=!!(this.data && this.data.homography);
+        // The marker's corners are found to a fraction of a pixel (0.16 px on a clean render;
+        // a little worse on a real photo).
+        return { source:'marker', refPx, refPickPx:0.35, perspective:persp,
+                 text: persp ? 'marker card — tilt corrected' : 'marker card' };
+      }
+      // ± (mm, about 95 %) for a length of lengthMM spanning lengthPx on the photo; null when
+      // there is no scale. pickPx: how well its ends were placed (1 px for a tap).
+      lengthPm(lengthPx, lengthMM, pickPx){
+        const b=this.scaleBasis();
+        if(!b) return null;
+        return Geom.lengthUncertainty({ lengthPx, lengthMM, pickPx: pickPx || 1.0, refPx: b.refPx,
+                                        refPickPx: b.refPickPx, perspective: b.perspective });
+      }
+      // " ± 0.4" for a circle's diameter (its rim fitted from 2-3 taps: ends good to ~1 px).
+      _circlePmText(a){
+        if(!a || !(a.radius>0) || !this.isCalibrated() || !this.showPm()) return '';
+        const cm=Measure.circle(this._measureCtx(a), a);
+        return cm && cm.diameterMM>0 ? this._fmtPm(this.lengthPm(2*a.radius, cm.diameterMM)) : '';
+      }
+      showPm(){ try{ return localStorage.getItem('camscan.showPm')!=='0'; }catch(e){ return true; } }
+      // " ± 0.4" in the display units, rounded UP to the label's step (never a "± 0.0").
+      _fmtPm(u){
+        if(!u || !(u.pm>0)) return '';
+        const unit=Units.get(this.opts.units), dp=this._lenDp(unit), step=Math.pow(10, -dp);
+        const v=Math.max(step, Math.ceil(unit.fromMM(u.pm)/step - 1e-9)*step);
+        return ` ± ${v.toFixed(dp)}`;
+      }
+      // A length for a label: "52.3 ± 0.4 mm" when calibrated and ± is on, else as _fmtLen.
+      _fmtLenPm(mm, pxDist, pickPx){
+        if(!this.isCalibrated() || !this.showPm()) return this._fmtLen(mm, pxDist);
+        const unit=Units.get(this.opts.units);
+        return `${unit.fromMM(mm).toFixed(this._lenDp(unit))}${this._fmtPm(this.lengthPm(pxDist, mm, pickPx))} ${unit.label}`;
       }
 
       // null when there is nothing to say; otherwise {level:'warn'|'bad', ratio, text}.

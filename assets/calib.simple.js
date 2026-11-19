@@ -364,6 +364,8 @@
   function boot(){
     applyMode(false);
     setInterval(function(){
+      // Quick measure (calib.quick.js) has the screen: no card, no switching modes under it.
+      if(document.body.classList.contains('camscan-quick')) return;
       var v=view(), o=overlay();
       if(isSimple() && placing(o)){ markReturn(o); setSimple(false); applyMode(true); return; }
       maybeReturn(o);

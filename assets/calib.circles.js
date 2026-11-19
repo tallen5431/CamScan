@@ -51,9 +51,10 @@ window.CalibCircles = (function(){
     // Labels to 0.1 mm and whole mm² (the same steps in cm / in), as the overlay's own; a
     // photo measures to about a millimetre. Copy and CSV keep full precision.
     const dp = ({mm:1, cm:2, in:3})[unit.label] ?? 3, adp = ({mm:0, cm:2, in:3})[unit.label] ?? 3;
+    // opts.pm: the overlay's " ± 0.4" for this diameter (empty when ± is off).
     const diamLabel = calibrated
-      ? `⌀ ${unit.fromMM(diamMM).toFixed(dp)} ${unit.label}`
-      : `⌀ ${Math.round(2 * r)} px`;
+      ? `${opts.tag ? opts.tag + '  ' : ''}⌀ ${unit.fromMM(diamMM).toFixed(dp)}${opts.pm || ''} ${unit.label}`
+      : `${opts.tag ? opts.tag + '  ' : ''}⌀ ${Math.round(2 * r)} px`;
     const areaLabel = calibrated
       ? `A ${unit.areaFromMM2(areaMM2).toFixed(adp)} ${unit.areaLabel}`
       : `A ${Math.round(Math.PI * r * r)} px²`;

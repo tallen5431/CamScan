@@ -6,6 +6,25 @@ STL to print, STEP to edit in Fusion 360 or any CAD program. It measures in real
 millimetres along the way, and exports 2D drawings (DXF / SVG) too.
 
 --------------------------------------------------------------------------------
+QUICK MEASURE: JUST READ A PART'S SIZES
+--------------------------------------------------------------------------------
+On a job (a broken knob, a hinge cover, a bracket) tap "📏 Quick measure" on the start
+screen and take the photo. Lay the wallet marker card (below) flat beside the part, on the
+same surface, and it scales itself — tilt corrected; or set the scale from a ruler (📐).
+Then each two taps add a length (＋ ⌀ Hole: three taps round a hole's edge), listed A, B, C…
+with how sure each one is: "52.3 ± 0.4 mm". 📋 Copy all copies the list; ✓ Done goes back
+to the full tool with the measurements kept.
+  * The ± is about 95 % sure: the taps (about a pixel each) and the scale itself, which a
+    marker card or measured rectangle pins only near itself — so it grows for a length many
+    times the card's size. A ruler-line scale corrects nothing for tilt: its ± holds for a
+    square-on photo only (the panel says so). Over 1 % it suggests calipers for a tight fit.
+    Settings → "Show ± …" turns it off; it is on the labels, the copy and the submission.
+  * WALLET MARKER CARD: "🖨 Print the wallet marker card" on the start screen (or
+    markers/camscan-wallet-card.svg; regenerate with python tools/make_wallet_card.py).
+    Print at 100 %, check the bar measures 30 mm, cut round a pair, fold, glue or laminate.
+    The back says how to shoot.
+
+--------------------------------------------------------------------------------
 QUICK START: PHOTOS TO 3D PART
 --------------------------------------------------------------------------------
 1) Per view (top, side, end): lay a ruler FLAT ON that face; shoot square-on, ~0.5 m back.
